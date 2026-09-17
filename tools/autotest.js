@@ -98,12 +98,25 @@
 
   function canvas() { return document.querySelector('#game canvas'); }
 
+  /* 世界格 -> 屏幕坐标。
+   * 不要假设「画布 CSS 尺寸 == 内部尺寸」，也不要假设「摄像机缩放 == 1」——
+   * 现在画布是 Scale.RESIZE + 摄像机自适应缩放，这两个假设都不成立，写死比例必然点偏。
+   * 这里用 cam.getWorldPoint 做两点标定，先求出「画布像素 -> 世界」的仿射映射再取逆，
+   * 于是跟 Phaser 内部的缩放/滚动实现完全解耦。 */
   function cellToClient(x, y) {
-    var cv = canvas(), r = cv.getBoundingClientRect(), G = window.MYC.CONFIG.GRID;
-    // canvas 用 Scale.NONE，CSS 尺寸与内部尺寸一致，但保险起见按比例换算
+    var G = window.MYC.CONFIG.GRID;
+    var cam = window.MYC.game.scene.cameras.main;
+    var cv = canvas(), r = cv.getBoundingClientRect();
+    var o = cam.getWorldPoint(0, 0);
+    var ex = cam.getWorldPoint(1, 0);
+    var ey = cam.getWorldPoint(0, 1);
+    var kx = 1 / (ex.x - o.x);        // 1 画布像素 = 1/kx 个世界单位
+    var ky = 1 / (ey.y - o.y);
+    var wx = G.OX + x * G.CELL + G.CELL / 2;
+    var wy = G.OY + y * G.CELL + G.CELL / 2;
     return {
-      x: r.left + (G.OX + x * G.CELL + G.CELL / 2) * (r.width / cv.width),
-      y: r.top + (G.OY + y * G.CELL + G.CELL / 2) * (r.height / cv.height),
+      x: r.left + (wx - o.x) * kx * (r.width / cv.width),
+      y: r.top + (wy - o.y) * ky * (r.height / cv.height),
       inside: true
     };
   }
@@ -132,6 +145,23 @@
    * 这里把两种都派发一遍，保证一定命中它真正挂的那一个。 */
   var ALL_TYPES = ['pointerover', 'pointermove', 'pointerdown', 'pointerup',
                    'mouseover', 'mousemove', 'mousedown', 'mouseup'];
+
+  /* 「把指针移到某处」必须把 move 类事件都发一遍。
+   * 只发 pointermove 时 Phaser 可能根本没收到（它实际挂的是 mousemove），
+   * 表现就是 hover 一直停在旧值上 —— 而 down/up 因为自带坐标不受影响，
+   * 所以点击类测试全绿、唯独悬停类测试失败，很容易被误判成坐标算错。 */
+  function moveTo(pt) {
+    ['pointerover', 'pointermove', 'mouseover', 'mousemove'].forEach(function (t) {
+      fire(t, pt);
+    });
+  }
+
+  /* 一次完整点击，同样是 down/up 的 pointer* 与 mouse* 都发。
+   * 只发 pointerdown 的话 Phaser 可能收不到，于是「点了没反应」这类断言会
+   * 因为「压根没收到点击」而**假通过** —— 所以下面还专门放了一个正对照。 */
+  function clickAt(pt) {
+    ALL_TYPES.forEach(function (t) { fire(t, pt); });
+  }
 
   /* ------------------------------------------------------------ 测试步骤 */
 
@@ -401,6 +431,201 @@
     ok('存档保留节点等级', mx > 0, '最高 Lv' + mx);
     ok('存档保留里程碑增益', Math.abs((r2.mods.nutrient || 1) - (st.mods.nutrient || 1)) < 1e-6,
        'nutrient 增益 ×' + (r2.mods.nutrient || 1).toFixed(2));
+  });
+
+  /* ---- 自适应 / 响应式 ----------------------------------------------------
+   * 这些断言跟视口大小无关，所以在桌面和手机两种尺寸下各跑一次都有意义。
+   * 「页面都看不全」就是这么坏的：固定 916px 画布 + 无媒体查询 → 手机上整个面板被顶出屏幕。 */
+  step(function () {
+    var W = window.innerWidth, H = window.innerHeight, de = document.documentElement;
+
+    ok('页面没有横向溢出', de.scrollWidth <= W + 1,
+       'scrollWidth=' + de.scrollWidth + '  视口宽=' + W);
+
+    var cr = canvas().getBoundingClientRect();
+    var sr = document.getElementById('stage').getBoundingClientRect();
+    ok('地图画布没有超出容器',
+       cr.width <= sr.width + 1 && cr.height <= sr.height + 1,
+       'canvas=' + Math.round(cr.width) + '×' + Math.round(cr.height) +
+       '  stage=' + Math.round(sr.width) + '×' + Math.round(sr.height));
+
+    var pr = document.getElementById('panel').getBoundingClientRect();
+    ok('面板在视口内可见', pr.width > 100 && pr.top < H && pr.left < W && pr.right > 0,
+       'panel 左上=' + Math.round(pr.left) + ',' + Math.round(pr.top) +
+       '  尺寸=' + Math.round(pr.width) + '×' + Math.round(pr.height));
+
+    // 最怕的状态是「被裁掉、又滚不到」—— 装得下 / 面板自己滚 / 整页滚，三者占一即可
+    var p = document.getElementById('panel');
+    var selfScroll = p.scrollHeight > p.clientHeight + 1;
+    var pageScroll = de.scrollHeight > H + 1;
+    ok('面板内容可达（装得下 / 面板可滚 / 页面可滚）',
+       pr.bottom <= H + 1 || selfScroll || pageScroll,
+       'panel.bottom=' + Math.round(pr.bottom) + ' 视口高=' + H +
+       ' 面板可滚=' + selfScroll + ' 页面可滚=' + pageScroll);
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene, cam = sc.cameras.main, G = window.MYC.CONFIG.GRID;
+    var core = window.MYC.game.state.nodes[0];
+    var wx = G.OX + core.x * G.CELL + G.CELL / 2, wy = G.OY + core.y * G.CELL + G.CELL / 2;
+    var v = cam.worldView;
+    ok('摄像机对准了网络（核心在视野内）',
+       wx >= v.left && wx <= v.right && wy >= v.top && wy <= v.bottom,
+       'core=(' + wx.toFixed(0) + ',' + wy.toFixed(0) + ')  视野 x ' +
+       v.left.toFixed(0) + '..' + v.right.toFixed(0) + '  y ' + v.top.toFixed(0) + '..' + v.bottom.toFixed(0));
+
+    // 缩放的硬下限：绝不能小于「整张地图刚好装下」，否则网络边缘会被裁出画面
+    var whole = Math.min(cam.width / (G.OX * 2 + G.W * G.CELL),
+                         cam.height / (G.OY * 2 + G.H * G.CELL));
+    ok('视野不小于整张地图（不裁剪网络）', cam.zoom >= whole - 0.003,
+       'zoom=' + cam.zoom.toFixed(3) + '  下限=' + whole.toFixed(3));
+
+    ok('格子没有被放大到失真', G.CELL * cam.zoom <= 48,
+       '格子约 ' + (G.CELL * cam.zoom).toFixed(0) + 'px');
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, core = st.nodes[0];
+    moveTo(cellToClient(core.x, core.y));
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene, cam = sc.cameras.main;
+    // 提示框活在世界坐标里，会被摄像机乘一次缩放 —— 必须反向补偿。
+    // 这是加自适应时最容易漏的一处（放大后提示变成巨字）。
+    ok('提示框按缩放反向补偿（屏幕上大小恒定）',
+       Math.abs(sc.tip.scaleX * cam.zoom - 1) < 0.02,
+       'scaleX=' + sc.tip.scaleX.toFixed(3) + ' × zoom=' + cam.zoom.toFixed(2) +
+       ' = ' + (sc.tip.scaleX * cam.zoom).toFixed(3));
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, G = window.MYC.CONFIG.GRID;
+    st.res.water = 50000;
+    // 冻住自动蔓延：否则这几步之间它会自己长，节点数断言就不准了
+    st.autoTimer = -1e6;
+
+    /* 只在「当前视野内」找目标格 —— 视野外的格子点不到（客户端坐标落在画布外），
+     * 上一次就是因为挑到地图顶部的格子才误判成坐标换算错误。 */
+    var v = window.MYC.game.scene.cameras.main.worldView;
+    var x0 = Math.max(0, Math.floor((v.left - G.OX) / G.CELL) + 1);
+    var x1 = Math.min(G.W - 1, Math.ceil((v.right - G.OX) / G.CELL) - 1);
+    var y0 = Math.max(0, Math.floor((v.top - G.OY) / G.CELL) + 1);
+    var y1 = Math.min(G.H - 1, Math.ceil((v.bottom - G.OY) / G.CELL) - 1);
+
+    // 目标：自己长不了、但紧邻一格能长 —— 正是手指点偏一格的情形。
+    // 另外 8 个邻居都不能已经是节点，否则容差会先去「强化」那个节点，节点数就不涨了。
+    var nodeAt = function (x, y) { return st.grid[Sim.idx(x, y)].node != null; };
+    var found = null;
+    for (var y = y0; y <= y1 && !found; y++) {
+      for (var x = x0; x <= x1; x++) {
+        if (nodeAt(x, y) || Sim.canGrowAt(st, x, y)) continue;
+        var grow = null, hasNode = false;
+        for (var dy = -1; dy <= 1; dy++) {
+          for (var dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            var nx = x + dx, ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= G.W || ny >= G.H) continue;
+            if (nodeAt(nx, ny)) { hasNode = true; }
+            else if (!grow && Sim.canGrowAt(st, nx, ny)) { grow = { x: nx, y: ny }; }
+          }
+        }
+        if (!hasNode && grow) { found = { x: x, y: y, nx: grow.x, ny: grow.y }; break; }
+      }
+    }
+    /* 正对照：视野内一个「本来就能长」的格子，且离 spot 足够远
+     * （太近的话点完它就成了节点，会破坏容差测试「邻居都不是节点」的前提）。
+     * 没有这个正对照，「点偏没反应」这类断言会因为「压根没收到点击」而假通过。 */
+    var ctrl = null;
+    if (found) {
+      for (var y2 = y0; y2 <= y1 && !ctrl; y2++) {
+        for (var x2 = x0; x2 <= x1; x2++) {
+          if (Math.abs(x2 - found.x) <= 2 && Math.abs(y2 - found.y) <= 2) continue;
+          if (nodeAt(x2, y2) || !Sim.canGrowAt(st, x2, y2)) continue;
+          ctrl = { x: x2, y: y2 };
+          break;
+        }
+      }
+    }
+    S.ctrl = ctrl;
+
+    S.spot = found;
+    ok('找到「点偏一格」的测试位置', !!found,
+       found ? ('视野内 (' + x0 + ',' + y0 + ')..(' + x1 + ',' + y1 + ') → 点 (' +
+                found.x + ',' + found.y + ')，邻居 (' + found.nx + ',' + found.ny + ') 可生长')
+             : ('视野内 ' + x0 + ',' + y0 + '..' + x1 + ',' + y1 + ' 没找到'));
+    ok('找到点击正对照格', !!ctrl, ctrl ? ('(' + ctrl.x + ',' + ctrl.y + ')') : '没找到');
+    if (found) {
+      S.spotPt = cellToClient(found.x, found.y);
+      moveTo(S.spotPt);
+    }
+  });
+
+  /* hover 断言必须紧跟在上面的 moveTo 之后：任何后续的点击也会带 move 事件，
+   * 会把 sc.hover 覆盖成别的格子。 */
+  step(function () {
+    var sc = window.MYC.game.scene, cam = sc.cameras.main, spot = S.spot;
+    S.hitOk = false;
+    if (!spot) return;
+    var h = sc.hover;
+    S.hitOk = !!(h && h.x === spot.x && h.y === spot.y);
+    var p = sc.input.activePointer, v = cam.worldView;
+    // 顺带验证 cellToClient：坐标换算错了，后面所有点击测试都不可信
+    ok('坐标换算落点正确（cellToClient 与摄像机缩放一致）', S.hitOk,
+       (h ? ('落到 (' + h.x + ',' + h.y + ')，目标 (' + spot.x + ',' + spot.y + ')')
+          : '解析不出格子') +
+       '  pointer 世界坐标=' + Math.round(p.worldX) + ',' + Math.round(p.worldY) +
+       '  视野 x ' + Math.round(v.left) + '..' + Math.round(v.right));
+  });
+
+  step(function () {
+    var st = window.MYC.game.state;
+    if (!S.ctrl) return;
+    S.nCtrl = st.nodes.length;
+    S.ctrlPt = cellToClient(S.ctrl.x, S.ctrl.y);
+    clickAt(S.ctrlPt);
+  });
+
+  step(function () {
+    var st = window.MYC.game.state;
+    if (!S.ctrl) return;
+    // 正对照：证明「点击 → 生长」这条链路确实通。它要是失败，
+    // 后面的「点偏不生长」就是无意义的假通过，得先修测试而不是游戏。
+    ok('正对照：点击可生长格确实长出菌丝', st.nodes.length === S.nCtrl + 1,
+       S.nCtrl + ' -> ' + st.nodes.length + ' 格');
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene, st = window.MYC.game.state, spot = S.spot;
+    if (!spot || !S.hitOk) return;
+    S.touch0 = sc.touchTolerance;
+    sc.touchTolerance = false;               // 模拟鼠标：不该有容差
+    S.n0 = st.nodes.length;
+    clickAt(S.spotPt);
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, spot = S.spot;
+    if (!spot || !S.hitOk) return;
+    ok('鼠标点偏不生长（桌面行为不变）', st.nodes.length === S.n0,
+       S.n0 + ' -> ' + st.nodes.length + ' 格');
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene, st = window.MYC.game.state, spot = S.spot;
+    if (!spot || !S.hitOk) return;
+    sc.touchTolerance = true;                // 模拟手指：给一格容差
+    S.n1 = st.nodes.length;
+    clickAt(S.spotPt);
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene, st = window.MYC.game.state, spot = S.spot;
+    if (!spot || !S.hitOk) return;
+    ok('触摸点偏自动落到相邻格', st.nodes.length === S.n1 + 1,
+       S.n1 + ' -> ' + st.nodes.length + ' 格');
+    sc.touchTolerance = S.touch0;
+    st.autoTimer = 0;
   });
 
   /* 主循环断言放在最后：headless 下 rAF 的推进时机不确定，

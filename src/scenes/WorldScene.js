@@ -32,6 +32,21 @@
     rock:     0x2b2b31
   };
 
+  /* 世界尺寸（游戏坐标）—— 和屏幕无关，摄像机负责把它映射到画布上 */
+  var WORLD_W = GRID.OX * 2 + GRID.W * GRID.CELL;
+  var WORLD_H = GRID.OY * 2 + GRID.H * GRID.CELL;
+
+  /* 格子的屏幕尺寸上限（CSS px）：防止开局那几个格子被放大成马赛克。
+   * 没有「尺寸下限」，因为下限必须是「整张地图都装得下」——
+   * 网络铺满整张图时格子必然变小，这是不裁剪整张地图的代价。 */
+  var CELL_MAX_CSS = 46;
+
+  function clampCenter(c, view, world) {
+    if (view >= world) return world / 2;
+    var half = view / 2;
+    return Math.max(half, Math.min(world - half, c));
+  }
+
   function cellPx(x) { return GRID.OX + x * GRID.CELL; }
   function cellPy(y) { return GRID.OY + y * GRID.CELL; }
   function centerX(x) { return cellPx(x) + GRID.CELL / 2; }
@@ -87,6 +102,96 @@
       this.input.on('pointerdown', (p) => this.onClick(p));
 
       this.cameras.main.setBackgroundColor('#060806');
+
+      /* 自适应视野：画布尺寸随容器变（Scale.RESIZE），
+       * 这里负责把世界按合适的缩放摆进画布。 */
+      this.viewZoom = 1;
+      this.viewCx = WORLD_W / 2;
+      this.viewCy = WORLD_H / 2;
+      this.scale.on('resize', () => this.snapView(), this);
+      this.snapView();
+
+      /* 手机上报「点了但没生效」多半是格子太小点偏了。
+       * 触摸时给一点容差：精确格没东西可做，就找邻近一格。 */
+      this.touchTolerance = this.sys.game.device.input.touch === true;
+    }
+
+    /* ------------------------------------------------------------ 视野自适应
+     * 目标：已探明的区域 + 一点余量刚好铺满画布，同时
+     *   · 不超过 CELL_MAX_CSS（否则开局几个格子撑满屏幕，很怪）
+     *   · 不低于「整张地图刚好装下」的缩放（绝不裁掉网络的任何部分）
+     */
+    targetView() {
+      var st = window.MYC.game.state;
+      // 容器刚挂上时可能还是 0×0，退回世界尺寸，免得算出 NaN 缩放
+      var availW = this.scale.width || WORLD_W;
+      var availH = this.scale.height || WORLD_H;
+
+      var pad = 2;
+      var minX = GRID.W, maxX = 0, minY = GRID.H, maxY = 0, any = false;
+      if (st) {
+        for (var y = 0; y < GRID.H; y++) {
+          for (var x = 0; x < GRID.W; x++) {
+            if (!st.grid[Sim.idx(x, y)].known) continue;
+            any = true;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+      if (!any) {
+        minX = maxX = (st ? st.core.x : Math.floor(GRID.W / 2));
+        minY = maxY = (st ? st.core.y : Math.floor(GRID.H / 2));
+      }
+
+      var bw = (maxX - minX + 1 + pad * 2) * GRID.CELL;
+      var bh = (maxY - minY + 1 + pad * 2) * GRID.CELL;
+      var cx = (minX + maxX + 1) / 2 * GRID.CELL + GRID.OX;
+      var cy = (minY + maxY + 1) / 2 * GRID.CELL + GRID.OY;
+
+      // 画布可能被 CSS 缩放过（Fit 模式下），换算成真实的屏幕像素
+      var ratio = (this.scale.displaySize.width / this.scale.width) || 1;
+
+      var whole = Math.min(availW / WORLD_W, availH / WORLD_H);   // 整张地图刚好装下
+      var z = Math.min(availW / bw, availH / bh);                 // 装下「已探明 + 余量」
+      z = Math.min(z, CELL_MAX_CSS / (GRID.CELL * ratio));
+      /* 下限就是 whole：视野再小也不能小于「整张地图」，否则会裁掉网络的边缘。
+       * 注意 max 必须在 min 之后 —— 上限也不能违反「不裁剪」这条。 */
+      z = Math.max(z, whole);
+
+      var viewW = availW / z, viewH = availH / z;
+      return {
+        zoom: z,
+        cx: clampCenter(cx, viewW, WORLD_W),
+        cy: clampCenter(cy, viewH, WORLD_H)
+      };
+    }
+
+    /* 把缓动值对齐到目标（窗口尺寸变化时立刻跟上，不要看到漂移） */
+    snapView() {
+      var t = this.targetView();
+      this.viewZoom = t.zoom;
+      this.viewCx = t.cx;
+      this.viewCy = t.cy;
+      this.applyView();
+    }
+
+    applyView() {
+      var cam = this.cameras.main;
+      cam.setZoom(this.viewZoom);
+      cam.centerOn(this.viewCx, this.viewCy);
+    }
+
+    /* 每帧朝目标缓动。不直接跳变：网络扩张时视野缓缓拉开，观感好得多。 */
+    easeView() {
+      var t = this.targetView();
+      var k = 0.12;
+      this.viewZoom += (t.zoom - this.viewZoom) * k;
+      this.viewCx += (t.cx - this.viewCx) * k;
+      this.viewCy += (t.cy - this.viewCy) * k;
+      this.applyView();
     }
 
     // ---------------------------------------------------------------- 输入
@@ -144,17 +249,39 @@
     }
 
     showTip(p, text) {
-      this.tip.setText(text).setPosition(p.worldX + 14, p.worldY + 12).setVisible(true);
-      if (this.tip.x + this.tip.width > this.scale.width - 4) this.tip.x = p.worldX - this.tip.width - 12;
-      if (this.tip.y + this.tip.height > this.scale.height - 4) this.tip.y = p.worldY - this.tip.height - 12;
+      this.tipP = { x: p.worldX, y: p.worldY };
+      this.tipText = text;
+      this.tip.setVisible(true);
+      this.layoutTip();
     }
 
-    onClick(p) {
-      var c = this.cellFromPointer(p);
+    /* 提示框活在「世界」坐标系里，摄像机会把整个世界乘上缩放 ——
+     * 所以要反过来缩 1/zoom，否则一放大提示就跟着变成巨字。
+     * 缩放是缓动的、每帧都在变，所以布局**必须每帧重算**：
+     * 只在 showTip 里算一次的话，一次放大动画就能把比例带偏（实测 0.93 而不是 1.0）。 */
+    layoutTip() {
+      if (!this.tip.visible || !this.tipP) return;
+      var cam = this.cameras.main;
+      var z = cam.zoom || 1;
+      var v = cam.worldView;
+      if (this.tip.text !== this.tipText) this.tip.setText(this.tipText);
+      this.tip.setScale(1 / z);
+      var w = this.tip.width / z, h = this.tip.height / z;
+      var off = 12 / z;
+      var x = this.tipP.x + off, y = this.tipP.y + off;
+      if (x + w > v.right) x = this.tipP.x - w - off;
+      if (y + h > v.bottom) y = this.tipP.y - h - off;
+      if (x < v.left) x = v.left;
+      if (y < v.top) y = v.top;
+      this.tip.setPosition(x, y);
+    }
+
+    /* 在某一格执行「点击」。返回 { ok, msg }：
+     * ok=true 表示确实做了事；msg 是给玩家看的一句话（成功时的提示 / 失败时的原因）。
+     * 抽出来是为了让触摸容差能依次试邻近格，同时保证只弹一次提示。 */
+    tryAct(c) {
       var game = window.MYC.game;
       var st = game.state;
-      if (!c || !st) return;
-
       var cell = st.grid[Sim.idx(c.x, c.y)];
 
       // 点已有菌丝 —— 这一格「不空」，于是点击有了第二种用途
@@ -165,31 +292,60 @@
           var rr = Sim.removeGnat(st, nd.id);
           if (rr.ok) {
             game.dirty = true;
-            if (game.ui) { game.ui.pushLog('驱除害虫，+' + rr.reward + ' 养分'); game.ui.toast('害虫已驱除'); }
-          } else if (game.ui) game.ui.toast(rr.reason);
-          return;
+            if (game.ui) game.ui.pushLog('驱除害虫，+' + rr.reward + ' 养分');
+            return { ok: true, msg: '害虫已驱除' };
+          }
+          return { ok: false, msg: rr.reason };
         }
         if (nd.id === 0) {                   // 核心不可强化
-          if (game.ui) game.ui.toast('核心是整张网络的根，不需要强化');
-          return;
+          return { ok: false, msg: '核心是整张网络的根，不需要强化' };
         }
         var r = Sim.upgradeNode(st, nd.id);
         if (r.ok) {
           game.dirty = true;
           if (game.ui) game.ui.pushLog(C.SOILS[nd.soil].name + ' 强化到 Lv' + r.level + '（-' + r.cost + ' 养分）');
-        } else if (game.ui) {
-          game.ui.toast(r.reason);
+          return { ok: true, msg: '' };
         }
-        return;
+        return { ok: false, msg: r.reason };
       }
 
       var g = Sim.growAt(st, c.x, c.y);
       if (g.ok) {
         game.dirty = true;
         if (game.ui) game.ui.pushLog('蔓延一格（-' + g.cost + ' 水）');
-      } else if (game.ui) {
-        game.ui.toast(g.reason);
+        return { ok: true, msg: '' };
       }
+      return { ok: false, msg: g.reason };
+    }
+
+    onClick(p) {
+      var game = window.MYC.game;
+      var st = game.state;
+      var c = this.cellFromPointer(p);
+      if (!c || !st) return;
+
+      var r = this.tryAct(c);
+      if (r.ok) { if (game.ui && r.msg) game.ui.toast(r.msg); return; }
+
+      /* 小屏上格子只有十几像素，手指点偏一格太常见了。
+       * 触摸设备就按距离从近到远试一圈邻居 —— 鼠标不需要这层容差。 */
+      if (this.touchTolerance) {
+        var ring = [];
+        for (var dy = -1; dy <= 1; dy++) {
+          for (var dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            var tx = c.x + dx, ty = c.y + dy;
+            if (tx < 0 || ty < 0 || tx >= GRID.W || ty >= GRID.H) continue;
+            ring.push({ x: tx, y: ty, d: dx * dx + dy * dy });
+          }
+        }
+        ring.sort(function (a, b) { return a.d - b.d; });
+        for (var i = 0; i < ring.length; i++) {
+          var t = this.tryAct(ring[i]);
+          if (t.ok) { if (game.ui && t.msg) game.ui.toast(t.msg); return; }
+        }
+      }
+      if (game.ui) game.ui.toast(r.msg);
     }
 
     // ---------------------------------------------------------------- 循环
@@ -215,6 +371,9 @@
         this.pops[k] -= dt * 2.6;
         if (this.pops[k] <= 0) delete this.pops[k];
       }
+
+      this.easeView();          // 视野跟着网络一起长，先更新再画
+      this.layoutTip();         // 缩放变了，提示框的位置和反缩也要跟着重算
 
       this.drawSoil(st);
       this.drawBuff(st, time);
@@ -269,8 +428,10 @@
     }
 
     /* 浮动数字：升级、酶解、孢子爆、驱虫都要有明确反馈。
-     * 用对象池 + tween，别每次 new Text（会一直产生垃圾）。 */
+     * 用对象池 + tween，别每次 new Text（会一直产生垃圾）。
+     * 和提示框同理，字号与上浮距离都要按缩放反向补偿，屏幕上的观感才稳定。 */
     drawFloaters(st) {
+      var z = this.cameras.main.zoom || 1;
       while (st.floaters.length) {
         var f = st.floaters.shift();
         var t = this.floatPool.pop();
@@ -283,9 +444,9 @@
         var col = f.kind === 'nutrient' ? '#e8b45e' : (f.kind === 'spore' ? '#d977c0' : '#5ec8e8');
         t.setText(f.text).setColor(col)
          .setPosition(centerX(f.x), centerY(f.y))
-         .setAlpha(1).setScale(1).setVisible(true);
+         .setAlpha(1).setScale(1 / z).setVisible(true);
         this.tweens.add({
-          targets: t, y: t.y - 28, alpha: 0,
+          targets: t, y: t.y - 28 / z, alpha: 0,
           duration: 1150, ease: 'Cubic.easeOut',
           onComplete: () => {
             t.setVisible(false);

@@ -10,7 +10,6 @@
 (function () {
   'use strict';
 
-  var C = window.MYC.CONFIG;
   var Sim = window.MYC.Sim;
 
   function randomSeed() {
@@ -89,14 +88,20 @@
   UI.pushLog('点击地图上描边的格子开始蔓延菌丝');
   UI.update(0, game);
 
-  /* ---- Phaser ---- */
+  /* ---- Phaser ----
+   * Scale.RESIZE：画布内部尺寸跟着容器走，具体缩放由 WorldScene 的
+   * targetView() 决定。为什么不用 FIT —— FIT 在宽屏上会把 916px 的缓冲区
+   * 放大到容器大小，格线和文字都会变糊；RESIZE 始终按原生像素渲染。
+   */
   var phaserGame = new Phaser.Game({
     type: Phaser.AUTO,
     parent: 'game',
-    width: C.GRID.OX * 2 + C.GRID.W * C.GRID.CELL,
-    height: C.GRID.OY * 2 + C.GRID.H * C.GRID.CELL,
     backgroundColor: '#060806',
-    scale: { mode: Phaser.Scale.NONE },
+    scale: {
+      mode: Phaser.Scale.RESIZE,
+      width: '100%',
+      height: '100%'
+    },
     render: { antialias: true, roundPixels: true },
     scene: [window.MYC.WorldScene]
   });
@@ -104,6 +109,15 @@
   phaserGame.events.once('ready', function () {
     game.scene = phaserGame.scene.getScene('World');
   });
+
+  /* 挂载时容器的尺寸可能还是 0（CSS 还没布局完），刷新一次；
+   * 之后 WorldScene 每帧都会重新读 this.scale.width，所以能自愈。 */
+  function refreshScale() {
+    try { phaserGame.scale.refresh(); if (game.scene) game.scene.snapView(); } catch (e) {}
+  }
+  window.addEventListener('load', refreshScale);
+  window.addEventListener('orientationchange', function () { setTimeout(refreshScale, 250); });
+  setTimeout(refreshScale, 0);
 
   /* 关掉页面时保存一次 */
   window.addEventListener('beforeunload', function () { game.save(true); });

@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>菌丝 — 窄屏探针</title>
+<style>
+  body { margin: 0; background: #1a1a1a; color: #ddd; font: 12px/1.5 monospace; }
+  iframe { border: 0; display: block; vertical-align: top; background: #000; }
+  #out { white-space: pre-wrap; padding: 8px 12px; }
+</style>
+</head>
+<body>
+<!--
+  ============================================================================
+  窄屏探针 —— 把游戏放进一个固定宽度的 iframe 里跑。
+  ============================================================================
+
+  为什么需要它：Chrome 在 Windows 上的**窗口最小宽度约 500px**，
+  把 --window-size 调小会被静默夹住（报出来的 innerWidth 不是你要的值，
+  而 --force-device-scale-factor 只改渲染密度、不改 CSS 视口）。
+  所以「手机宽度」在桌面上根本测不到 —— 媒体查询里的窄屏规则等于从没被执行过。
+
+  iframe 有自己独立的布局视口，媒体查询看的是 iframe 的宽度，
+  于是 390 / 320 这些真机宽度就能在这里真实复现。
+
+  用法（必须走 http，file:// 下跨源取不到 iframe 内容）：
+    python -m http.server 8323
+    # 跑自测并把报告搬到顶层文档，方便 --dump-dom 读回
+    chrome --headless=new --window-size=1100,900 --virtual-time-budget=80000 \
+           --dump-dom "http://127.0.0.1:8323/tools/viewport-probe.html?w=390"
+    # 只看画面（截图用）
+    chrome --headless=new --window-size=430,884 --screenshot=shot.png \
+           "http://127.0.0.1:8323/tools/viewport-probe.html?w=390&t=demo%3D40"
+
+  参数：?w=<像素宽>   目标视口宽度（默认 390）
+        &t=<查询串>   传给 index.html 的查询串，默认 autotest=1；
+                      给了 t 就不再等报告，适合截图（例如 t=demo%3D40）
+  ============================================================================
+-->
+<iframe id="f" height="844" src="about:blank"></iframe>
+<div id="out">waiting…</div>
+<script>
+  'use strict';
+  var W = 390;
+  var mw = /[?&]w=(\d+)/.exec(location.search);
+  if (mw) W = Number(mw[1]);
+
+  var t = null;
+  var mt = /[?&]t=([^&]+)/.exec(location.search);
+  if (mt) t = decodeURIComponent(mt[1]);
+
+  var f = document.getElementById('f');
+  var out = document.getElementById('out');
+  f.width = W;
+  f.src = '../index.html?' + (t || 'autotest=1');
+  document.title = '菌丝窄屏探针 w=' + W;
+
+  var tries = 0;
+  (function poll() {
+    var d = null;
+    try { d = f.contentDocument; } catch (e) {
+      out.textContent = 'IFRAME ACCESS ERROR: ' + e.message +
+        '\n（多半是用 file:// 打开的 —— 请用 http://127.0.0.1 起服务）';
+      return;
+    }
+    if (t) { out.textContent = ''; return; }        // 截图模式：不要多余文字
+    var rep = d && d.getElementById('autotest-report');
+    if (rep) {
+      out.textContent = '### VIEWPORT PROBE width=' + W +
+        ' (iframe innerWidth=' + (d.defaultView ? d.defaultView.innerWidth : '?') + ')\n' +
+        rep.textContent;
+      return;
+    }
+    if (++tries > 900) { out.textContent = '### VIEWPORT PROBE width=' + W + ' TIMEOUT'; return; }
+    setTimeout(poll, 100);
+  })();
+</script>
+</body>
+</html>

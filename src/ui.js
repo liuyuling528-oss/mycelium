@@ -300,7 +300,10 @@ var UI = (function () {
       // 未解锁用按钮变暗 + title 提示表达，解锁方式写在里程碑列表里。
       r.nm.textContent = (unlocked && cd > 0) ? (a.name + ' · ' + Math.ceil(cd) + 's') : a.name;
       r.btn.title = unlocked ? (a.name + '　' + a.hint) : (a.name + '　尚未解锁（见里程碑）');
-      r.bar.style.width = (unlocked && cd > 0) ? (cd / a.cfg.cd * 100).toFixed(0) + '%' : '0%';
+      // 用 r.cfg（= 建面板时存下来的那个技能配置），不是 a.cfg ——
+      // ABILITIES 的条目里没有 cfg 字段，cd 就在条目本身上（见 config.js）。
+      // 写成 a.cfg.cd 平时不报错，只在「已解锁且正在冷却」时炸掉 UI 刷新。
+      r.bar.style.width = (unlocked && cd > 0) ? (cd / r.cfg.cd * 100).toFixed(0) + '%' : '0%';
     });
 
     // 里程碑
