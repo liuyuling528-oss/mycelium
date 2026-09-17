@@ -1,0 +1,14 @@
+# 文本文件统一以 LF 存储，避免 Windows 检出时把整个仓库变成 CRLF
+* text=auto eol=lf
+
+# 二进制资源
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# 第三方压缩库：不要做换行归一化，也无需 diff
+vendor/phaser.min.js binary

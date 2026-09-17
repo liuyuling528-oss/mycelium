@@ -1,0 +1,214 @@
+/* ============================================================================
+ * 菌丝 Mycelium — 界面样式
+ * 地图由 Phaser 渲染，右侧面板用 HTML/CSS（排版和列表滚动都更好处理）。
+ * ==========================================================================*/
+:root {
+  --bg:        #0b0e0b;
+  --panel:     #131813;
+  --panel-2:   #1a211a;
+  --line:      #2a332a;
+  --line-2:    #3a463a;
+  --text:      #d9e2d4;
+  --muted:     #7f8d7a;
+  --water:     #5ec8e8;
+  --nutrient:  #e8b45e;
+  --spore:     #d977c0;
+  --myco:      #eef4e6;
+  --good:      #7ec46b;
+  --bad:       #d06060;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", system-ui, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  height: 100vh;
+  align-items: stretch;
+  justify-content: center;
+}
+
+/* ---- 地图区 ---------------------------------------------------------- */
+#stage {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: center;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #060806;
+}
+#stage canvas { display: block; }
+
+#toast {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  background: rgba(10, 14, 10, .94);
+  border: 1px solid var(--line-2);
+  color: var(--text);
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  opacity: 0;
+  transition: opacity .18s;
+  pointer-events: none;
+  white-space: nowrap;
+}
+#toast.on { opacity: 1; }
+
+/* ---- 右侧面板 -------------------------------------------------------- */
+#panel {
+  flex: 0 1 392px;
+  min-width: 330px;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+}
+#panel::-webkit-scrollbar { width: 8px; }
+#panel::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 11px 13px;
+}
+.card h2 {
+  margin: 0 0 9px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: .09em;
+  color: var(--muted);
+  text-transform: none;
+}
+
+.title-row { display: flex; align-items: baseline; justify-content: space-between; }
+.title-row .name { font-size: 16px; font-weight: 500; letter-spacing: .04em; }
+.title-row .clock { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* ---- 资源 ------------------------------------------------------------ */
+.res { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
+.res + .res { border-top: 1px solid var(--line); }
+.res .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+.res .label { flex: 1 1 auto; color: var(--muted); }
+.res .val { font-variant-numeric: tabular-nums; font-size: 15px; }
+.res .rate { color: var(--muted); font-size: 11.5px; min-width: 74px; text-align: right; font-variant-numeric: tabular-nums; }
+.c-water    { background: var(--water); }
+.c-nutrient { background: var(--nutrient); }
+.c-spore    { background: var(--spore); }
+
+/* ---- 统计 ------------------------------------------------------------ */
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 12px; }
+.stats div { display: flex; justify-content: space-between; }
+.stats span { color: var(--muted); }
+.stats b { font-weight: 400; font-variant-numeric: tabular-nums; }
+
+/* ---- 表单 ------------------------------------------------------------ */
+.row { display: flex; align-items: center; gap: 8px; }
+.row + .row { margin-top: 8px; }
+select, button {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-radius: 7px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+select { flex: 1 1 auto; }
+button:hover:not(:disabled) { border-color: #55684f; background: #202a20; }
+button:disabled { opacity: .38; cursor: default; }
+button.primary { border-color: #4a6b3e; background: #1b2a16; }
+button.primary:hover:not(:disabled) { background: #23361c; }
+button.tiny { padding: 3px 9px; font-size: 12px; }
+.hint { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin: 7px 0 0; }
+
+.switch { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.switch input { accent-color: #6f9c5c; width: 15px; height: 15px; }
+
+/* ---- 升级 / 基因列表 ------------------------------------------------- */
+.list { display: flex; flex-direction: column; gap: 6px; }
+.item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 10px;
+  align-items: center;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+.item.ok { border-color: #3f5a36; }
+.item .n { font-weight: 400; }
+.item .n .lv { color: var(--muted); font-size: 11.5px; margin-left: 5px; }
+.item .d { color: var(--muted); font-size: 11.5px; grid-column: 1; }
+.item button { grid-row: 1 / span 2; grid-column: 2; min-width: 84px; }
+.item.owned { opacity: .55; }
+.item.owned .buy { display: none; }
+
+/* ---- 技能 ------------------------------------------------------------ */
+.abilities { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px; }
+.ab {
+  position: relative;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 8px 10px;
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  font: inherit;
+  color: var(--text);
+}
+.ab:hover:not(:disabled) { border-color: #55684f; background: #202a20; }
+.ab .nm { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ab .sl { position: absolute; top: 6px; right: 7px; font-size: 10.5px; color: var(--muted); }
+.ab .ht { font-size: 11px; color: var(--muted); line-height: 1.45; margin-top: 4px; }
+.ab .cdbar { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--water); opacity: .6; }
+.ab.ready { border-color: #5a7d4c; }
+.ab.ready .nm { color: #cfe6bf; }
+.ab.locked { opacity: .38; cursor: default; }
+.ab:disabled { cursor: default; }
+
+/* ---- 里程碑 ---------------------------------------------------------- */
+.ms { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; }
+.ms + .ms { border-top: 1px solid var(--line); }
+.ms .tick { flex: 0 0 auto; width: 14px; height: 14px; margin-top: 1px; border-radius: 3px;
+            border: 1px solid var(--line-2); font-size: 11px; line-height: 13px; text-align: center; color: #0b0e0b; }
+.ms.done .tick { background: var(--good); border-color: var(--good); color: #101a0c; }
+.ms .txt { flex: 1 1 auto; }
+.ms .need { color: var(--muted); font-size: 11.5px; }
+.ms.done .need { color: #6d8a63; }
+.ms .rw { font-size: 11.5px; color: var(--spore); }
+.ms.done { opacity: .72; }
+
+/* ---- 转生 ------------------------------------------------------------ */
+#prestigeCard { border-color: #5a3f63; background: #1a121c; }
+#prestigeCard h2 { color: #a98bb0; }
+.big { font-size: 15px; }
+.meter { height: 5px; background: #241a26; border-radius: 3px; overflow: hidden; margin: 8px 0 4px; }
+.meter > i { display: block; height: 100%; background: var(--spore); }
+
+/* ---- 记录 ------------------------------------------------------------ */
+#log { max-height: 108px; overflow-y: auto; color: var(--muted); font-size: 11.5px; line-height: 1.65; }
+#log div:first-child { color: var(--text); }
+
+.hidden { display: none !important; }

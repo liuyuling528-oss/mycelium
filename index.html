@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>菌丝 Mycelium — 增量放置</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- 地图：由 Phaser 渲染 -->
+  <div id="stage">
+    <div id="game"></div>
+    <div id="toast"></div>
+  </div>
+
+  <!-- 右侧面板：HTML/CSS，排版与滚动都比在 canvas 里画靠谱 -->
+  <aside id="panel">
+
+    <div class="card">
+      <div class="title-row">
+        <div class="name">菌丝 <span style="color:var(--muted);font-size:12px">Mycelium</span></div>
+        <div class="clock" id="clock">00:00</div>
+      </div>
+      <p class="hint" style="margin-top:8px">
+        你是森林地表下的一张菌丝网络。点击地图上闪烁的格子来蔓延 ——
+        吸收落叶与腐木的养分，沿水脉取水，连上树根结出孢子。
+        资源必须沿菌丝运回核心，<b>路越远越亏</b>。
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>资源</h2>
+      <div class="res"><span class="dot c-water"></span><span class="label">水分</span>
+        <span class="val" id="vWater">0</span><span class="rate" id="rWater">+0/s</span></div>
+      <div class="res"><span class="dot c-nutrient"></span><span class="label">养分</span>
+        <span class="val" id="vNutrient">0</span><span class="rate" id="rNutrient">+0/s</span></div>
+      <div class="res"><span class="dot c-spore"></span><span class="label">孢子</span>
+        <span class="val" id="vSpore">0</span><span class="rate" id="rSpore">+0/s</span></div>
+    </div>
+
+    <div class="card">
+      <h2>网络</h2>
+      <div class="stats">
+        <div><span>菌丝</span><b id="sNodes">1</b></div>
+        <div><span>离核最远</span><b id="sDist">0</b></div>
+        <div><span>拥堵损耗</span><b id="sLost">无</b></div>
+        <div><span>本局时长</span><b id="sRun">0s</b></div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <select id="policy" title="挂机时自动蔓延的选址倾向"></select>
+      </div>
+      <label class="switch row" style="margin-top:9px">
+        <input type="checkbox" id="autoGrow" checked>
+        <span>自动蔓延<span class="hint" style="display:inline">（关掉则只靠你手动点）</span></span>
+      </label>
+      <p class="hint" id="policyHint"></p>
+      <p class="hint" id="eventLine"></p>
+    </div>
+
+    <div class="card">
+      <h2>菌丝本领 <span class="hint" id="slotHint">按 1 / 2 / 3 使用</span></h2>
+      <div class="abilities" id="abilities"></div>
+      <p class="hint">点击地图上<b>已有的菌丝</b>可以强化它（消耗养分，提升产出与吞吐）——
+        练高几个关键节点就是「深耕流」的玩法；点地图上的害虫可以把它驱除掉。</p>
+    </div>
+
+    <div class="card">
+      <h2>升级（消耗养分）</h2>
+      <div class="list" id="upgrades"></div>
+    </div>
+
+    <div class="card" id="msCard">
+      <h2>里程碑 <span id="msCount" style="float:right"></span></h2>
+      <div class="list" id="milestones"></div>
+    </div>
+
+    <div class="card hidden" id="prestigeCard">
+      <h2>散播孢子</h2>
+      <div class="big" id="pText"></div>
+      <div class="meter"><i id="pBar" style="width:0%"></i></div>
+      <p class="hint" id="pHint"></p>
+      <button class="primary" id="pBtn" style="width:100%;margin-top:8px">散播孢子</button>
+    </div>
+
+    <div class="card hidden" id="geneCard">
+      <h2>基因（永久，跨转生）<span id="geneLeft" style="float:right"></span></h2>
+      <div class="list" id="genes"></div>
+    </div>
+
+    <div class="card">
+      <h2>记录</h2>
+      <div id="log"></div>
+    </div>
+
+    <div class="card">
+      <h2>存档</h2>
+      <div class="row">
+        <button id="btnSave" class="tiny">保存</button>
+        <button id="btnLoad" class="tiny">读取</button>
+        <button id="btnNew" class="tiny">重开一局</button>
+        <span class="hint" id="seedTxt" style="margin:0 0 0 auto"></span>
+      </div>
+      <p class="hint">进度自动存在浏览器本地。换种子会生成一张全新的地图。</p>
+    </div>
+
+  </aside>
+</div>
+
+<!-- Phaser 引擎（已下载到本地，离线可用） -->
+<script src="vendor/phaser.min.js"></script>
+<!-- 游戏逻辑与渲染 -->
+<script src="src/config.js"></script>
+<script src="src/rng.js"></script>
+<script src="src/sim.js"></script>
+<script src="src/scenes/WorldScene.js"></script>
+<script src="src/ui.js"></script>
+<script src="src/main.js"></script>
+<!-- 自测钩子：只在 URL 带 ?autotest=1 时生效，正常游玩不受影响 -->
+<script src="tools/autotest.js"></script>
+
+</body>
+</html>

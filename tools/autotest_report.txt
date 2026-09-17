@@ -1,0 +1,67 @@
+菌丝 Mycelium — 浏览器端端到端自测报告
+（tools/autotest.js 生成，通过真实指针事件驱动 Phaser 输入链路）
+命令：chrome --headless=new --virtual-time-budget=50000 --dump-dom "http://127.0.0.1:8321/index.html?autotest=1"
+================================================================
+PASS  Phaser 已加载   [Phaser 3.80.1]
+PASS  canvas 已创建   [916x552]
+PASS  场景已就绪
+PASS  面板已初始化
+      场景 input.enabled=true  windowEvents=undefined  frames=3
+PASS  存在可生长候选格   [(16,10) vein 花费 22]
+      画布 rect=13,127 916x552  点击点=458,416
+      已派发 pointer*/mouse* 事件 —— 等下一帧让 Phaser 处理输入队列
+PASS  点击格子长出了菌丝   [1 -> 2 格（+1）]
+PASS  悬停提示已显示   [tip="地下水脉"]
+PASS  自动蔓延在推进   [2 -> 42 格]
+PASS  水分在产出   [0.0 -> 3247.6]
+PASS  养分在产出   [0.0 -> 394.2]
+PASS  孢子在产出   [0.0 -> 42.5]
+      网络基质构成 {"core":1,"vein":19,"soil":10,"litter":10,"wood":2}
+PASS  可以购买升级   [吸收效率 0 -> 1]
+PASS  购买确实扣了养分   [100394 -> 100369]
+PASS  网络有最大离核距离   [maxDist=7]
+PASS  产出速率已计算   [水 20.01 养分 6.70 孢子 0.33]
+PASS  距离损耗生效（远的更亏）   [1 格 95% vs 20 格 48%]
+PASS  面板显示与状态一致   [panel=42 state=42]
+PASS  升级项全部渲染   [8 项]
+PASS  满足条件可以散播
+PASS  散播后网络重置为核心一格   [42 -> 1 格]
+PASS  散播获得基因点   [gained=333]
+PASS  地图知识被保留   [122 格已探明跨转生保留]
+PASS  可以消费基因点   [gYield 级数 1]
+PASS  存档往返一致   [节点 1 水 40.0]
+PASS  再跑 10 分钟数值不发散   [水 12677 养分 6132 孢子 719 节点 100]
+PASS  节点数在合法范围   [100 格 / 上限 680]
+PASS  存在尚未达成的里程碑（渐进解锁有效）   [待达成 2 个：主干、抗虫]
+PASS  已达成里程碑的奖励确实生效   [m1=true → pulse 解锁=true]
+      （三个技能都已解锁，跳过未解锁拦截测试）
+PASS  技能可以使用   [菌丝脉冲 —— 蔓延速度 ×4，持续 8 秒]
+PASS  技能触发浮动反馈   [1 条]
+PASS  脉冲期间蔓延更快   [间隔 1.50s（基准 6s）]
+PASS  冷却中不能重复使用
+PASS  存在可强化的节点
+PASS  强化节点成功   [Lv0 -> Lv1]
+PASS  强化正确扣费   [6132 -> 6106（花费 26）]
+PASS  强化提升了吞吐上限   [140.0 -> 165.2]
+PASS  强化会推动 m5 进度   [maxNodeLevel=1]
+PASS  里程碑首次达成会发奖   [全部产出 ×1.00 -> ×1.10]
+PASS  里程碑不会重复发奖   [×1.10 保持不变]
+      （先清掉 3 只已有害虫，否则已达上限无法再生成）
+PASS  害虫清空后归零
+PASS  事件系统能生成害虫   [nodeId=6]
+PASS  害虫让该节点停产
+PASS  驱除害虫成功且有奖励   [+45 养分]
+PASS  事件类型有分化（随机流没卡死）   [{"bloom":8,"rain":9,"gnat":3}]
+PASS  害虫数量不会超过上限   [3 / 上限 3]
+PASS  增益区能被查询到   [核心在降雨带内]
+PASS  增益区外不受影响
+PASS  增益区确实提升了产出   [水分速率 45.55 -> 69.19]
+PASS  增益区倍率正确   [×3]
+PASS  存档保留里程碑   [m2,m1,m3,m8,m4,m6,m5]
+PASS  存档保留技能解锁状态   [{"pulse":true,"digest":true,"sporulate":true}]
+PASS  存档保留节点等级   [最高 Lv5]
+PASS  存档保留里程碑增益   [nutrient 增益 ×1.10]
+PASS  Phaser 主循环确实运行过   [frames=5（起始 3）]
+PASS  渲染层没有残留异常   [无]
+ERRORS=NONE
+SUMMARY pass=55 fail=0
