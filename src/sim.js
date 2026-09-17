@@ -202,6 +202,7 @@ var Sim = (function () {
 
   /* BFS 建最短路：每个节点记录 dist 与朝向核心的 next 指针 */
   function rebuildNetwork(state) {
+    invalidateCands(state);   // 网络形状变了：候选集、离核距离全部作废
     var i;
     for (i = 0; i < state.nodes.length; i++) {
       state.nodes[i].dist = -1;
@@ -281,14 +282,21 @@ var Sim = (function () {
     return (1 + 0.12 * state.genes.gYield);
   }
 
-  /* 某个格子的原始产出（不含离核损耗） */
-  function cellYield(state, soil) {
+  /* 某个格子的原始产出（不含离核损耗）。
+   * 写进调用方给的对象 —— computeFlow 每帧对每个节点都调一次，
+   * 不复用的话一帧就是几百次对象分配，GC 会成为主要开销。 */
+  function cellYieldInto(state, soil, out) {
     var base = SOILS[soil].yield || {};
-    var out = emptyVec();
     out.water    = (base.water    || 0) * (1 + 0.18 * state.up.hydration);
     out.nutrient = (base.nutrient || 0) * (1 + 0.18 * state.up.absorption);
     out.spore    = (base.spore    || 0) * (1 + 0.18 * state.up.symbiosis);
-    return scaleVec(out, prodMultiplier(state));
+    var m = prodMultiplier(state);
+    out.water *= m; out.nutrient *= m; out.spore *= m;
+    return out;
+  }
+
+  function cellYield(state, soil) {
+    return cellYieldInto(state, soil, emptyVec());
   }
 
   /* 生长水耗：基质基础价 × 距离加价 × 生长效率折扣 */
@@ -302,8 +310,23 @@ var Sim = (function () {
     return Math.max(1, Math.round(cost));
   }
 
-  /* 候选格：所有与网络相邻、可生长、尚未占用的格子 */
+  /* 候选格：所有与网络相邻、可生长、尚未占用的格子。
+   *
+   * 这里加了缓存，原因很实际：渲染层每帧要读两次（候选点 + 推荐格），
+   * 鼠标每次 pointermove 还要再读一次；网络一大，每帧就是几百次对象分配
+   * 加几百个临时字符串，GC 会变成主要开销。
+   *
+   * 失效时机（缺一不可）：
+   *   · rebuildNetwork —— 网络形状变了（长格子 / 转生 / 读档）
+   *   · 买「生长效率」升级、gGrowth 基因 —— 生长成本系数变了
+   * 节点强化不影响候选集也不影响成本，所以不用失效。
+   *
+   * 返回的数组**只读**：调用方不许改它（现有调用方都只读）。
+   */
+  function invalidateCands(state) { state._cands = null; }
+
   function candidates(state) {
+    if (state._cands) return state._cands;
     var seen = {}, out = [];
     for (var i = 0; i < state.nodes.length; i++) {
       var nd = state.nodes[i], nb = neighbours(nd.x, nd.y);
@@ -317,6 +340,7 @@ var Sim = (function () {
         out.push({ x: x, y: y, dist: dist, soil: state.grid[idx(x, y)].soil, cost: growCostAt(state, x, y, dist) });
       }
     }
+    state._cands = out;
     return out;
   }
 
@@ -413,6 +437,11 @@ var Sim = (function () {
   }
 
   /* ------------------------------------------------------- 产出与运输核心 */
+  /* 每帧复用的临时向量。computeFlow 对每个节点都要算一次产出，
+   * 不复用的话 200 个节点一帧就是上千次对象分配，GC 会成为主要开销。
+   * 只在 computeFlow 内部作中间值用，绝不跨帧保留引用。 */
+  var _raw = emptyVec();
+
   function computeFlow(state, dt) {
     var i, d, nd;
 
@@ -421,30 +450,40 @@ var Sim = (function () {
     var mods = state.mods || { water: 1, nutrient: 1, spore: 1 };
     for (i = 0; i < state.nodes.length; i++) {
       nd = state.nodes[i];
-      var raw = (nd.soil === 'core') ? { water: state.seepRate || CONFIG.START.seep, nutrient: 0, spore: 0 }
-                                     : cellYield(state, nd.soil);
+
+      // prod / through 每帧都写，直接复用节点上的对象，不重新分配
+      var prod = nd.prod || (nd.prod = emptyVec());
+
+      if (nd.soil === 'core') {
+        _raw.water = state.seepRate || CONFIG.START.seep;
+        _raw.nutrient = 0; _raw.spore = 0;
+      } else {
+        cellYieldInto(state, nd.soil, _raw);
+      }
       // 网络代谢：每个节点都产一点孢子，所以规模本身就是孢子来源，
       // 树根只是加速器。这样扩张永远有收益。
-      raw = { water: raw.water, nutrient: raw.nutrient, spore: raw.spore + met };
+      _raw.spore += met;
 
       // 强化等级：这是「深耕流」落到单个节点上的收益
       var lvlMul = 1 + CONFIG.NODE_UP.yieldPerLevel * nd.level;
-      raw.water    *= mods.water    * lvlMul;
-      raw.nutrient *= mods.nutrient * lvlMul;
-      raw.spore    *= mods.spore    * lvlMul;
+      _raw.water    *= mods.water    * lvlMul;
+      _raw.nutrient *= mods.nutrient * lvlMul;
+      _raw.spore    *= mods.spore    * lvlMul;
 
       // 降雨带 / 孢子季：站进增益区就多产，鼓励「追着事件扩张」
       var bf = buffAt(state, nd.x, nd.y);
       if (bf) {
-        raw.water *= bf.water; raw.nutrient *= bf.nutrient; raw.spore *= bf.spore;
+        _raw.water *= bf.water; _raw.nutrient *= bf.nutrient; _raw.spore *= bf.spore;
       }
 
       // 被害虫占据的节点停产 —— 这就是「必须回应」的压力来源
-      if (nd.disabled) raw = { water: 0, nutrient: 0, spore: 0 };
+      if (nd.disabled) { _raw.water = 0; _raw.nutrient = 0; _raw.spore = 0; }
 
-      nd.prod = scaleVec(raw, transportEfficiency(state, Math.max(0, nd.dist)));
+      var eff = transportEfficiency(state, Math.max(0, nd.dist));
+      prod.water = _raw.water * eff;
+      prod.nutrient = _raw.nutrient * eff;
+      prod.spore = _raw.spore * eff;
       nd.inboxW = 0; nd.inboxN = 0; nd.inboxS = 0;
-      nd.through = emptyVec();
     }
 
     // 2) 从最远端往核心逐跳推送
@@ -474,7 +513,8 @@ var Sim = (function () {
         state.lostTotal += (cargo - pass);
 
         var outN = nTot * k, outS = sTot * k;
-        nd.through = { water: wTot, nutrient: outN, spore: outS };
+        var thr = nd.through || (nd.through = emptyVec());
+        thr.water = wTot; thr.nutrient = outN; thr.spore = outS;
         nd.cargo = cargo;
         nd.cargoPass = pass;
 
@@ -498,7 +538,9 @@ var Sim = (function () {
     state.total.water    += accepted.water * dt;
     state.total.nutrient += accepted.nutrient * dt;
     state.total.spore    += accepted.spore * dt;
-    state.rate = scaleVec(accepted, 1);
+    // rate 也是每帧都写的，复用
+    var rate = state.rate || (state.rate = emptyVec());
+    rate.water = accepted.water; rate.nutrient = accepted.nutrient; rate.spore = accepted.spore;
     return accepted;
   }
 
@@ -803,6 +845,8 @@ var Sim = (function () {
     recomputeCapacity(state);
     reveal(state);
     if (key === 'transport' || key === 'capacity' || key === 'sight') rebuildNetwork(state);
+    /* 生长效率只改候选格的「价格」不改网络，但候选缓存里存着价格，必须失效 */
+    else if (key === 'growth') invalidateCands(state);
     return { ok: true };
   }
 
@@ -886,6 +930,8 @@ var Sim = (function () {
     state.pendingGenes -= cost;
     state.genes[key] = (state.genes[key] || 0) + 1;
     recomputeCapacity(state);
+    /* gGrowth 改变生长成本 → 候选缓存里的价格作废 */
+    if (key === 'gGrowth') invalidateCands(state);
     return { ok: true };
   }
 

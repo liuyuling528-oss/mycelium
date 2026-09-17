@@ -447,13 +447,23 @@
       this.pinchPtr.clear();
     }
 
-    /* 悬停提示（鼠标才看得见；手指挡着的地方不需要） */
+    /* 悬停提示（鼠标才看得见；手指挡着的地方不需要）。
+     * pointermove 一秒能来上百次，所以同一格上只更新位置、不重建文本 ——
+     * 否则每帧都在拼字符串 + 触发布局。 */
     showHover(p) {
       var w = this.screenToWorldView(p.x, p.y);
       var c = this.cellFromWorld(w);
       this.hover = c;
       var st = window.MYC.game.state;
-      if (!c || !st) { this.tip.setVisible(false); return; }
+      if (!c || !st) { this.tip.setVisible(false); this.hoverKey = ''; return; }
+
+      var key = c.x + ',' + c.y;
+      if (key === this.hoverKey && this.tip.visible) {
+        this.tipP.x = w.x; this.tipP.y = w.y;      // 提示跟着指针走
+        this.layoutTip();
+        return;
+      }
+      this.hoverKey = key;
 
       var cell = st.grid[Sim.idx(c.x, c.y)];
       if (!cell.known) {
@@ -496,7 +506,8 @@
     }
 
     showTip(w, text) {
-      this.tipP = { x: w.x, y: w.y };
+      if (!this.tipP) this.tipP = { x: 0, y: 0 };
+      this.tipP.x = w.x; this.tipP.y = w.y;
       this.tipText = text;
       this.tip.setVisible(true);
       this.layoutTip();
