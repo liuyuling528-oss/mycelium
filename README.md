@@ -76,6 +76,7 @@ tools/headless_sim.js   ★ 离线平衡模拟（Node 直接跑，不用浏览�
 tools/autotest.js       浏览器端自测钩子（只在 ?autotest=1 时生效）
 vendor/phaser.min.js    Phaser 3.80.1（已内置，离线可用）
 art/gameplay.png        游戏截图
+LICENSE                 MIT
 ```
 
 UI 用 **HTML/CSS 面板 + Phaser 只渲染地图**：列表、下拉框、滚动条交给浏览器，
@@ -154,3 +155,14 @@ chrome --headless=new --virtual-time-budget=50000 \
 - 多张地图 / 地形主题（针叶林、沼泽、火山灰土）切换
 - 音效与音乐（Phaser 的音频系统还没用上，目前完全是无声的）
 - 更细的自动化：多条自动扩张路线、优先级队列
+
+---
+
+## 许可
+
+本项目以 **MIT License** 授权 —— 见 [`LICENSE`](LICENSE)。
+你可以自由使用、修改、分发，包括商用，只需保留版权声明。
+
+内置的 `vendor/phaser.min.js` 是第三方库 **[Phaser 3](https://phaser.io/)**（v3.80.1），
+同样以 MIT 授权，版权归 Phaser 团队所有。之所以把它一起放进仓库，
+是为了让这个项目**双击 `index.html` 就能离线游玩**，不依赖 CDN 或联网。
