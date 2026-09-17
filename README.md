@@ -1,5 +1,7 @@
 # 菌丝 Mycelium
 
+**▶ 在线试玩：<https://liuyuling528-oss.github.io/mycelium/>** —— 不用下载，打开就能玩
+
 > 一个**增量放置**（incremental / idle）游戏。引擎：**Phaser 3.80**。
 > 因为之前的 Excel VBA 版本束手束脚（没有实时循环、连粒子都画不了），改用真正的游戏引擎重做。
 
