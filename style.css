@@ -63,7 +63,26 @@ html { -webkit-text-size-adjust: 100%; }
   background: #060806;
 }
 #game { width: 100%; height: 100%; }
-#stage canvas { display: block; }
+/* touch-action: none 是手势的前提 —— 否则单指拖会被浏览器当成滚页面、
+   双指会被当成浏览器自己的缩放，游戏里的平移/捏合根本收不到。 */
+#stage canvas { display: block; touch-action: none; user-select: none; }
+
+/* 手动视野时才出现的「回到自动取景」按钮 */
+#viewReset {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 6;
+  padding: 5px 10px;
+  font-size: 12px;
+  border-radius: 7px;
+  background: rgba(14, 19, 14, .86);
+  border: 1px solid var(--line-2);
+  color: var(--text);
+  cursor: pointer;
+  backdrop-filter: blur(3px);
+}
+#viewReset:hover { background: #202a20; border-color: #55684f; }
 
 #toast {
   position: absolute;

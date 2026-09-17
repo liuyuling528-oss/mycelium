@@ -99,25 +99,64 @@
   function canvas() { return document.querySelector('#game canvas'); }
 
   /* 世界格 -> 屏幕坐标。
-   * 不要假设「画布 CSS 尺寸 == 内部尺寸」，也不要假设「摄像机缩放 == 1」——
-   * 现在画布是 Scale.RESIZE + 摄像机自适应缩放，这两个假设都不成立，写死比例必然点偏。
-   * 这里用 cam.getWorldPoint 做两点标定，先求出「画布像素 -> 世界」的仿射映射再取逆，
-   * 于是跟 Phaser 内部的缩放/滚动实现完全解耦。 */
+   *
+   * 用**场景自己维护的视野状态**（viewZoom / viewCx / viewCy）来算，而不是
+   * cam.worldView / cam.getWorldPoint —— 后者只在渲染阶段更新，headless 下
+   * 经常比刚设置的值旧一帧（rAF 很稀疏），算出来的坐标会整体偏掉，
+   * 表现成「点击落在别的格子上」这种极难判断的假失败。
+   *
+   * 公式与摄像机一致：世界点 = 视野中心 + (画布点 - 画布中心)/zoom。
+   */
   function cellToClient(x, y) {
+    var G = window.MYC.CONFIG.GRID;
+    var sc = window.MYC.game.scene;
+    var cv = canvas(), r = cv.getBoundingClientRect();
+    var z = sc.viewZoom, cw = sc.scale.width, ch = sc.scale.height;
+    var wx = G.OX + x * G.CELL + G.CELL / 2;
+    var wy = G.OY + y * G.CELL + G.CELL / 2;
+    var ix = (wx - (sc.viewCx - cw / 2 / z)) * z;      // 画布内部像素
+    var iy = (wy - (sc.viewCy - ch / 2 / z)) * z;
+    return {
+      x: r.left + ix * (r.width / cv.width),
+      y: r.top + iy * (r.height / cv.height),
+      inside: true
+    };
+  }
+
+  /* 同一件事走摄像机那条路再算一遍，专门用来交叉验证「摄像机确实在
+   * 场景以为的位置」。只在视野稳定的时刻调用。 */
+  function cellToClientViaCamera(x, y) {
     var G = window.MYC.CONFIG.GRID;
     var cam = window.MYC.game.scene.cameras.main;
     var cv = canvas(), r = cv.getBoundingClientRect();
     var o = cam.getWorldPoint(0, 0);
     var ex = cam.getWorldPoint(1, 0);
     var ey = cam.getWorldPoint(0, 1);
-    var kx = 1 / (ex.x - o.x);        // 1 画布像素 = 1/kx 个世界单位
-    var ky = 1 / (ey.y - o.y);
+    var kx = 1 / (ex.x - o.x), ky = 1 / (ey.y - o.y);
     var wx = G.OX + x * G.CELL + G.CELL / 2;
     var wy = G.OY + y * G.CELL + G.CELL / 2;
     return {
       x: r.left + (wx - o.x) * kx * (r.width / cv.width),
-      y: r.top + (wy - o.y) * ky * (r.height / cv.height),
-      inside: true
+      y: r.top + (wy - o.y) * ky * (r.height / cv.height)
+    };
+  }
+
+  /* 当前可见的世界矩形（同样只看场景状态，不依赖摄像机是否已渲染） */
+  function viewRect() {
+    var sc = window.MYC.game.scene;
+    var w = sc.scale.width / sc.viewZoom, h = sc.scale.height / sc.viewZoom;
+    return { left: sc.viewCx - w / 2, right: sc.viewCx + w / 2,
+             top: sc.viewCy - h / 2, bottom: sc.viewCy + h / 2 };
+  }
+
+  /* 可见范围内的格子范围（往里缩一格，保证格子整个在画面里） */
+  function visibleCells() {
+    var G = window.MYC.CONFIG.GRID, v = viewRect();
+    return {
+      x0: Math.max(0, Math.floor((v.left - G.OX) / G.CELL) + 1),
+      x1: Math.min(G.W - 1, Math.ceil((v.right - G.OX) / G.CELL) - 1),
+      y0: Math.max(0, Math.floor((v.top - G.OY) / G.CELL) + 1),
+      y1: Math.min(G.H - 1, Math.ceil((v.bottom - G.OY) / G.CELL) - 1)
     };
   }
 
@@ -507,11 +546,8 @@
 
     /* 只在「当前视野内」找目标格 —— 视野外的格子点不到（客户端坐标落在画布外），
      * 上一次就是因为挑到地图顶部的格子才误判成坐标换算错误。 */
-    var v = window.MYC.game.scene.cameras.main.worldView;
-    var x0 = Math.max(0, Math.floor((v.left - G.OX) / G.CELL) + 1);
-    var x1 = Math.min(G.W - 1, Math.ceil((v.right - G.OX) / G.CELL) - 1);
-    var y0 = Math.max(0, Math.floor((v.top - G.OY) / G.CELL) + 1);
-    var y1 = Math.min(G.H - 1, Math.ceil((v.bottom - G.OY) / G.CELL) - 1);
+    var rng = visibleCells();
+    var x0 = rng.x0, x1 = rng.x1, y0 = rng.y0, y1 = rng.y1;
 
     // 目标：自己长不了、但紧邻一格能长 —— 正是手指点偏一格的情形。
     // 另外 8 个邻居都不能已经是节点，否则容差会先去「强化」那个节点，节点数就不涨了。
@@ -578,6 +614,20 @@
        '  视野 x ' + Math.round(v.left) + '..' + Math.round(v.right));
   });
 
+  /* 交叉验证：cellToClient 用的是场景自己维护的视野状态，
+   * 这里用摄像机那条路（getWorldPoint）再算一遍同一格，两条路必须一致。
+   * 不一致就说明「摄像机不在场景以为的位置」—— 那是比点击点偏严重得多的 bug。 */
+  step(function () {
+    var sc = window.MYC.game.scene, st = window.MYC.game.state;
+    if (!S.ctrl) return;
+    var a = cellToClient(S.ctrl.x, S.ctrl.y);
+    var b = cellToClientViaCamera(S.ctrl.x, S.ctrl.y);
+    var d = Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+    ok('摄像机与场景视野状态一致（两条换算路径互证）', d < 2,
+       '两条路径的差 ' + d.toFixed(2) + 'px（cell ' +
+       S.ctrl.x + ',' + S.ctrl.y + '）');
+  });
+
   step(function () {
     var st = window.MYC.game.state;
     if (!S.ctrl) return;
@@ -625,6 +675,220 @@
     ok('触摸点偏自动落到相邻格', st.nodes.length === S.n1 + 1,
        S.n1 + ' -> ' + st.nodes.length + ' 格');
     sc.touchTolerance = S.touch0;
+    st.autoTimer = 0;
+  });
+
+  /* ---- 手势：滚轮缩放 / 拖拽平移 / 捏合 / 回到自动取景 ---------------------
+   * 手势是「看起来能跑但可能完全没接上」的重灾区，必须走真实事件路径验证。 */
+
+  /* 画布内的相对位置（0..1）→ 页面 client 坐标 */
+  function canvasPoint(fx, fy) {
+    var r = canvas().getBoundingClientRect();
+    return { x: r.left + r.width * fx, y: r.top + r.height * fy };
+  }
+
+  function wheel(pt, deltaY) {
+    canvas().dispatchEvent(new WheelEvent('wheel', {
+      clientX: pt.x, clientY: pt.y, deltaY: deltaY, deltaMode: 0,
+      bubbles: true, cancelable: true, view: window
+    }));
+  }
+
+  /* 捏合用原生 TouchEvent 造两指 —— 游戏里就是直接监听原生 touch 的，测同一条路径 */
+  function touch(eventType, pts) {
+    var cv = canvas();
+    var list = pts.map(function (p, i) {
+      return new Touch({ identifier: i + 1, target: cv, clientX: p.x, clientY: p.y });
+    });
+    cv.dispatchEvent(new TouchEvent(eventType, {
+      touches: eventType === 'touchend' ? [] : list,
+      targetTouches: eventType === 'touchend' ? [] : list,
+      changedTouches: list,
+      bubbles: true, cancelable: true, view: window
+    }));
+  }
+
+  /* 按下 / 移动 / 抬起分开派发，这样才拖得起来（clickAt 是 down+up 一次性发的） */
+  var DOWN_TYPES = ['pointerover', 'pointermove', 'mouseover', 'mousemove', 'pointerdown', 'mousedown'];
+  var MOVE_TYPES = ['pointermove', 'mousemove'];
+  var UP_TYPES = ['pointerup', 'mouseup'];
+  function press(pt) { DOWN_TYPES.forEach(function (t) { fire(t, pt); }); }
+  function dragTo(pt) { MOVE_TYPES.forEach(function (t) { fire(t, pt); }); }
+  function release(pt) { UP_TYPES.forEach(function (t) { fire(t, pt); }); }
+
+  step(function () {
+    var sc = window.MYC.game.scene;
+    /* 锚点故意放在偏离中心的位置 —— 用画布正中心测锚点，
+     * 中心缩放本来就是「不动」的，验不出锚点算错。 */
+    S.p = canvasPoint(0.35, 0.4);
+    var pt = sc.clientToCanvas(S.p.x, S.p.y);
+    // 记下缩放前的视野状态，锚点不变式用纯算术核对（不读摄像机，
+    // 因为 cam.worldView 只在渲染时更新，headless 下经常比刚设的值旧一帧）
+    S.anchor = {
+      sx: pt.x, sy: pt.y,
+      mx: sc.scale.width / 2, my: sc.scale.height / 2,
+      z0: sc.viewZoom, cx0: sc.viewCx, cy0: sc.viewCy
+    };
+    S.zoom0 = sc.viewZoom;
+    wheel(S.p, -300);                    // 向上滚 = 放大
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene;
+    ok('滚轮能放大', sc.viewZoom > S.zoom0 * 1.2,
+       'zoom ' + S.zoom0.toFixed(3) + ' → ' + sc.viewZoom.toFixed(3));
+    ok('手动缩放后切到「手动视野」', sc.viewMode === 'manual', 'viewMode=' + sc.viewMode);
+
+    var btn = document.getElementById('viewReset');
+    ok('「回到自动取景」按钮显出来', !!btn && !btn.classList.contains('hidden'),
+       btn ? ('hidden=' + btn.classList.contains('hidden')) : '按钮不存在');
+
+    /* 锚点不变式：屏幕点 s 底下的世界点，缩放前后必须是同一个。
+     *   世界点 = 视野中心 + (s - 画布中心) / zoom
+     * 由此反推缩放后的视野中心应该是多少，跟实际值比。 */
+    var A = S.anchor;
+    var ax = A.cx0 + (A.sx - A.mx) / A.z0;
+    var ay = A.cy0 + (A.sy - A.my) / A.z0;
+    var ex = ax - (A.sx - A.mx) / sc.viewZoom;
+    var ey = ay - (A.sy - A.my) / sc.viewZoom;
+    var drift = Math.max(Math.abs(ex - sc.viewCx), Math.abs(ey - sc.viewCy));
+    ok('缩放锚在指针位置（手感才对）', drift < 1.5,
+       '中心应在 (' + ex.toFixed(1) + ',' + ey.toFixed(1) + ')，实际 (' +
+       sc.viewCx.toFixed(1) + ',' + sc.viewCy.toFixed(1) + ')，偏移 ' + drift.toFixed(2));
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene, st = window.MYC.game.state;
+    st.autoTimer = -1e6;                 // 冻住自动蔓延，节点数断言才准
+    S.dg = { cx: sc.viewCx, cy: sc.viewCy, n: st.nodes.length };
+    S.from = canvasPoint(0.5, 0.5);
+    press(S.from);
+    dragTo({ x: S.from.x + 34, y: S.from.y + 20 });
+    S.to = { x: S.from.x + 96, y: S.from.y + 58 };
+    dragTo(S.to);
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene, st = window.MYC.game.state;
+    release(S.to);
+    var dx = Math.abs(sc.viewCx - S.dg.cx), dy = Math.abs(sc.viewCy - S.dg.cy);
+    ok('拖拽能平移视野', dx > 5 || dy > 5,
+       '中心移动 Δ(' + dx.toFixed(1) + ',' + dy.toFixed(1) + ') 世界单位');
+    // 这是重点：操作改到「抬起时判定」之后，拖动绝不能顺手长出一格
+    ok('拖拽不会误触长出一格', st.nodes.length === S.dg.n,
+       S.dg.n + ' -> ' + st.nodes.length + ' 格');
+    st.autoTimer = 0;
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene;
+    /* 先把缩放放回中间档：轮子测试已经把 zoom 顶到上限 2.4，
+     * 不退回来捏合就「没余量可放大」，会假失败。 */
+    var lim = sc.zoomLimits();
+    sc.setView((lim.min + lim.max) / 2, sc.viewCx, sc.viewCy);
+    S.pz = sc.viewZoom;
+    var c = canvasPoint(0.5, 0.5);
+    var a0 = { x: c.x - 40, y: c.y }, b0 = { x: c.x + 40, y: c.y };
+    touch('touchstart', [a0, b0]);
+    touch('touchmove', [{ x: c.x - 50, y: c.y }, { x: c.x + 50, y: c.y }]);   // 第一次只建立基准
+    touch('touchmove', [{ x: c.x - 90, y: c.y }, { x: c.x + 90, y: c.y }]);   // 这一次才真正放大
+    touch('touchend', []);
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene;
+    ok('捏合能放大', sc.viewZoom > S.pz * 1.2,
+       'zoom ' + S.pz.toFixed(3) + ' → ' + sc.viewZoom.toFixed(3));
+    ok('捏合后仍是手动视野', sc.viewMode === 'manual', 'viewMode=' + sc.viewMode);
+    ok('捏合结束不会残留卡住状态', sc.pinching === false, 'pinching=' + sc.pinching);
+    ok('捏合的手指登记表已清空', sc.pinchPtr.size === 0, 'pinchPtr=' + sc.pinchPtr.size);
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene;
+    var lim = sc.zoomLimits();
+    for (var i = 0; i < 40; i++) wheel(canvasPoint(0.5, 0.5), 400);   // 一路缩到最小
+    S.lim = lim;
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene, G = window.MYC.CONFIG.GRID;
+    var lim = sc.zoomLimits();
+    ok('缩放被夹在下限内（不会缩到什么都看不见）', sc.viewZoom >= lim.min - 1e-6,
+       'zoom=' + sc.viewZoom.toFixed(3) + '  下限=' + lim.min.toFixed(3));
+
+    for (var i = 0; i < 30; i++) sc.panBy(4000, 4000);               // 一路拖到天边
+    var worldW = G.OX * 2 + G.W * G.CELL, worldH = G.OY * 2 + G.H * G.CELL;
+    var hw = sc.scale.width / 2 / sc.viewZoom, hh = sc.scale.height / 2 / sc.viewZoom;
+    var okX = hw * 2 >= worldW || (sc.viewCx >= hw - 0.51 && sc.viewCx <= worldW - hw + 0.51);
+    var okY = hh * 2 >= worldH || (sc.viewCy >= hh - 0.51 && sc.viewCy <= worldH - hh + 0.51);
+    ok('拖动不会把地图拖出画面外（夹在世界内）', okX && okY,
+       '中心 (' + sc.viewCx.toFixed(0) + ',' + sc.viewCy.toFixed(0) + ')  世界 ' + worldW + '×' + worldH);
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene;
+    S.beforeReset = sc.viewZoom;
+    document.getElementById('viewReset').click();
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene;
+    ok('点按钮回到自动取景', sc.viewMode === 'auto', 'viewMode=' + sc.viewMode);
+    ok('按钮随之隐藏', document.getElementById('viewReset').classList.contains('hidden'),
+       'hidden=' + document.getElementById('viewReset').classList.contains('hidden'));
+    S.tgt = sc.targetView();
+    S.dist0 = Math.abs(sc.viewZoom - S.tgt.zoom);
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene;
+    var d = Math.abs(sc.viewZoom - S.tgt.zoom);
+    ok('视野朝自动取景缓动（而不是卡住不动）',
+       d <= S.dist0 + 1e-6,
+       '距目标 ' + S.dist0.toFixed(3) + ' → ' + d.toFixed(3) +
+       '（zoom ' + sc.viewZoom.toFixed(2) + ' → ' + S.tgt.zoom.toFixed(2) + '）');
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene, st = window.MYC.game.state, Sim = S.Sim;
+    st.autoTimer = -1e6;
+    st.res.water = 50000;
+    // 折腾完这一堆手势之后，普通点击必须仍然有效 —— 输入状态别被拖坏
+    var G = window.MYC.CONFIG.GRID;
+    var rng = visibleCells();
+    var x0 = rng.x0, x1 = rng.x1, y0 = rng.y0, y1 = rng.y1;
+    var target = null;
+    for (var y = y0; y <= y1 && !target; y++) {
+      for (var x = x0; x <= x1; x++) {
+        if (st.grid[Sim.idx(x, y)].node == null && Sim.canGrowAt(st, x, y)) { target = { x: x, y: y }; break; }
+      }
+    }
+    S.after = { n: st.nodes.length, target: target };
+    if (target) clickAt(cellToClient(target.x, target.y));
+  });
+
+  step(function () {
+    var sc = window.MYC.game.scene, st = window.MYC.game.state, Sim = S.Sim;
+    if (!S.after || !S.after.target) return;
+    var t = S.after.target;
+    // 诊断：绕过事件路径直接调 tryAct，看是「游戏逻辑拒绝」还是「事件没送达」。
+    // 注意这行自己也会长一格/强一格，所以它必须放在计数断言**之后**判读。
+    var r = sc.tryAct(t);
+    R.push('  DIAG tryAct(' + t.x + ',' + t.y + ') -> ' + JSON.stringify(r) +
+           ' | water=' + Math.round(st.res.water) +
+           ' | 该格已有节点=' + (st.grid[Sim.idx(t.x, t.y)].node != null) +
+           ' | drag=' + !!sc.drag + ' pinching=' + sc.pinching +
+           ' | pinchPtr=' + sc.pinchPtr.size + ' suppressPtr=' + sc.suppressPtr.size +
+           ' | touchTol=' + sc.touchTolerance +
+           ' | viewMode=' + sc.viewMode + ' zoom=' + sc.viewZoom.toFixed(2));
+  });
+
+  step(function () {
+    var st = window.MYC.game.state;
+    if (!S.after.target) { ok('手势之后仍能找到可点击的格子', false, '视野内没有可生长的格'); return; }
+    ok('折腾完手势后，点击依然长得出菌丝', st.nodes.length === S.after.n + 1,
+       S.after.n + ' -> ' + st.nodes.length + ' 格');
     st.autoTimer = 0;
   });
 

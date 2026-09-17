@@ -98,8 +98,18 @@
         padding: { x: 7, y: 5 }
       }).setDepth(50).setVisible(false);
 
+      this.input.on('pointerdown', (p) => this.onDown(p));
       this.input.on('pointermove', (p) => this.onMove(p));
-      this.input.on('pointerdown', (p) => this.onClick(p));
+      this.input.on('pointerup', (p) => this.onUp(p));
+      this.input.on('wheel', (p, objs, dx, dy) => this.onWheel(p, dy));
+
+      /* 捏合缩放走原生 touch 事件，不依赖 Phaser 的多指指针管理：
+       * 两指的触摸序列在不同环境下映射不一致，自己算两指距离最稳，也最好测。 */
+      var cv = this.sys.game.canvas;
+      cv.addEventListener('touchstart', (e) => this.onTouchStart(e), { passive: false });
+      cv.addEventListener('touchmove', (e) => this.onTouchMove(e), { passive: false });
+      cv.addEventListener('touchend', (e) => this.onTouchEnd(e));
+      cv.addEventListener('touchcancel', (e) => this.onTouchEnd(e));
 
       this.cameras.main.setBackgroundColor('#060806');
 
@@ -108,8 +118,31 @@
       this.viewZoom = 1;
       this.viewCx = WORLD_W / 2;
       this.viewCy = WORLD_H / 2;
+      /* 'auto'   跟着网络自动取景（默认，缓动）
+       * 'manual' 用户自己缩放过/拖过，镜头交还给用户。
+       * 一旦手动操作就必须停掉自动取景 —— 否则每帧的自动缓动会立刻把用户的操作顶回去，
+       * 用起来像「镜头在跟你抢」。 */
+      this.viewMode = 'auto';
+      this.drag = null;           // 单指/鼠标拖拽状态
+      this.pinch = null;          // 捏合过程中的上一帧参考值
+      this.pinching = false;
+      /* 捏合过程中按下的手指，它们的 pointerup 一律不算点击。
+       * 关键：**不能用「时间窗」做这件事** —— 冷却走的是游戏时间，
+       * rAF 一停（标签页切后台、headless 下帧稀疏）时间就不走了，
+       * 400ms 的窗口永远不过期，用户回来之后怎么点都没反应（实测踩过）。 */
+      this.pinchPtr = new Set();      // 捏合期间处于按下状态的指针
+      this.suppressPtr = new Set();   // 等待其 pointerup 的被抑制指针
+      this.dragSlop = 6;          // 位移超过这么多像素才算拖拽，而不是点击
+
       this.scale.on('resize', () => this.snapView(), this);
       this.snapView();
+
+      /* 「回到自动取景」按钮：只在手动模式下显出来 */
+      this.viewResetBtn = document.getElementById('viewReset');
+      if (this.viewResetBtn) {
+        this.viewResetBtn.addEventListener('click', () => this.resetView());
+      }
+      this.syncViewBtn();
 
       /* 手机上报「点了但没生效」多半是格子太小点偏了。
        * 触摸时给一点容差：精确格没东西可做，就找邻近一格。 */
@@ -171,6 +204,11 @@
 
     /* 把缓动值对齐到目标（窗口尺寸变化时立刻跟上，不要看到漂移） */
     snapView() {
+      if (this.viewMode === 'manual') {
+        // 画布尺寸变了 → 合法范围也变了，把手动视野重新夹一遍（别把地图拖到画面外）
+        this.setView(this.viewZoom, this.viewCx, this.viewCy);
+        return;
+      }
       var t = this.targetView();
       this.viewZoom = t.zoom;
       this.viewCx = t.cx;
@@ -184,8 +222,90 @@
       cam.centerOn(this.viewCx, this.viewCy);
     }
 
-    /* 每帧朝目标缓动。不直接跳变：网络扩张时视野缓缓拉开，观感好得多。 */
+    /* --------------------------------------------------------------- 手动视野
+     * 缩放范围：下限比「整张地图刚好装下」再放一点（方便看全局），
+     * 上限约每格 2.4 倍（≈62px）—— 再大就只剩几个格子，没有意义。
+     * 中心始终夹在世界内：拖动不能把地图拖出画面外就找不回来了。
+     */
+    zoomLimits() {
+      var availW = this.scale.width || WORLD_W;
+      var availH = this.scale.height || WORLD_H;
+      var whole = Math.min(availW / WORLD_W, availH / WORLD_H);
+      var ratio = (this.scale.displaySize.width / this.scale.width) || 1;
+      return { min: whole * 0.85, max: Math.max(whole, 2.4 / ratio) };
+    }
+
+    setView(zoom, cx, cy) {
+      var lim = this.zoomLimits();
+      var availW = this.scale.width || WORLD_W;
+      var availH = this.scale.height || WORLD_H;
+      var z = Phaser.Math.Clamp(zoom, lim.min, lim.max);
+      this.viewMode = 'manual';
+      this.viewZoom = z;
+      this.viewCx = clampCenter(cx, availW / z, WORLD_W);
+      this.viewCy = clampCenter(cy, availH / z, WORLD_H);
+      this.applyView();
+      this.syncViewBtn();
+    }
+
+    /* 画布内部像素 → 世界坐标 */
+    toWorld(sx, sy) {
+      var cam = this.cameras.main, v = cam.worldView;
+      return { x: v.x + sx / cam.zoom, y: v.y + sy / cam.zoom };
+    }
+
+    /* 以屏幕上某点为锚点缩放：该点下面的世界坐标保持不动，手感才对 */
+    zoomAtScreen(f, sx, sy) {
+      var a = this.toWorld(sx, sy);
+      var lim = this.zoomLimits();
+      var z1 = Phaser.Math.Clamp(this.viewZoom * f, lim.min, lim.max);
+      if (Math.abs(z1 - this.viewZoom) < 1e-6) return false;
+      var k = this.viewZoom / z1;
+      this.setView(z1, a.x + (this.viewCx - a.x) * k, a.y + (this.viewCy - a.y) * k);
+      this.noteManual();
+      return true;
+    }
+
+    /* 拖动平移：屏幕位移换算成世界位移，方向相反 */
+    panBy(dxPx, dyPx) {
+      var z = this.viewZoom || 1;
+      this.setView(z, this.viewCx - dxPx / z, this.viewCy - dyPx / z);
+    }
+
+    /* 切到手动视野时提示一次 —— 否则用户会以为镜头「坏了，不跟着网络了」 */
+    noteManual() {
+      if (this.manualHinted) return;
+      this.manualHinted = true;
+      if (window.MYC.game.ui) {
+        window.MYC.game.ui.toast('已切到手动视野，点右上角 ⟲ 回到自动取景');
+      }
+    }
+
+    resetView() {
+      this.viewMode = 'auto';
+      this.syncViewBtn();
+      if (window.MYC.game.ui) window.MYC.game.ui.toast('已回到自动取景');
+    }
+
+    syncViewBtn() {
+      if (this.viewResetBtn) {
+        this.viewResetBtn.classList.toggle('hidden', this.viewMode !== 'manual');
+      }
+    }
+
+    /* DOM client 坐标 → 画布内部像素（自己算，不依赖 Phaser 的换算） */
+    clientToCanvas(cx, cy) {
+      var cv = this.sys.game.canvas, r = cv.getBoundingClientRect();
+      return {
+        x: (cx - r.left) * ((this.scale.width || r.width) / (r.width || 1)),
+        y: (cy - r.top) * ((this.scale.height || r.height) / (r.height || 1))
+      };
+    }
+
+    /* 每帧朝目标缓动。不直接跳变：网络扩张时视野缓缓拉开，观感好得多。
+     * 手动模式下完全不碰镜头 —— 否则用户刚拖到的位置下一帧就被自动取景拽回去。 */
     easeView() {
+      if (this.viewMode === 'manual') return;
       var t = this.targetView();
       var k = 0.12;
       this.viewZoom += (t.zoom - this.viewZoom) * k;
@@ -195,15 +315,142 @@
     }
 
     // ---------------------------------------------------------------- 输入
-    cellFromPointer(p) {
-      var gx = Math.floor((p.worldX - GRID.OX) / GRID.CELL);
-      var gy = Math.floor((p.worldY - GRID.OY) / GRID.CELL);
+    /* 屏幕（画布内部像素）→ 世界坐标。
+     *
+     * 这里刻意**不**用 p.worldX / cam.worldView：那两个值由 Phaser 在渲染阶段
+     * 写入，缩放或拖动进行中时读到的是旧一帧的矩阵，快速操作时点击会飘到
+     * 别的格子上。场景自己的 viewZoom / viewCx / viewCy 是权威来源，
+     * 每次手势都同步更新，永远和画面一致。
+     */
+    screenToWorldView(sx, sy) {
+      var z = this.viewZoom || 1;
+      var w = (this.scale.width || WORLD_W) / z;
+      var h = (this.scale.height || WORLD_H) / z;
+      return { x: this.viewCx - w / 2 + sx / z, y: this.viewCy - h / 2 + sy / z };
+    }
+
+    cellFromWorld(w) {
+      var gx = Math.floor((w.x - GRID.OX) / GRID.CELL);
+      var gy = Math.floor((w.y - GRID.OY) / GRID.CELL);
       if (gx < 0 || gy < 0 || gx >= GRID.W || gy >= GRID.H) return null;
       return { x: gx, y: gy };
     }
 
+    cellFromPointer(p) {
+      return this.cellFromWorld(this.screenToWorldView(p.x, p.y));
+    }
+
+    /* ---------------------------------------------------------------- 手势
+     * 单指 / 鼠标：拖 = 平移，点 = 操作。
+     * 「操作」必须放在**抬起**时判定 —— 如果按下就执行，拖动一下就会顺手长出一格。
+     * 判定标准：位移不超过 dragSlop、没参与过捏合。
+     */
+    onDown(p) {
+      // 这根手指是在捏合过程中按下的：它的抬起一律不算点击
+      if (this.pinching) { this.pinchPtr.add(p.id); this.drag = null; return; }
+      // 记下「按下的那一格」：抬起时按同一格执行。
+      // 拖动过程中镜头会动，用抬起时的坐标去算会飘到旁边的格上。
+      this.downCell = this.cellFromPointer(p);
+      this.drag = {
+        pointer: p, sx: p.x, sy: p.y, lx: p.x, ly: p.y,
+        moved: 0
+      };
+    }
+
     onMove(p) {
-      var c = this.cellFromPointer(p);
+      // 捏合期间镜头由原生 touch 处理器独占，这里别插手
+      if (this.pinching) {
+        this.drag = null; this.hover = null; this.tip.setVisible(false);
+        return;
+      }
+
+      var d = this.drag;
+      if (d && d.pointer === p) {
+        var dx = p.x - d.lx, dy = p.y - d.ly;
+        d.lx = p.x; d.ly = p.y;
+        d.moved = Math.max(d.moved, Math.abs(p.x - d.sx), Math.abs(p.y - d.sy));
+        if (d.moved > this.dragSlop) {
+          this.panBy(dx, dy);
+          this.hover = null;
+          this.tip.setVisible(false);
+          this.noteManual();
+          return;
+        }
+      }
+      this.showHover(p);
+    }
+
+    onUp(p) {
+      var d = this.drag;
+      this.drag = null;
+      // 捏合期间按下/按住的手指：只清除标记，绝不当成点击
+      if (this.suppressPtr.has(p.id)) { this.suppressPtr.delete(p.id); return; }
+      if (!d || d.pointer !== p) return;
+      if (d.moved > this.dragSlop) return;
+      this.tapAt(this.downCell);
+    }
+
+    /* 滚轮缩放，以指针位置为锚点 */
+    onWheel(p, dy) {
+      if (!dy) return;
+      var f = Math.pow(1.0018, -dy);               // 向上滚 = 放大
+      if (this.zoomAtScreen(f, p.x, p.y)) this.noteManual();
+    }
+
+    /* ---- 捏合缩放 / 双指平移（原生 touch，理由见 create 里的注释）---- */
+    onTouchStart(e) {
+      if (e.touches.length < 2) return;
+      this.pinching = true;
+      this.pinch = null;
+      this.drag = null;
+      this.hover = null;
+      this.tip.setVisible(false);
+      // 现在按着的每根手指都算「捏合的手指」，它们的 up 都不作数
+      var ps = this.input.manager.pointers || [];
+      for (var i = 0; i < ps.length; i++) {
+        if (ps[i].isDown) this.pinchPtr.add(ps[i].id);
+      }
+      if (e.cancelable) e.preventDefault();
+    }
+
+    onTouchMove(e) {
+      if (e.touches.length < 2) return;
+      if (e.cancelable) e.preventDefault();        // 别让浏览器去滚页面 / 缩页面
+      var a = this.clientToCanvas(e.touches[0].clientX, e.touches[0].clientY);
+      var b = this.clientToCanvas(e.touches[1].clientX, e.touches[1].clientY);
+      var d = Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y));
+      var mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      if (!this.pinch) { this.pinch = { d: d, mx: mx, my: my }; return; }
+
+      // 先按两指中点的位移平移，再按两指距离的变化缩放 —— 这是捏合的标准手感
+      var moved = false;
+      if (Math.abs(mx - this.pinch.mx) > 0.5 || Math.abs(my - this.pinch.my) > 0.5) {
+        this.panBy(mx - this.pinch.mx, my - this.pinch.my);
+        moved = true;
+      }
+      if (this.pinch.d > 4) {
+        var f = d / this.pinch.d;
+        if (Math.abs(f - 1) > 0.005) { this.zoomAtScreen(f, mx, my); moved = true; }
+      }
+      this.pinch.d = d; this.pinch.mx = mx; this.pinch.my = my;
+      if (moved) this.noteManual();
+    }
+
+    onTouchEnd(e) {
+      if (!this.pinching) return;
+      if (e.touches.length >= 2) return;           // 还有两根以上，捏合继续
+      this.pinching = false;
+      this.pinch = null;
+      // 这几个指针的 up 事件还没来（或刚来过），先记下来拦住
+      var self = this;
+      this.pinchPtr.forEach(function (id) { self.suppressPtr.add(id); });
+      this.pinchPtr.clear();
+    }
+
+    /* 悬停提示（鼠标才看得见；手指挡着的地方不需要） */
+    showHover(p) {
+      var w = this.screenToWorldView(p.x, p.y);
+      var c = this.cellFromWorld(w);
       this.hover = c;
       var st = window.MYC.game.state;
       if (!c || !st) { this.tip.setVisible(false); return; }
@@ -245,11 +492,11 @@
             : '这个节点已满级');
         }
       }
-      this.showTip(p, lines.join('\n'));
+      this.showTip(w, lines.join('\n'));
     }
 
-    showTip(p, text) {
-      this.tipP = { x: p.worldX, y: p.worldY };
+    showTip(w, text) {
+      this.tipP = { x: w.x, y: w.y };
       this.tipText = text;
       this.tip.setVisible(true);
       this.layoutTip();
@@ -261,18 +508,21 @@
      * 只在 showTip 里算一次的话，一次放大动画就能把比例带偏（实测 0.93 而不是 1.0）。 */
     layoutTip() {
       if (!this.tip.visible || !this.tipP) return;
-      var cam = this.cameras.main;
-      var z = cam.zoom || 1;
-      var v = cam.worldView;
+      // 同样只用场景自己的视野状态算边界 —— 不读渲染阶段才更新的 worldView
+      var z = this.viewZoom || 1;
+      var wv = (this.scale.width || WORLD_W) / z;
+      var hv = (this.scale.height || WORLD_H) / z;
+      var L = this.viewCx - wv / 2, T = this.viewCy - hv / 2;
+      var R = L + wv, B = T + hv;
       if (this.tip.text !== this.tipText) this.tip.setText(this.tipText);
       this.tip.setScale(1 / z);
       var w = this.tip.width / z, h = this.tip.height / z;
       var off = 12 / z;
       var x = this.tipP.x + off, y = this.tipP.y + off;
-      if (x + w > v.right) x = this.tipP.x - w - off;
-      if (y + h > v.bottom) y = this.tipP.y - h - off;
-      if (x < v.left) x = v.left;
-      if (y < v.top) y = v.top;
+      if (x + w > R) x = this.tipP.x - w - off;
+      if (y + h > B) y = this.tipP.y - h - off;
+      if (x < L) x = L;
+      if (y < T) y = T;
       this.tip.setPosition(x, y);
     }
 
@@ -318,10 +568,11 @@
       return { ok: false, msg: g.reason };
     }
 
-    onClick(p) {
+    /* 在某一格执行一次「点击」。由 onUp 在确认是点击（而非拖拽/捏合）后调用，
+     * 所以这里拿的是**按下那一格**的坐标，不是抬起坐标。 */
+    tapAt(c) {
       var game = window.MYC.game;
       var st = game.state;
-      var c = this.cellFromPointer(p);
       if (!c || !st) return;
 
       var r = this.tryAct(c);
