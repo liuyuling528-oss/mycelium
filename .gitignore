@@ -11,6 +11,10 @@ desktop.ini
 # 其中的结论都已经整理进 README.md。
 .workbuddy/
 
+# ---- Python ----
+__pycache__/
+*.pyc
+
 # ---- 测试运行的临时产物 ----
 # dom.txt 是 --dump-dom 的原始输出，每次跑自测都会被覆盖，属于中间产物。
 # 注意：tools/autotest_report.txt 与 tools/sim_out.txt 是刻意提交的验证证据。
