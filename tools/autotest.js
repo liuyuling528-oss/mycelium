@@ -983,24 +983,54 @@
     st.autoTimer = 0;
   });
 
+  /* ---- 自动蔓延解锁（m10）------------------------------------------------
+   * 条件是「连上」—— 是否有机发生取决于地图和玩家行为，不能直接当断言。
+   * 所以这里像玩家一样把缺的补齐：优先长缺失基质的候选格，没有就往外铺。
+   * 这样解锁链路才是确定性可测的。 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim;
+    var missing = function () {
+      return ['litter', 'vein', 'wood', 'root'].filter(function (s) {
+        return !st.nodes.some(function (n) { return n.soil === s; });
+      });
+    };
+    st.res.water = 50000;
+    var guard = 0;
+    while (missing().length && guard++ < 80) {
+      var cs = Sim.candidates(st);
+      var pick = null;
+      for (var i = 0; i < cs.length && !pick; i++) {
+        if (missing().indexOf(cs[i].soil) >= 0) pick = cs[i];
+      }
+      if (!pick) pick = cs[0];          // 边界上没有？就随便铺一格把边界推过去
+      if (!pick) break;
+      Sim.growAt(st, pick.x, pick.y);
+    }
+    S.needLeft = missing();
+    ok('补齐解锁条件（像玩家一样长过去）', S.needLeft.length === 0,
+       S.needLeft.length ? ('80 步内没连上 ' + S.needLeft.join('/')) : '全部连上');
+    st.autoTimer = -1e6;
+    Sim.tick(st, 0.05);                 // 条件补齐后，checkMilestones 在下一次 tick 发奖
+  });
+
+  step(function () {
+    var st = window.MYC.game.state;
+    if (S.needLeft && S.needLeft.length) {
+      R.push('  SKIP 有机解锁：地图运气太差，没能在 80 步内连齐 4 种基质');
+      return;
+    }
+    ok('连齐 4 种基质后 m10 自动解锁自动蔓延',
+       !!st.milestones.m10 && st.autoGrow === true,
+       'm10=' + !!st.milestones.m10 + '  autoGrow=' + st.autoGrow);
+    ok('解锁后开关恢复可用', document.getElementById('autoGrow').disabled === false,
+       'disabled=' + document.getElementById('autoGrow').disabled);
+    st.autoTimer = 0;
+  });
+
   /* ---- 转生换图 ----------------------------------------------------------
    * 必须放在最后：转生会把网络重置成核心一格，后面的测试都依赖大网络。 */
   step(function () {
     var st = window.MYC.game.state, Sim = S.Sim;
-    /* 有机解锁检查：测试跑到这里网络早已探过全部 4 种基质，
-     * m10 必须已经自己解锁（而不是靠谁手动置位）。 */
-    var ds = st.discoveredSoils || {};
-    /* m10 条件是「连上」：网络里必须有长在 4 种基质上的节点 */
-    var conAll = ['litter', 'vein', 'wood', 'root'].every(function (s) {
-      return st.nodes.some(function (n) { return n.soil === s; });
-    });
-    ok('四种基质在测试期间都被连上', conAll,
-       'discoveredSoils=' + JSON.stringify(ds) + '  节点 ' + st.nodes.length + ' 格');
-    ok('m10 已自动解锁自动蔓延', !!st.milestones.m10 && st.autoGrow === true,
-       'm10=' + !!st.milestones.m10 + '  autoGrow=' + st.autoGrow);
-    ok('解锁后开关恢复可用', document.getElementById('autoGrow').disabled === false,
-       'disabled=' + document.getElementById('autoGrow').disabled);
-
     S.p0 = { prestiges: st.prestiges, mapW: st.mapW, mapH: st.mapH, seed: st.seed,
              nodes: st.nodes.length, knowledge: Object.keys(st.knowledge).length };
     st.res.spore = 1e9;              // 强制满足转生条件
@@ -1034,8 +1064,12 @@
        '，实际 ' + st.mapW + '×' + st.mapH);
 
     var sc = window.MYC.game.scene;
-    ok('场景缓存已随换图重置', sc.lastSoilSig === null && sc.viewMode === 'auto',
-       'soilSig=' + sc.lastSoilSig + ' viewMode=' + sc.viewMode);
+    /* 断言「场景已感知到换图」用 seenMapW（onMapChanged 同步写入），
+     * 别用 lastSoilSig === null —— 那只在「换图后一帧都没渲染」时成立。 */
+    ok('场景已感知换图（缓存与镜头已重置）',
+       sc.seenMapW === st.mapW && sc.seenMapH === st.mapH && sc.viewMode === 'auto',
+       'seen=' + sc.seenMapW + '×' + sc.seenMapH + '  实际=' + st.mapW + '×' + st.mapH +
+       '  viewMode=' + sc.viewMode);
   });
 
   step(function () {

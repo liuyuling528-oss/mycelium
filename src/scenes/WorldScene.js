@@ -137,8 +137,6 @@
        * 一旦手动操作就必须停掉自动取景 —— 否则每帧的自动缓动会立刻把用户的操作顶回去，
        * 用起来像「镜头在跟你抢」。 */
       this.viewMode = 'auto';
-      this.seenMapW = mapSize().w;   // 转生换图检测用：地图尺寸一变就重置场景
-      this.seenMapH = mapSize().h;
       this.drag = null;           // 单指/鼠标拖拽状态
       this.pinch = null;          // 捏合过程中的上一帧参考值
       this.pinching = false;
@@ -159,6 +157,7 @@
         this.viewResetBtn.addEventListener('click', () => this.resetView());
       }
       this.syncViewBtn();
+      this.onMapChanged();      // 顺带初始化 seenMapW/H（也把各缓存归零）
 
       /* 手机上报「点了但没生效」多半是格子太小点偏了。
        * 触摸时给一点容差：精确格没东西可做，就找邻近一格。 */
@@ -525,8 +524,11 @@
       this.showTip(w, lines.join('\n'));
     }
 
-    /* 转生换图后由 UI 调用：地图尺寸/地形全变了，缓存与镜头都得重来 */
+    /* 转生换图后由 UI / update() 的尺寸检测调用：
+     * 地图尺寸/地形全变了，缓存与镜头都得重来。 */
     onMapChanged() {
+      this.seenMapW = mapSize().w;
+      this.seenMapH = mapSize().h;
       this.lastKnown = -1;
       this.lastSoilSig = null;
       this.lastNodeCount = 0;
