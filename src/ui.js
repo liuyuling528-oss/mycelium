@@ -414,13 +414,33 @@ var UI = (function () {
     return out.join('，');
   }
 
-  /* 供外部调用：把已保存的进度重新挂到面板上 */
+  /* 供外部调用：把已保存的进度重新挂到面板上。
+   *
+   * 【为什么这里是「直接落值」而不是「把 memo 置空」】
+   * 自动蔓延开关的刷新靠 `lastAgLocked` 这个 memo 做增量
+   * （见 update() 里的 `if (agLocked !== lastAgLocked)`）。
+   * 早先这里只写 `lastAgLocked = null`，指望下一次 update 重算 ——
+   * 那是个**假值哨兵陷阱**：重置成一个存档恰好未解锁 m10 时，
+   * 下一次比较是 `false !== null` → 成立，于是分支进去做了
+   * `lastAgLocked = false` 就退出，**重算代码根本没被执行到**
+   * （赋值块在同一分支内，而且用的是刚换掉的旧 state）。
+   * 表现：载入旧存档 / 测试重置后，开关的灰化状态与文案残留上一局的。
+   * 所以 rebind 必须**按新 state 亲自算一遍并落值**，
+   * 让 memo 与真实状态对齐 —— 这样 null 无论何时都不会成为「看起来已初始化」的坑。 */
   function rebind(newState) {
     state = newState;
     window.MYC.game.state = newState;
     seenSoils = {};
-    lastAgLocked = null;              // 强制刷新自动蔓延开关的状态
-    el.autoGrow.checked = newState.autoGrow;
+    /* 直接按新 state 算好并写进 DOM，再同步 memo，不留「等下次刷新」的窗口 */
+    var agLocked = !newState.milestones.m10;
+    lastAgLocked = agLocked;
+    el.autoGrow.disabled = agLocked;
+    el.autoGrowRow.classList.toggle('off', agLocked);
+    el.autoGrowLabel.innerHTML = agLocked
+      ? '自动蔓延<span class="hint" style="display:inline">（未解锁 —— 连上 4 种特殊基质，且菌丝达到 ' +
+        C.GROW.autoUnlockNodes + ' 格）</span>'
+      : '自动蔓延<span class="hint" style="display:inline">（关掉则只靠你手动点）</span>';
+    el.autoGrow.checked = agLocked ? false : !!newState.autoGrow;
     el.policy.value = newState.policy;
     updatePolicyHint();
     el.seedTxt.textContent = '种子 ' + newState.seed;
