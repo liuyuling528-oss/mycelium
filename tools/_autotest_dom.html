@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>菌丝 Mycelium — 增量放置</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- 地图：由 Phaser 渲染 -->
+  <div id="stage">
+    <div id="game"><canvas width="902" height="779"></canvas></div>
+    <div id="toast" class="">已回到自动取景</div>
+    <!-- 只在「手动视野」时显出来（WorldScene.syncViewBtn 控制） -->
+    <button id="viewReset" class="hidden" title="回到自动取景（跟着网络走）">⟲ 自动取景</button>
+  </div>
+
+  <!-- 右侧面板：HTML/CSS，排版与滚动都比在 canvas 里画靠谱 -->
+  <aside id="panel">
+
+    <div class="card">
+      <div class="title-row">
+        <div class="name">菌丝 <span style="color:var(--muted);font-size:12px">Mycelium</span></div>
+        <div class="clock" id="clock">10:00</div>
+      </div>
+      <p class="hint" style="margin-top:8px">
+        你是森林地表下的一张菌丝网络。点击地图上闪烁的格子来蔓延 ——
+        吸收落叶与腐木的养分，沿水脉取水，连上树根结出孢子。
+        资源必须沿菌丝运回核心，<b>路越远越亏</b>。
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>资源</h2>
+      <div class="res"><span class="dot c-water"></span><span class="label">水分</span>
+        <span class="val" id="vWater">495.7K</span><span class="rate" id="rWater">+57.9/s</span></div>
+      <div class="res"><span class="dot c-nutrient"></span><span class="label">养分</span>
+        <span class="val" id="vNutrient">10.01M</span><span class="rate" id="rNutrient">+68.3/s</span></div>
+      <div class="res"><span class="dot c-spore"></span><span class="label">孢子</span>
+        <span class="val" id="vSpore">354</span><span class="rate" id="rSpore">+3.19/s</span></div>
+    </div>
+
+    <div class="card">
+      <h2>网络</h2>
+      <div class="stats">
+        <div><span>菌丝</span><b id="sNodes">250</b></div>
+        <div><span>离核最远</span><b id="sDist">13</b></div>
+        <div><span>拥堵损耗</span><b id="sLost">无</b></div>
+        <div><span>本局时长</span><b id="sRun">10:00</b></div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <select id="policy" title="挂机时自动蔓延的选址倾向"><option value="nearest">就近蔓延</option><option value="richest">择优蔓延</option><option value="water">找水脉</option><option value="nutrient">找养分</option><option value="spore">找树根</option></select>
+      </div>
+      <label class="switch row" id="autoGrowRow" style="margin-top:9px">
+        <input type="checkbox" id="autoGrow" checked="">
+        <span id="autoGrowLabel">自动蔓延<span class="hint" style="display:inline">（关掉则只靠你手动点）</span></span>
+      </label>
+      <p class="hint" id="policyHint">优先最便宜的邻格，铺得快</p>
+      <p class="hint" id="eventLine">事件：降雨带 40s</p>
+    </div>
+
+    <div class="card">
+      <h2>菌丝本领 <span class="hint" id="slotHint">按 1 / 2 / 3 使用</span></h2>
+      <div class="abilities" id="abilities"><button class="ab" title="菌丝脉冲　8 秒内蔓延速度 ×4" disabled=""><div class="sl">1</div><div class="nm">菌丝脉冲 · 40s</div><div class="ht">8 秒内蔓延速度 ×4</div><div class="cdbar" style="width: 99%;"></div></button><button class="ab ready" title="酶解　立刻结算 30 秒的养分产出"><div class="sl">2</div><div class="nm">酶解</div><div class="ht">立刻结算 30 秒的养分产出</div><div class="cdbar" style="width: 0%;"></div></button><button class="ab ready" title="孢子爆　立刻获得 孢子 = 菌丝数×1.5"><div class="sl">3</div><div class="nm">孢子爆</div><div class="ht">立刻获得 孢子 = 菌丝数×1.5</div><div class="cdbar" style="width: 0%;"></div></button></div>
+      <p class="hint">点击地图上<b>已有的菌丝</b>可以强化它（消耗养分，提升产出与吞吐）——
+        练高几个关键节点就是「深耕流」的玩法；点地图上的害虫可以把它驱除掉。</p>
+    </div>
+
+    <div class="card">
+      <h2>升级（消耗养分）</h2>
+      <div class="list" id="upgrades"><div class="item ok"><div class="n">吸收效率<span class="lv">Lv 1</span></div><div class="d">养分产出 +18% / 级</div><button class="buy tiny">34.0</button></div><div class="item ok"><div class="n">水分效率<span class="lv">Lv 0</span></div><div class="d">水分产出 +18% / 级</div><button class="buy tiny">22.0</button></div><div class="item ok"><div class="n">运输效率<span class="lv">Lv 0</span></div><div class="d">距离损耗 -12% / 级</div><button class="buy tiny">40.0</button></div><div class="item ok"><div class="n">菌丝加粗<span class="lv">Lv 0</span></div><div class="d">吞吐上限 +25% / 级</div><button class="buy tiny">35.0</button></div><div class="item ok"><div class="n">生长效率<span class="lv">Lv 0</span></div><div class="d">生长水耗 -7% / 级</div><button class="buy tiny">24.0</button></div><div class="item ok"><div class="n">共生深度<span class="lv">Lv 0</span></div><div class="d">孢子产出 +18% / 级</div><button class="buy tiny">70.0</button></div><div class="item ok"><div class="n">蔓延速度<span class="lv">Lv 0</span></div><div class="d">自动扩张间隔 ×0.86 / 级</div><button class="buy tiny">60.0</button></div><div class="item ok"><div class="n">感知范围<span class="lv">Lv 0</span></div><div class="d">可见半径 +1 格 / 级</div><button class="buy tiny">45.0</button></div></div>
+    </div>
+
+    <div class="card" id="msCard">
+      <h2>里程碑 <span id="msCount" style="float:right">9 / 10</span></h2>
+      <div class="list" id="milestones"><div class="ms done"><div class="tick">✓</div><div class="txt"><div class="nm">扎根 <span class="need">网络达到 12 格</span></div><div class="rw">解锁「菌丝脉冲」+ 300 水分</div></div></div><div class="ms done"><div class="tick">✓</div><div class="txt"><div class="nm">寻水 <span class="need">连上地下水脉</span></div><div class="rw">水分产出 +25%</div></div></div><div class="ms done"><div class="tick">✓</div><div class="txt"><div class="nm">腐殖 <span class="need">连上腐木</span></div><div class="rw">解锁「酶解」</div></div></div><div class="ms done"><div class="tick">✓</div><div class="txt"><div class="nm">共生 <span class="need">连上树根</span></div><div class="rw">解锁「孢子爆」</div></div></div><div class="ms done"><div class="tick">✓</div><div class="txt"><div class="nm">主干 <span class="need">任一节点强化到 5 级</span></div><div class="rw">全部产出 +10%</div></div></div><div class="ms done"><div class="tick">✓</div><div class="txt"><div class="nm">扩张 <span class="need">网络达到 60 格</span></div><div class="rw">+2 基因点</div></div></div><div class="ms"><div class="tick"></div><div class="txt"><div class="nm">抗虫 <span class="need">驱除 5 只害虫</span></div><div class="rw">害虫繁殖速度减半</div></div></div><div class="ms done"><div class="tick">✓</div><div class="txt"><div class="nm">循环 <span class="need">完成一次散播</span></div><div class="rw">+3 基因点</div></div></div><div class="ms done"><div class="tick">✓</div><div class="txt"><div class="nm">防火墙 <span class="need">同时拥有 3 个 Lv8+ 的菌丝节点（超过滋生上限，任何菌瘟都爬不上来）</span></div><div class="rw">菌瘟蔓延速度降低</div></div></div><div class="ms done"><div class="tick">✓</div><div class="txt"><div class="nm">感知 <span class="need">菌丝达到 250 格且连上 4 种特殊基质</span></div><div class="rw">解锁「自动蔓延」</div></div></div></div>
+    </div>
+
+    <div class="card" id="prestigeCard">
+      <h2>散播孢子</h2>
+      <div class="big" id="pText">孢子 354 / 1120</div>
+      <div class="meter"><i id="pBar" style="width: 31.6%;"></i></div>
+      <p class="hint" id="pHint">再攒 766 孢子就能散播（当前可换 6 基因点）</p>
+      <button class="primary" id="pBtn" style="width:100%;margin-top:8px" disabled="">散播孢子</button>
+    </div>
+
+    <div class="card" id="geneCard">
+      <h2>基因（永久，跨转生）<span id="geneLeft" style="float:right">可用 389 点</span></h2>
+      <div class="list" id="genes"><div class="item ok"><div class="n">丰饶<span class="lv">Lv 1</span></div><div class="d">所有产出 +12% / 级</div><button class="buy tiny">2.00 点</button></div><div class="item ok"><div class="n">蓄水<span class="lv">Lv 0</span></div><div class="d">初始水 +150 / 级</div><button class="buy tiny">1.00 点</button></div><div class="item ok"><div class="n">速生<span class="lv">Lv 0</span></div><div class="d">生长水耗 -6% / 级</div><button class="buy tiny">2.00 点</button></div><div class="item ok"><div class="n">渗透<span class="lv">Lv 0</span></div><div class="d">核心渗水 +0.4/s / 级</div><button class="buy tiny">2.00 点</button></div></div>
+    </div>
+
+    <div class="card">
+      <h2>记录</h2>
+      <div id="log"><div>蔓延一格（-42 水）</div><div>降雨带出现：区域内水分产出 ×3</div><div>降雨带出现：区域内水分产出 ×3</div><div>降雨带出现：区域内水分产出 ×3</div><div>降雨带出现：区域内水分产出 ×3</div><div>降雨带出现：区域内水分产出 ×3</div><div>降雨带出现：区域内水分产出 ×3</div><div>降雨带出现：区域内水分产出 ×3</div><div>孢子季出现：区域内孢子产出 ×3</div><div>⚠ 害虫出现，占据了一格菌丝（点地图上的红点驱除）</div><div>⚠ 害虫出现，占据了一格菌丝（点地图上的红点驱除）</div><div>孢子季出现：区域内孢子产出 ×3</div></div>
+    </div>
+
+    <div class="card">
+      <h2>存档</h2>
+      <div class="row">
+        <button id="btnSave" class="tiny">保存</button>
+        <button id="btnLoad" class="tiny">读取</button>
+        <button id="btnNew" class="tiny">重开一局</button>
+        <span class="hint" id="seedTxt" style="margin:0 0 0 auto">种子 578401781</span>
+      </div>
+      <p class="hint">进度自动存在浏览器本地。换种子会生成一张全新的地图。</p>
+    </div>
+
+  </aside>
+</div>
+
+<!-- Phaser 引擎（已下载到本地，离线可用） -->
+<script src="vendor/phaser.min.js"></script>
+<!-- 游戏逻辑与渲染 -->
+<script src="src/config.js"></script>
+<script src="src/rng.js"></script>
+<script src="src/sim.js"></script>
+<script src="src/scenes/WorldScene.js"></script>
+<script src="src/ui.js"></script>
+<script src="src/main.js"></script>
+<!-- 自测钩子：只在 URL 带 ?autotest=1 时生效，正常游玩不受影响 -->
+<script src="tools/autotest.js"></script>
+
+
+
+<pre id="autotest-report">
+===== AUTOTEST REPORT =====
+PASS  Phaser 已加载   [Phaser 3.80.1]
+PASS  canvas 已创建   [902x779]
+PASS  场景已就绪
+PASS  面板已初始化
+PASS  自动蔓延默认锁定   [autoGrow=false（锁定的话玩家必须手动点着跑图）]
+PASS  开局离解锁门槛很远（条件有意义）   [maxNodes=0  门槛=250]
+PASS  开关确实被禁用   [disabled=true]
+      场景 input.enabled=true  windowEvents=undefined  frames=4
+PASS  存在可生长候选格   [(17,9) wood 花费 25]
+      画布 rect=13,13 902x779  点击点=464,357
+      已派发 pointer*/mouse* 事件 —— 等下一帧让 Phaser 处理输入队列
+PASS  点击格子长出了菌丝   [1 -&gt; 2 格（+1）]
+PASS  悬停提示已显示   [tip="腐木"]
+PASS  自动蔓延在推进   [2 -&gt; 42 格]
+PASS  水分在产出   [0.0 -&gt; 1473.9]
+PASS  养分在产出   [0.0 -&gt; 2409.7]
+PASS  孢子在产出   [0.0 -&gt; 208.8]
+      网络基质构成 {"core":1,"wood":6,"vein":10,"litter":15,"root":4,"soil":6}
+PASS  可以购买升级   [吸收效率 0 -&gt; 1]
+PASS  购买确实扣了养分   [102410 -&gt; 102385]
+PASS  网络有最大离核距离   [maxDist=5]
+PASS  产出速率已计算   [水 8.65 养分 12.74 孢子 1.67]
+PASS  距离损耗生效（远的更亏）   [1 格 95% vs 20 格 48%]
+PASS  面板显示与状态一致   [panel=42 state=42]
+PASS  升级项全部渲染   [8 项]
+PASS  满足条件可以散播
+PASS  散播后网络重置为核心一格   [42 -&gt; 1 格]
+PASS  散播获得基因点   [gained=335]
+PASS  地图知识被保留   [21 格已探明跨转生保留]
+PASS  可以消费基因点   [gYield 级数 1]
+PASS  存档往返一致   [节点 1 水 40.0]
+PASS  再跑 10 分钟数值不发散   [水 3668 养分 6663 孢子 353 节点 82]
+PASS  节点数在合法范围   [82 格 / 上限 836（地图 38×22）]
+PASS  存在尚未达成的里程碑（渐进解锁有效）   [待达成 4 个：主干、抗虫、防火墙、感知]
+PASS  已达成里程碑的奖励确实生效   [m1=true → pulse 解锁=true]
+      （三个技能都已解锁，跳过未解锁拦截测试）
+PASS  技能可以使用   [菌丝脉冲 —— 蔓延速度 ×4，持续 8 秒]
+PASS  技能触发浮动反馈   [1 条]
+PASS  脉冲期间蔓延更快   [间隔 1.50s（基准 6s）]
+PASS  冷却中不能重复使用
+PASS  存在可强化的节点
+PASS  强化节点成功   [Lv0 -&gt; Lv1]
+PASS  强化正确扣费   [6663 -&gt; 6637（花费 26）]
+PASS  强化提升了吞吐上限   [140.0 -&gt; 165.2]
+PASS  强化会推动 m5 进度   [maxNodeLevel=1]
+PASS  里程碑首次达成会发奖   [全部产出 ×1.00 -&gt; ×1.10]
+PASS  里程碑不会重复发奖   [×1.10 保持不变]
+PASS  害虫清空后归零
+PASS  事件系统能生成害虫   [nodeId=3]
+PASS  害虫让该节点停产
+PASS  驱除害虫成功且有奖励   [+45 养分]
+PASS  事件类型有分化（随机流没卡死）   [{"bloom":6,"gnat":3,"rain":11}]
+PASS  害虫数量不会超过上限   [3 / 上限 3]
+PASS  增益区能被查询到   [核心在降雨带内]
+PASS  增益区外不受影响
+PASS  增益区确实提升了产出   [水分速率 20.19 -&gt; 24.42]
+PASS  增益区倍率正确   [×3]
+PASS  存档保留里程碑   [m3,m2,m4,m1,m8,m6,m5]
+PASS  存档保留技能解锁状态   [{"digest":true,"sporulate":true,"pulse":true}]
+PASS  存档保留节点等级   [最高 Lv5]
+PASS  存档保留里程碑增益   [nutrient 增益 ×1.10]
+PASS  页面没有横向溢出   [scrollWidth=1324  视口宽=1324]
+PASS  地图画布没有超出容器   [canvas=902×779  stage=904×781]
+PASS  面板在视口内可见   [panel 左上=928,12  尺寸=384×781]
+PASS  面板内容可达（装得下 / 面板可滚 / 页面可滚）   [panel.bottom=793 视口高=805 面板可滚=true 页面可滚=false]
+PASS  摄像机对准了网络（核心在视野内）   [core=(523,315)  视野 x 228..747  y 69..518]
+PASS  视野装得下整个已探明区域（不裁剪网络）   [zoom=1.498  上限=1.498]
+PASS  格子没有被放大到失真   [格子约 39px]
+PASS  提示框按缩放反向补偿（屏幕上大小恒定）   [scaleX=0.668 × zoom=1.50 = 1.000]
+PASS  找到「点偏一格」的测试位置   [视野内 (9,2)..(31,19) → 点 (17,3)，邻居 (18,4) 可生长]
+PASS  找到点击正对照格   [(20,5)]
+PASS  坐标换算落点正确（cellToClient 与摄像机缩放一致）   [落到 (17,3)，目标 (17,3)  pointer 世界坐标=468,146  视野 x 228..747]
+PASS  摄像机与场景视野状态一致（两条路径互证）   [中心差 0.00px（摄像机 536.0,302.0 vs 场景 536.0,302.0）  zoom 差 0.0000]
+PASS  正对照：点击可生长格确实长出菌丝   [85 -&gt; 86 格]
+PASS  鼠标点偏不生长（桌面行为不变）   [86 -&gt; 86 格]
+PASS  触摸点偏自动落到相邻格   [86 -&gt; 87 格]
+PASS  滚轮能放大   [zoom 1.498 → 2.400]
+PASS  手动缩放后切到「手动视野」   [viewMode=manual]
+PASS  「回到自动取景」按钮显出来   [hidden=false]
+PASS  缩放锚在指针位置（手感才对）   [中心应在 (502.1,282.5)，实际 (501.9,282.3)，偏移 0.18]
+PASS  拖拽能平移视野   [中心移动 Δ(40.0,24.2) 世界单位]
+PASS  拖拽不会误触长出一格   [87 -&gt; 87 格]
+PASS  捏合能放大   [zoom 1.576 → 2.400]
+PASS  捏合后仍是手动视野   [viewMode=manual]
+PASS  捏合结束不会残留卡住状态   [pinching=false]
+PASS  捏合的手指登记表已清空   [pinchPtr=0]
+PASS  缩放被夹在下限内（不会缩到什么都看不见）   [zoom=0.752  下限=0.752]
+PASS  拖动不会把地图拖出画面外（夹在世界内）   [中心 (510,302)  世界 916×552]
+PASS  点按钮回到自动取景   [viewMode=auto]
+PASS  按钮随之隐藏   [hidden=true]
+PASS  视野朝自动取景缓动（而不是卡住不动）   [距目标 0.675 → 0.675（zoom 0.75 → 1.43）]
+  DIAG tryAct(18,3) -&gt; {"ok":true,"msg":""} | water=49958 | 该格已有节点=true | drag=false pinching=false | pinchPtr=0 suppressPtr=0 | touchTol=false | viewMode=auto zoom=0.75
+PASS  折腾完手势后，点击依然长得出菌丝   [87 -&gt; 88 格]
+PASS  找到适合扩散的节点   [节点 3 有 4 个健康邻居]
+PASS  菌瘟可以投放   [节点停产中]
+PASS  菌瘟让节点停产   [disabled=true]
+PASS  菌瘟会沿菌丝扩散   [尝试 1 次后菌瘟 2 处]
+PASS  瘟菌无法点击净化   [菌瘟净化不了 —— 把周边菌丝练到比它等级高，围死它 2 个周期它就熄灭]
+PASS  点瘟菌不会误触强化或净化   [Lv0 保持，blighted=true]
+PASS  内部移除接口不再发奖励   [养分 10006205 保持不变]
+PASS  围死测试位就绪（X 封死位 + Y 对照位）   [X=1 Lv5，Y=3 活路 Z=33]
+PASS  菌瘟已在 X、Y 落户   [两处都在停产]
+PASS  周期1：围死第 1 个周期，计数 +1 但还活着   [failStreak=1]
+PASS  周期1：对照位 Y 有活路，计数清零   [Y failStreak=0]
+PASS  周期2：放出活路立即续命，计数清零   [failStreak=0]
+PASS  周期3：重新围死，计数重新 +1   [failStreak=1]
+PASS  周期4：连续两个周期围死 → 菌瘟熄灭   [blighted=false failStreak=2]
+PASS  熄灭后节点恢复健康（保留、不消失）   [disabled=false Lv5（原 Lv5）]
+PASS  正对照：同期一直有活路的 Y 从不熄灭   [Y blighted=true]
+PASS  tick 走完传播周期会触发扩散并重置计时   [spreadT≈21.0（期望 21）failStreak=1]
+      （m9 已达成，跳过首次发奖测试）
+PASS  规则一：找到带两个低级邻居的源头测试位   [节点 1 Lv5]
+PASS  规则一：源头菌瘟已投放
+PASS  规则一：正对照 —— 菌瘟确实在低级菌之间扩散   [菌瘟 4 处]
+PASS  规则一：Lv9 靶子始终未被感染（只往下传）   [Y=Lv9 blighted=false]
+PASS  规则二：找到源头测试位
+PASS  规则二：超上限源头菌瘟已投放（直接摆布）
+PASS  规则二：正对照 —— Lv≤7 的邻居照常被感染   [菌瘟 4 处]
+PASS  规则二：Lv9 靶子始终未被感染（封顶生效）   [W=Lv9 blighted=false]
+PASS  规则三：全员高等级时菌瘟无处滋生
+PASS  规则三：存在可作靶子的健康节点
+PASS  规则三：放开低级节点后滋生点必在等级上限内   [nodeId=1 Lv0]
+PASS  补齐解锁条件（像玩家一样长过去）   [全部满足]
+PASS  满足条件后 m10 自动解锁自动蔓延   [m10=true  autoGrow=true]
+PASS  解锁后开关恢复可用   [disabled=false]
+PASS  转生可以执行   [获得 7333332 基因点]
+PASS  转生后地图变大   [38×22 → 42×25]
+PASS  转生后换了种子（新地形）   [seed 3117868024 → 469678175]
+PASS  新地图的探索记录已清空   [已探明 21 格（转生前 250 格）]
+PASS  网络重置为核心一格   [1 格]
+PASS  转生计数 +1   [1 → 2]
+PASS  地图尺寸符合阶梯   [期望 42×25，实际 42×25]
+PASS  场景已感知换图（缓存与镜头已重置）   [seen=42×25  实际=42×25  viewMode=auto]
+PASS  新地图上能继续生长   [-13 水]
+PASS  Phaser 主循环确实运行过   [frames=9（起始 4）]
+PASS  渲染层没有残留异常   [无]
+ERRORS=NONE
+SUMMARY pass=129 fail=0
+===== END =====
+</pre></body></html>
