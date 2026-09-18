@@ -34,7 +34,7 @@ const STRATEGIES = [
 ];
 
 /* 一个「会回应」的玩家：技能一好就用，害虫立刻驱除。
- * 菌瘟**不能手动净化** —— 主动玩家对菌瘟的答案是防火墙（深耕把节点练到 Lv8+），
+ * 菌瘟**不能手动净化** —— 主动玩家对菌瘟的答案是防火墙（把节点练到比瘟高一级），
  * 那由 nodeFocus 落地；模拟里不再有「点掉瘟」这条捷径。 */
 function respondToEvents(state) {
   for (const a of CONFIG.ABILITIES) {
@@ -125,7 +125,8 @@ function run(strategy, seed, duration) {
 
     // 内容层：技能照用、害虫照驱除 —— 但**只有「会回应」的玩家**才做。
     // 挂机跑不回应事件：害虫会繁殖、菌瘟会蔓延。菌瘟不能净化，
-    // 双方都只能靠防火墙和自愈硬扛 —— 注意力的价值转移到「网络结构」上。
+    // 双方都只能靠防火墙硬扛（围死它要连续两个周期，撑不到就烂一片）——
+    // 注意力的价值转移到「网络结构」上。
     if (strategy.clicks > 0) respondToEvents(state);
     // 深耕流另外把养分投到少数节点上
     if (strategy.nodeFocus && state.res.nutrient > 400) upgradeNodes(state, 3);

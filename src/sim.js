@@ -799,8 +799,14 @@ var Sim = (function () {
   function tickEvents(state, dt) {
     var cfg = CONFIG.EVENTS, cfgB = CONFIG.BLIGHT, i, e;
 
-    for (i = state.events.length - 1; i >= 0; i--) {
-      e = state.events[i];
+    // 快照遍历：spreadBlights 熄灭菌瘟时会 splice 原数组 —— 直接遍历它的话，
+    // 一晚熄灭多处会让 events[i] 变 undefined（平衡模拟实测炸过）。
+    // 快照里看到已熄灭的事件也无害：spreadBlights 对 !nd.blighted 直接跳过。
+    var events = state.events.slice();
+    var dead = [];
+    for (i = events.length - 1; i >= 0; i--) {
+      e = events[i];
+      if (!e) continue;
       if (e.kind === 'gnat') {
         // 不处理就会繁殖，但上限只有 3 只，且只「停产」不摧毁节点。
         // 所以放任不管的代价是产能下降，而不是资产损失。
@@ -813,15 +819,10 @@ var Sim = (function () {
           }
         }
       } else if (e.kind === 'blight') {
-        // 菌瘟：会扩散（威胁），也会自愈（底线 —— 不造成永久损失）
+        // 菌瘟没有无条件自愈：每 spreadInterval 尝试一次传播，
+        // 传得出去就一直活着；连续 failLimit 个周期一个邻居都传不进去
+        // （被防火墙围死）才熄灭 —— 熄灭判定在 spreadBlights 里做。
         e.spreadT -= dt;
-        e.recoverT -= dt;
-        if (e.recoverT <= 0) {
-          var nd = state.nodes[e.nodeId];
-          if (nd) { nd.blighted = null; nd.disabled = false; }
-          state.events.splice(i, 1);
-          continue;
-        }
         if (e.spreadT <= 0) {
           e.spreadT = cfgB.spreadInterval * (state.mods.blightSlow ? 1.6 : 1);
           spreadBlights(state);
@@ -886,7 +887,7 @@ var Sim = (function () {
     var nd = state.nodes[nodeId];
     if (!nd || nd.blighted || nd.gnat) return null;
     var cfg = CONFIG.BLIGHT;
-    var b = { kind: 'blight', nodeId: nodeId, spreadT: cfg.spreadInterval, recoverT: cfg.recoverT };
+    var b = { kind: 'blight', nodeId: nodeId, spreadT: cfg.spreadInterval, failStreak: 0 };
     nd.blighted = b;
     nd.disabled = true;
     state.events.push(b);
@@ -896,9 +897,11 @@ var Sim = (function () {
   /* 菌瘟只沿「相邻的健康菌丝」扩散 —— 所以蔓延路径可预判，
    * 玩家看一眼地图就知道它会往哪爬，这是紧迫感的来源。
    *
-   * 等级规则的第二半：Lv N 的菌瘟只能传给「等级 ≤ N」的邻居，
-   * 且封顶 maxLevel（源头若是被玩家手动强化超过上限的，也按上限算）。
-   * 于是「哪一片会先烂」可以预判：低级菌聚集的一侧烂得快 —— 防火墙就修在那里。 */
+   * 等级规则：Lv N 的菌瘟只能传给「等级 ≤ N」的邻居 ——
+   * **把周边菌丝练到比瘟的等级高，就能挡住它**。
+   * 生命周期：面前一个可感染的邻居都没有 = 被围死，连续 failLimit 个周期
+   * 就熄灭（节点保留、恢复健康）；只要还有活路就一直活着烂下去。
+   * 注意「抽签没中」不算被围死 —— 它可以传，只是这个周期运气差。 */
   function spreadBlights(state) {
     var cfg = CONFIG.BLIGHT;
     var interval = cfg.spreadInterval * (state.mods.blightSlow ? 1.6 : 1);
@@ -919,10 +922,24 @@ var Sim = (function () {
         if (nid == null || nid === 0) continue;      // 核心免疫：全黑几十秒太惩罚
         var t = state.nodes[nid];
         if (t.gnat || t.blighted) continue;
-        if (t.level > srcLvl) continue;              // 高级菌有抵抗力：只往同级或更低传
+        if (t.level > srcLvl) continue;              // 比瘟等级高的邻居：挡住去路
         pool.push(nid);
       }
-      if (pool.length && countBlights(state) < maxN && stateRng(state) < chance) {
+
+      if (pool.length === 0) {
+        // 被围死：面前一个能感染的邻居都没有
+        e.failStreak = (e.failStreak || 0) + 1;
+        if (e.failStreak >= cfg.failLimit) {
+          state.events.splice(i, 1);
+          nd.blighted = null;
+          nd.disabled = false;
+          pushFloater(state, nd.x, nd.y, '熄灭', 'nutrient');
+        }
+        continue;
+      }
+      e.failStreak = 0;                              // 还有活路：瘟继续活着
+
+      if (countBlights(state) < maxN && stateRng(state) < chance) {
         var nb2 = putBlight(state, pool[Math.floor(stateRng(state) * pool.length)]);
         if (nb2) e.spreadT = interval;
       }

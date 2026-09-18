@@ -958,8 +958,8 @@
        '尝试 ' + tries + ' 次后菌瘟 ' + Sim.countBlights(st) + ' 处');
   });
 
-  /* 瘟菌不能点击净化：一键白嫖 90 养分等于没有威胁。
-   * 玩家的应对 = 防火墙（Lv8+ 免疫）+ 等自愈。 */
+  /* 瘟菌不能点击净化：一键白嫖等于没有威胁。
+   * 玩家的应对 = 相对等级防火墙（邻居比瘟高就挡得住）+ 围死等它熄灭。 */
   step(function () {
     var st = window.MYC.game.state, Sim = S.Sim, sc = window.MYC.game.scene;
     var ev = null;
@@ -979,16 +979,150 @@
        '养分 ' + Math.round(nut0) + ' 保持不变');
   });
 
+  /* 菌瘟没有「放着不管自愈」：生命周期 = 每个传播周期看一眼面前有没有活路。
+   * 面前有可感染的邻居（哪怕抽签没中）→ 计数清零、继续活着；
+   * 连续 failLimit 个周期一个能感染的邻居都没有（被防火墙围死）→ 熄灭，
+   * 节点保留、恢复健康。正对照：同期的 Y 一直有活路，就永远不死。 */
   step(function () {
-    var st = window.MYC.game.state, Sim = S.Sim;
-    var ev = null;
-    st.events.forEach(function (e) { if (e.kind === 'blight' && !ev) ev = e; });
-    if (!ev) { ok('菌瘟放着不管会自愈', false, '没有菌瘟可测'); return; }
-    var before = Sim.countBlights(st);
-    ev.recoverT = 0.01;                  // 把自愈计时拨到尽头
-    Sim.tick(st, 0.1);
-    ok('菌瘟放着不管会自愈（绝不造成永久损失）', Sim.countBlights(st) === before - 1,
-       before + ' → ' + Sim.countBlights(st));
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
+    st.autoTimer = -1e6;
+    // 清场：移除历史残留菌瘟，本步要精确控制每一处感染
+    st.events.slice().forEach(function (e) {
+      if (e.kind === 'blight') Sim.removeBlight(st, e.nodeId);
+    });
+
+    var lvlSaved = {};
+    function setLvl(id, lv) {
+      if (!(id in lvlSaved)) lvlSaved[id] = st.nodes[id].level;
+      st.nodes[id].level = lv;
+    }
+    function adj(a, b) {
+      return Math.abs(st.nodes[a].x - st.nodes[b].x) +
+             Math.abs(st.nodes[a].y - st.nodes[b].y) === 1;
+    }
+    function healthyNbs(id) {
+      var out = [], nd = st.nodes[id];
+      [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (d) {
+        var nid = st.nodeAt[Sim.idx(nd.x + d[0], nd.y + d[1])];
+        if (nid != null && nid !== 0 && !st.nodes[nid].gnat && !st.nodes[nid].blighted) out.push(nid);
+      });
+      return out;
+    }
+
+    // 选位：X = 被围死的瘟（有 ≥1 个健康邻居可砌墙）；Y = 正对照（有专属活路 Z）。
+    // 约束：Y、Z 都不挨着 X，Z 不在 X 的墙里 —— 两套剧本互不串扰。
+    var X = null, Y = null, Z = null, W = null, wall = null;
+    for (var i = 1; i < st.nodes.length && X === null; i++) {
+      var nd = st.nodes[i];
+      if (nd.gnat || nd.blighted || nd.level > C.BLIGHT.maxLevel) continue;
+      var nbs = healthyNbs(i);
+      if (!nbs.length) continue;
+      for (var j = 1; j < st.nodes.length && X === null; j++) {
+        var nd2 = st.nodes[j];
+        if (j === i || nd2.gnat || nd2.blighted || adj(i, j)) continue;
+        var nbs2 = healthyNbs(j);
+        var z = null;
+        for (var q = 0; q < nbs2.length; q++) {
+          if (nbs.indexOf(nbs2[q]) === -1) { z = nbs2[q]; break; }
+        }
+        if (z === null) continue;
+        X = i; Y = j; Z = z; W = nbs[0]; wall = nbs;
+      }
+    }
+    ok('围死测试位就绪（X 封死位 + Y 对照位）', X !== null,
+       X !== null ? ('X=' + X + ' Lv' + st.nodes[X].level + '，Y=' + Y + ' 活路 Z=' + Z) : '找不到互不干扰的一对');
+
+    if (X !== null) {
+      var lvlX0 = st.nodes[X].level;
+      var evX = Sim.putBlight(st, X);
+      var evY = Sim.putBlight(st, Y);
+      ok('菌瘟已在 X、Y 落户', !!evX && !!evY,
+         evX && evY ? '两处都在停产' : 'putBlight 失败');
+      if (evX && evY) {
+        // 砌墙：X 的健康邻居全拉到 Lv9（比任何瘟都高）；Y 的邻居只留 Z 当活路
+        wall.forEach(function (id) { setLvl(id, C.BLIGHT.maxLevel + 2); });
+        healthyNbs(Y).forEach(function (id) { if (id !== Z) setLvl(id, C.BLIGHT.maxLevel + 2); });
+        setLvl(Z, 0);                    // 活路压到 Lv0：永远 ≤ 瘟的等级，必定可传
+
+        // 每个周期开始前把 Z 恢复健康（可能上个周期被 Y 的瘟传上）—— 测试编排
+        function period() {
+          if (st.nodes[Z].blighted) Sim.removeBlight(st, Z);
+          if (st.nodes[Z].gnat) Sim.removeGnat(st, Z);
+          Sim.spreadBlights(st);
+        }
+
+        period();                        // 周期1：X 被围死第 1 次
+        ok('周期1：围死第 1 个周期，计数 +1 但还活着',
+           evX.failStreak === 1 && !!st.nodes[X].blighted,
+           'failStreak=' + evX.failStreak);
+        ok('周期1：对照位 Y 有活路，计数清零', evY.failStreak === 0,
+           'Y failStreak=' + evY.failStreak);
+
+        setLvl(W, 0);                    // 拆一块墙：X 面前重新出现可感染的邻居
+        period();                        // 周期2：X 有活路 → 清零（「能传播就一直活着」）
+        ok('周期2：放出活路立即续命，计数清零',
+           evX.failStreak === 0 && !!st.nodes[X].blighted,
+           'failStreak=' + evX.failStreak);
+
+        setLvl(W, C.BLIGHT.maxLevel + 2); // 重新砌上（W 若已被传染也无妨：感染邻居同样进不了池子）
+        period();                        // 周期3：围死第 1 次（重新计数）
+        ok('周期3：重新围死，计数重新 +1',
+           evX.failStreak === 1 && !!st.nodes[X].blighted,
+           'failStreak=' + evX.failStreak);
+
+        period();                        // 周期4：连续第 2 次 → 熄灭
+        ok('周期4：连续两个周期围死 → 菌瘟熄灭',
+           !st.nodes[X].blighted && st.events.indexOf(evX) === -1,
+           'blighted=' + !!st.nodes[X].blighted + ' failStreak=' + evX.failStreak);
+        ok('熄灭后节点恢复健康（保留、不消失）',
+           !st.nodes[X].disabled && st.nodes[X].level === lvlX0,
+           'disabled=' + st.nodes[X].disabled + ' Lv' + st.nodes[X].level + '（原 Lv' + lvlX0 + '）');
+        ok('正对照：同期一直有活路的 Y 从不熄灭', !!st.nodes[Y].blighted,
+           'Y blighted=' + !!st.nodes[Y].blighted);
+      }
+    }
+
+    // 还原：等级快照 + 清掉所有菌瘟（包括 Y），不留状态给后面的测试
+    Object.keys(lvlSaved).forEach(function (k) { st.nodes[k].level = lvlSaved[k]; });
+    st.events.slice().forEach(function (e) {
+      if (e.kind === 'blight') Sim.removeBlight(st, e.nodeId);
+    });
+    st.autoTimer = 0;
+  });
+
+  /* tick 接线：spreadT 归零就触发一个传播周期 —— 生命周期由 sim.tick 驱动，
+   * 不是只有测试里手动抽签才走。把测试位围死再放瘟：周期只会 +1 失败，绝无播散。 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
+    st.autoTimer = -1e6;
+    var t = null;
+    for (var i = 1; i < st.nodes.length && t === null; i++) {
+      if (!st.nodes[i].gnat && !st.nodes[i].blighted) t = i;
+    }
+    if (t === null) { ok('tick 能驱动菌瘟周期', false, '没有测试位'); return; }
+    var savedLvl = {};
+    var nd = st.nodes[t];
+    [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (d) {
+      var nid = st.nodeAt[Sim.idx(nd.x + d[0], nd.y + d[1])];
+      if (nid != null && nid !== 0 && !st.nodes[nid].gnat && !st.nodes[nid].blighted) {
+        savedLvl[nid] = st.nodes[nid].level;
+        st.nodes[nid].level = C.BLIGHT.maxLevel + 2;
+      }
+    });
+    var ev = Sim.putBlight(st, t);
+    if (!ev) { ok('tick 能驱动菌瘟周期', false, 'putBlight 失败'); }
+    else {
+      // 期望值必须在 tick 之前算：tick 里 checkMilestones 在 tickEvents 之后跑，
+      // 可能中途点亮 blightSlow，事后算期望就会拿到另一个值（实测踩过）
+      var expect = C.BLIGHT.spreadInterval * (st.mods.blightSlow ? 1.6 : 1);
+      ev.spreadT = 0.01;                 // 把传播计时拨到尽头
+      Sim.tick(st, 0.1);
+      ok('tick 走完传播周期会触发扩散并重置计时',
+         Math.abs(ev.spreadT - expect) < 1e-6 && !!st.nodes[t].blighted && ev.failStreak === 1,
+         'spreadT≈' + ev.spreadT.toFixed(1) + '（期望 ' + expect + '）failStreak=' + ev.failStreak);
+    }
+    Sim.removeBlight(st, t);
+    Object.keys(savedLvl).forEach(function (k) { st.nodes[k].level = savedLvl[k]; });
     st.autoTimer = 0;
   });
 

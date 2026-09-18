@@ -356,8 +356,9 @@ var UI = (function () {
           toast('害虫出现 —— 点地图上的红点驱除');
         } else if (e.kind === 'blight') {
           pushLog('⚠ 菌瘟出现！会沿菌丝扩散，只感染 Lv' + C.BLIGHT.maxLevel +
-                  ' 及以下的菌丝（无法净化，' + C.BLIGHT.recoverT + 's 后自愈）');
-          toast('菌瘟出现 —— 无法净化，Lv8+ 菌丝能挡住它');
+                  ' 及以下的菌丝（无法净化 —— 把邻居练到比它等级高，' +
+                  '连续 ' + C.BLIGHT.failLimit + ' 个周期传不出去就熄灭）');
+          toast('菌瘟出现 —— 比它高的菌丝能挡住它，围死 ' + C.BLIGHT.failLimit + ' 个周期就熄灭');
         } else if (e.kind === 'rain') {
           pushLog('降雨带出现：区域内水分产出 ×' + C.EVENTS.buffMul);
         } else {
