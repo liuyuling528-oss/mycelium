@@ -34,7 +34,8 @@ const STRATEGIES = [
 ];
 
 /* 一个「会回应」的玩家：技能一好就用，害虫立刻驱除。
- * 这一层是新加的内容，必须纳入模拟，否则验证不到它的平衡影响。 */
+ * 菌瘟**不能手动净化** —— 主动玩家对菌瘟的答案是防火墙（深耕把节点练到 Lv8+），
+ * 那由 nodeFocus 落地；模拟里不再有「点掉瘟」这条捷径。 */
 function respondToEvents(state) {
   for (const a of CONFIG.ABILITIES) {
     if (Sim.abilityReady(state, a.key)) Sim.useAbility(state, a.key);
@@ -42,7 +43,6 @@ function respondToEvents(state) {
   for (let i = state.events.length - 1; i >= 0; i--) {
     const e = state.events[i];
     if (e.kind === 'gnat') Sim.removeGnat(state, e.nodeId);
-    else if (e.kind === 'blight') Sim.removeBlight(state, e.nodeId);
   }
 }
 
@@ -123,9 +123,9 @@ function run(strategy, seed, duration) {
 
     spendUpgrades(state, strategy.priority);
 
-    // 内容层：技能照用、害虫照驱除、菌瘟照净化 —— 但**只有「会回应」的玩家**才做。
-    // 挂机跑不回应事件：害虫会繁殖、菌瘟会蔓延，产能实打实地掉。
-    // 这就是「注意力有价值」的模型 —— 不回应的代价必须在对照里体现出来。
+    // 内容层：技能照用、害虫照驱除 —— 但**只有「会回应」的玩家**才做。
+    // 挂机跑不回应事件：害虫会繁殖、菌瘟会蔓延。菌瘟不能净化，
+    // 双方都只能靠防火墙和自愈硬扛 —— 注意力的价值转移到「网络结构」上。
     if (strategy.clicks > 0) respondToEvents(state);
     // 深耕流另外把养分投到少数节点上
     if (strategy.nodeFocus && state.res.nutrient > 400) upgradeNodes(state, 3);

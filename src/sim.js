@@ -898,7 +898,7 @@ var Sim = (function () {
    *
    * 等级规则的第二半：Lv N 的菌瘟只能传给「等级 ≤ N」的邻居，
    * 且封顶 maxLevel（源头若是被玩家手动强化超过上限的，也按上限算）。
-   * 于是「先净化哪一处」多了个判断维度：低级菌聚集的一侧烂得快。 */
+   * 于是「哪一片会先烂」可以预判：低级菌聚集的一侧烂得快 —— 防火墙就修在那里。 */
   function spreadBlights(state) {
     var cfg = CONFIG.BLIGHT;
     var interval = cfg.spreadInterval * (state.mods.blightSlow ? 1.6 : 1);
@@ -942,6 +942,9 @@ var Sim = (function () {
     return best == null ? null : putBlight(state, best);
   }
 
+  /* 移除菌瘟 —— 仅内部接口（测试编排/清场用），**玩家无法手动净化**：
+   * 点一下就消掉还倒贴奖励，菌瘟就不配叫威胁了。
+   * 玩家的应对 = 防火墙（Lv8+ 免疫）+ 等自愈，见 config.BLIGHT 注释。 */
   function removeBlight(state, nodeId) {
     var nd = state.nodes[nodeId];
     if (!nd || !nd.blighted) return { ok: false, reason: '这里没有菌瘟' };
@@ -950,12 +953,7 @@ var Sim = (function () {
     }
     nd.blighted = null;
     nd.disabled = false;
-    state.counters.blightsCured = (state.counters.blightsCured || 0) + 1;
-    var reward = CONFIG.BLIGHT.reward;
-    state.res.nutrient += reward;
-    state.total.nutrient += reward;
-    pushFloater(state, nd.x, nd.y, '+' + reward, 'nutrient');
-    return { ok: true, reward: reward };
+    return { ok: true };
   }
 
   /* ---- 里程碑（永久成就层，跨转生保留）-------------------------------- */
@@ -978,7 +976,16 @@ var Sim = (function () {
       else if (m.id === 'm6') ok = state.nodes.length >= 60;
       else if (m.id === 'm7') ok = state.counters.gnatsRemoved >= 5;
       else if (m.id === 'm8') ok = state.prestiges >= 1;
-      else if (m.id === 'm9') ok = (state.counters.blightsCured || 0) >= 12;
+      else if (m.id === 'm9') {
+        /* 「防火墙」：同时养出 3 个超过感染上限（Lv8+）的节点。
+         * 菌瘟不能手动净化之后，这就是玩家对菌瘟的主动答案 ——
+         * 里程碑奖励（蔓延变慢）也顺理成章：防火墙越强，瘟越爬不动。 */
+        var fw = 0;
+        for (var j = 0; j < state.nodes.length; j++) {
+          if (state.nodes[j].level > CONFIG.BLIGHT.maxLevel) fw++;
+        }
+        ok = fw >= CONFIG.BLIGHT.firewallNodes;
+      }
       else if (m.id === 'm10') {
         /* 「连上」而不是「看到」—— 初始感知圈是圆的，运气好的种子
          * 四种基质全在圈里，光靠开局那一次 reveal 就能解锁，等于白送（实测踩过）。

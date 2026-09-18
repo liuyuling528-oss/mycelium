@@ -505,8 +505,9 @@
         var nd = st.nodes[cell.node];
         if (nd.blighted) {
           lines.push('⚠ 菌瘟蔓延中 —— 此格停产');
-          lines.push('点击净化，奖励 +' + C.BLIGHT.reward + ' 养分');
-          lines.push('会沿菌丝扩散（约 ' + Math.ceil(nd.blighted.spreadT) + 's 后尝试），放着不管也会自愈');
+          lines.push('无法手动净化 —— 等它自愈，或让 Lv8+ 菌丝挡住去路');
+          lines.push('约 ' + Math.ceil(nd.blighted.spreadT) + 's 后尝试扩散，' +
+                     Math.ceil(nd.blighted.recoverT) + 's 后自愈');
           // 等级规则：源头只往下传，且封顶 maxLevel
           var blCap = Math.min(nd.level, C.BLIGHT.maxLevel);
           lines.push('只能传给 Lv' + blCap + ' 及以下的邻居菌丝');
@@ -591,14 +592,9 @@
       if (cell.node != null) {
         var nd = st.nodes[cell.node];
 
-        if (nd.blighted) {                   // 菌瘟：会扩散，优先级比害虫高
-          var rb = Sim.removeBlight(st, nd.id);
-          if (rb.ok) {
-            game.dirty = true;
-            if (game.ui) game.ui.pushLog('净化菌瘟，+' + rb.reward + ' 养分');
-            return { ok: true, msg: '菌瘟已净化' };
-          }
-          return { ok: false, msg: rb.reason };
+        if (nd.blighted) {                   // 菌瘟：不能净化 —— 应对靠防火墙与自愈
+          // 拒绝而不是顺手强化：点了没反应才是真的没写清楚
+          return { ok: false, msg: '菌瘟净化不了 —— 等它自愈，或把周边菌丝练到 Lv8+ 挡住去路' };
         }
         if (nd.gnat) {                       // 有虫 → 驱除
           var rr = Sim.removeGnat(st, nd.id);

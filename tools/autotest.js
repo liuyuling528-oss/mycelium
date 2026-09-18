@@ -918,7 +918,7 @@
 
   /* ---- 菌瘟（后期挑战）---------------------------------------------------
    * 和害虫的区别只有一个：会沿菌丝蔓延。这是「后期没挑战」的解药，
-   * 所以蔓延/净化/自愈三条路径都要测。 */
+   * 所以蔓延/自愈/不可净化三条路径都要测。 */
   step(function () {
     var st = window.MYC.game.state, Sim = S.Sim, G = GRID();
     st.autoTimer = -1e6;                 // 冻住自动蔓延，节点集合才稳定
@@ -958,15 +958,25 @@
        '尝试 ' + tries + ' 次后菌瘟 ' + Sim.countBlights(st) + ' 处');
   });
 
+  /* 瘟菌不能点击净化：一键白嫖 90 养分等于没有威胁。
+   * 玩家的应对 = 防火墙（Lv8+ 免疫）+ 等自愈。 */
   step(function () {
-    var st = window.MYC.game.state, Sim = S.Sim;
+    var st = window.MYC.game.state, Sim = S.Sim, sc = window.MYC.game.scene;
     var ev = null;
     st.events.forEach(function (e) { if (e.kind === 'blight' && !ev) ev = e; });
-    if (!ev) { ok('菌瘟可以点击净化', false, '没有菌瘟可测'); return; }
-    S.cure = Sim.removeBlight(st, ev.nodeId);
-    ok('菌瘟可以点击净化', !!S.cure.ok, S.cure.ok ? ('+' + S.cure.reward + ' 养分') : S.cure.reason);
-    ok('净化计数累计', (st.counters.blightsCured || 0) >= 1,
-       'blightsCured=' + (st.counters.blightsCured || 0));
+    if (!ev) { ok('瘟菌无法点击净化', false, '没有菌瘟可测'); return; }
+    var nd = st.nodes[ev.nodeId];
+    var lvl0 = nd.level, nut0 = st.res.nutrient;
+    var r = sc.tryAct({ x: nd.x, y: nd.y });
+    ok('瘟菌无法点击净化', !r.ok && !!nd.blighted,
+       r.msg || (r.ok ? '居然成功了' : '无解释'));
+    // 拒绝的同时也不能「顺手」把节点强化掉 —— 点了没反应 ≠ 点了干别的
+    ok('点瘟菌不会误触强化或净化', nd.level === lvl0 && !!nd.blighted,
+       'Lv' + lvl0 + ' 保持，blighted=' + !!nd.blighted);
+    // sim 层的移除只是内部接口（测试编排/清场用）：不再有奖励，不再计数
+    var rb = Sim.removeBlight(st, ev.nodeId);
+    ok('内部移除接口不再发奖励', rb.ok && Math.abs(st.res.nutrient - nut0) < 1e-6,
+       '养分 ' + Math.round(nut0) + ' 保持不变');
   });
 
   step(function () {
@@ -980,6 +990,34 @@
     ok('菌瘟放着不管会自愈（绝不造成永久损失）', Sim.countBlights(st) === before - 1,
        before + ' → ' + Sim.countBlights(st));
     st.autoTimer = 0;
+  });
+
+  /* ---- m9「防火墙」：菌瘟不能净化之后，这就是玩家对它的主动答案 ----------
+   * 同时养出 3 个 Lv8+（超过感染上限）的节点 → 发奖：菌瘟蔓延变慢。 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
+    if (st.milestones.m9) { R.push('      （m9 已达成，跳过首次发奖测试）'); return; }
+    // 摆布 3 个节点到 Lv8+（像玩家深耕那样），assert m9 发奖
+    var saved = st.nodes.map(function (n) { return n.level; });
+    var picked = 0, hadSlow = !!st.mods.blightSlow;
+    for (var i = 1; i < st.nodes.length && picked < C.BLIGHT.firewallNodes; i++) {
+      var nd = st.nodes[i];
+      if (!nd.gnat && !nd.blighted && nd.level <= C.BLIGHT.maxLevel) {
+        nd.level = C.BLIGHT.maxLevel + 1;
+        picked++;
+      }
+    }
+    ok('防火墙测试位就绪（' + picked + ' 个 Lv8+ 节点）',
+       picked === C.BLIGHT.firewallNodes);
+    if (picked === C.BLIGHT.firewallNodes) {
+      Sim.checkMilestones(st);
+      ok('m9 防火墙达成会发奖', !!st.milestones.m9 && !!st.mods.blightSlow && !hadSlow,
+         'm9=' + !!st.milestones.m9 + '  blightSlow=' + !!st.mods.blightSlow);
+      Sim.checkMilestones(st);
+      ok('m9 不会重复发奖', !!st.milestones.m9);
+    }
+    // 还原等级：里程碑与奖励属于永久层，保留；等级改动不触发重算，还原即复原
+    st.nodes.forEach(function (n, i2) { n.level = saved[i2]; });
   });
 
   /* ---- 菌瘟的等级规则：只往下传，Lv8+ 免疫 --------------------------------
