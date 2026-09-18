@@ -247,6 +247,9 @@ button.tiny { padding: 3px 9px; font-size: 12px; }
 
 .hidden { display: none !important; }
 
+/* 自动蔓延未解锁时的灰化 */
+.switch.off { opacity: .45; cursor: not-allowed; }
+
 /* ============================================================================
  * 窄屏 / 手机 / 竖屏平板
  * 单列 + 整页滚动。这里刻意让页面可以滚 —— 桌面那种「面板自己滚」在手机上

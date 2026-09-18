@@ -21,13 +21,16 @@ const DT = 0.25;
 
 /* 策略 = 升级优先级 + 扩张选址策略 + 基因点偏向 + 点击频率 + 是否强化节点
  * nodeFocus 就是「深耕流」落到操作上的形态：不铺广，而是把少数节点练到高等级。 */
+/* 自动蔓延现在是 m10 里程碑解锁（探索到全部 4 种特殊基质），
+ * 所以每个策略都带 clicks:1 —— 前期必须手动点击跑图，
+ * 点着点着探齐基质、解锁自动蔓延，这个节奏本身就是平衡的一部分。 */
 const STRATEGIES = [
-  { key: 'none',   name: '① 躺平流：永不升级',       priority: [], policy: 'nearest',  genes: [], clicks: 0, nodeFocus: false },
-  { key: 'expand', name: '② 扩张流：铺满近处',       priority: ['autoGrow', 'growth', 'hydration', 'absorption', 'capacity'], policy: 'nearest', genes: ['gYield', 'gRate'], clicks: 0, nodeFocus: false },
-  { key: 'deep',   name: '③ 深耕流：练节点+抢富矿', priority: ['transport', 'capacity', 'absorption', 'autoGrow', 'growth', 'hydration'], policy: 'nutrient', genes: ['gYield', 'gGrowth'], clicks: 0, nodeFocus: true },
-  { key: 'sym',    name: '④ 共生流：专攻树根刷孢子', priority: ['autoGrow', 'symbiosis', 'growth', 'hydration', 'absorption'], policy: 'spore', genes: ['gYield', 'gGrowth'], clicks: 0, nodeFocus: false },
-  { key: 'water',  name: '⑤ 找水流：沿水脉扩张',     priority: ['autoGrow', 'hydration', 'growth', 'absorption', 'transport'], policy: 'water', genes: ['gRate', 'gYield'], clicks: 0, nodeFocus: false },
-  { key: 'blind',  name: '⑥ 择优流：只挑肥的不修路', priority: ['autoGrow', 'absorption', 'hydration', 'growth'], policy: 'richest', genes: ['gYield', 'gRate'], clicks: 0, nodeFocus: false }
+  { key: 'none',   name: '① 躺平流：永不升级',       priority: [], policy: 'nearest',  genes: [], clicks: 1, nodeFocus: false },
+  { key: 'expand', name: '② 扩张流：铺满近处',       priority: ['autoGrow', 'growth', 'hydration', 'absorption', 'capacity'], policy: 'nearest', genes: ['gYield', 'gRate'], clicks: 1, nodeFocus: false },
+  { key: 'deep',   name: '③ 深耕流：练节点+抢富矿', priority: ['transport', 'capacity', 'absorption', 'autoGrow', 'growth', 'hydration'], policy: 'nutrient', genes: ['gYield', 'gGrowth'], clicks: 1, nodeFocus: true },
+  { key: 'sym',    name: '④ 共生流：专攻树根刷孢子', priority: ['autoGrow', 'symbiosis', 'growth', 'hydration', 'absorption'], policy: 'spore', genes: ['gYield', 'gGrowth'], clicks: 1, nodeFocus: false },
+  { key: 'water',  name: '⑤ 找水流：沿水脉扩张',     priority: ['autoGrow', 'hydration', 'growth', 'absorption', 'transport'], policy: 'water', genes: ['gRate', 'gYield'], clicks: 1, nodeFocus: false },
+  { key: 'blind',  name: '⑥ 择优流：只挑肥的不修路', priority: ['autoGrow', 'absorption', 'hydration', 'growth'], policy: 'richest', genes: ['gYield', 'gRate'], clicks: 1, nodeFocus: false }
 ];
 
 /* 一个「会回应」的玩家：技能一好就用，害虫立刻驱除。
@@ -88,6 +91,12 @@ function spendGenes(state, priority) {
 function run(strategy, seed, duration) {
   const state = Sim.newGame(seed, {}, {});
   state.policy = strategy.policy;
+  /* B 组对照（主动 vs 挂机）两边都先解锁自动蔓延 ——
+   * 否则挂机那边连一格都长不出来，比的就不是「注意力」而是「能不能玩」。 */
+  if (strategy.autoOn) {
+    state.autoGrow = true;
+    state.milestones.m10 = true;
+  }
 
   const lifetime = { nutrient: 0, spore: 0 };
   const timeline = [];
@@ -201,7 +210,7 @@ for (const s of STRATEGIES) {
   console.log(`   转生 ${avg.prestiges.toFixed(2)} | 基因点 ${avg.genes.toFixed(1)} | 终局菌丝 ${avg.nodes.toFixed(0)} 格 ` +
               `| 累计养分 ${Math.round(avg.lifetimeNutrient)} | 累计孢子 ${Math.round(avg.lifetimeSpore)} ` +
               `| 拥堵浪费 ${Math.round(avg.wasted)}`);
-  console.log(`   里程碑 ${avg.milestones.toFixed(1)}/8 | 最高节点等级 ${avg.maxNodeLevel.toFixed(1)} ` +
+  console.log(`   里程碑 ${avg.milestones.toFixed(1)}/${CONFIG.MILESTONES.length} | 最高节点等级 ${avg.maxNodeLevel.toFixed(1)} ` +
               `| 驱除害虫 ${avg.gnats.toFixed(0)}`);
   console.log(`   基质构成 ${JSON.stringify(avg.bySoil)}\n`);
 }
@@ -221,8 +230,11 @@ console.log('');
 console.log('='.repeat(80));
 console.log(' B. 主动点击 vs 纯挂机（同策略，看注意力是否值钱）');
 console.log('='.repeat(80));
-const activeStrategy = Object.assign({}, STRATEGIES[2], { clicks: 2 });
-const idleAvg = avgOf(SEEDS.map(s => run(STRATEGIES[2], s, DURATION)));
+/* B 组对照：两边都解锁自动蔓延，唯一变量是「会不会动手」——
+ * 挂机 clicks:0（也不回应事件），主动 clicks:2。 */
+const activeStrategy = Object.assign({}, STRATEGIES[2], { clicks: 2, autoOn: true });
+const idleStrategy   = Object.assign({}, STRATEGIES[2], { clicks: 0, autoOn: true });
+const idleAvg = avgOf(SEEDS.map(s => run(idleStrategy, s, DURATION)));
 const actAvg  = avgOf(SEEDS.map(s => run(activeStrategy, s, DURATION)));
 console.log(` 纯挂机  : 转生 ${idleAvg.prestiges.toFixed(2)}  基因 ${idleAvg.genes.toFixed(1)}  菌丝 ${idleAvg.nodes.toFixed(0)} 格  点击 ${idleAvg.clicks.toFixed(0)}`);
 console.log(` 主动点击: 转生 ${actAvg.prestiges.toFixed(2)}  基因 ${actAvg.genes.toFixed(1)}  菌丝 ${actAvg.nodes.toFixed(0)} 格  点击 ${actAvg.clicks.toFixed(0)}`);

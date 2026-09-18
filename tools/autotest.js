@@ -203,6 +203,29 @@
     ok('canvas 已创建', !!canvas(), canvas() ? canvas().width + 'x' + canvas().height : 'none');
     ok('场景已就绪', !!window.MYC.game.scene);
     ok('面板已初始化', document.querySelectorAll('#upgrades .item').length > 0);
+
+    /* 先断言「默认锁定」，再置位 —— 顺序反了测的就是空气。
+     * 自动蔓延现在由 m10（探索全部 4 种特殊基质）解锁，白送毫无意义。
+     * 注意：开局保底会立刻记到落叶层/水脉，所以「记录为空」不是有效断言。 */
+    var st0 = window.MYC.game.state;
+    ok('自动蔓延默认锁定', st0.autoGrow === false,
+       'autoGrow=' + st0.autoGrow + '（锁定的话玩家必须手动点着跑图）');
+    /* 「已探到哪些基质」是种子相关的，所以这里不断言具体种类，只断言设计不变量：
+     * 开局只有核心一格，绝不可能已经「连上」全部 4 种 —— 否则解锁等于白送。
+     * （m10 的条件是 hasSoil：真的把菌丝长到那格上，光看到不算。） */
+    var conCount = ['litter', 'vein', 'wood', 'root'].filter(function (s) {
+      for (var i = 0; i < st0.nodes.length; i++) if (st0.nodes[i].soil === s) return true;
+      return false;
+    }).length;
+    ok('开局不可能已连上全部 4 种基质（解锁条件有意义）', conCount < 4,
+       '开局已连上 ' + conCount + ' / 4');
+    ok('开关确实被禁用', document.getElementById('autoGrow').disabled === true,
+       'disabled=' + document.getElementById('autoGrow').disabled);
+
+    /* 自测假定已解锁：不置位的话网络不会自己长，
+     * 后面几十个依赖「网络在长大」的断言会全部失效。
+     * 刻意**不**预置 m10 —— 让它在测试后期有机解锁，那条路径也要测。 */
+    st0.autoGrow = true;
   });
 
   /* 先确认引擎与输入系统状态，免得后面「点击无效」被误判成游戏 bug。 */
@@ -964,6 +987,20 @@
    * 必须放在最后：转生会把网络重置成核心一格，后面的测试都依赖大网络。 */
   step(function () {
     var st = window.MYC.game.state, Sim = S.Sim;
+    /* 有机解锁检查：测试跑到这里网络早已探过全部 4 种基质，
+     * m10 必须已经自己解锁（而不是靠谁手动置位）。 */
+    var ds = st.discoveredSoils || {};
+    /* m10 条件是「连上」：网络里必须有长在 4 种基质上的节点 */
+    var conAll = ['litter', 'vein', 'wood', 'root'].every(function (s) {
+      return st.nodes.some(function (n) { return n.soil === s; });
+    });
+    ok('四种基质在测试期间都被连上', conAll,
+       'discoveredSoils=' + JSON.stringify(ds) + '  节点 ' + st.nodes.length + ' 格');
+    ok('m10 已自动解锁自动蔓延', !!st.milestones.m10 && st.autoGrow === true,
+       'm10=' + !!st.milestones.m10 + '  autoGrow=' + st.autoGrow);
+    ok('解锁后开关恢复可用', document.getElementById('autoGrow').disabled === false,
+       'disabled=' + document.getElementById('autoGrow').disabled);
+
     S.p0 = { prestiges: st.prestiges, mapW: st.mapW, mapH: st.mapH, seed: st.seed,
              nodes: st.nodes.length, knowledge: Object.keys(st.knowledge).length };
     st.res.spore = 1e9;              // 强制满足转生条件

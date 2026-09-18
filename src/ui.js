@@ -9,7 +9,7 @@ var UI = (function () {
   'use strict';
 
   var C, state, el = {}, upRows = {}, geneRows = {}, abRows = {}, msRows = {};
-  var logBuf = [], seenSoils = {}, acc = 0;
+  var logBuf = [], seenSoils = {}, acc = 0, lastAgLocked = null;
   var KEY = 'mycelium_save_v1';
   var SEEDKEY = 'mycelium_seed_v1';
 
@@ -38,6 +38,7 @@ var UI = (function () {
 
     ['clock', 'vWater', 'rWater', 'vNutrient', 'rNutrient', 'vSpore', 'rSpore',
      'sNodes', 'sDist', 'sLost', 'sRun', 'policy', 'policyHint', 'autoGrow',
+     'autoGrowRow', 'autoGrowLabel',
      'upgrades', 'prestigeCard', 'pText', 'pBar', 'pHint', 'pBtn',
      'geneCard', 'genes', 'geneLeft', 'log', 'seedTxt',
      'abilities', 'eventLine', 'milestones', 'msCount',
@@ -251,6 +252,20 @@ var UI = (function () {
     el.sLost.textContent = (state.lostTotal > 0 ? fmt(state.lostTotal) + ' 累计' : '无');
     el.sRun.textContent = clk(state.t);
 
+    // 自动蔓延开关：m10「感知」解锁前是灰的，并明确告诉玩家怎么解锁。
+    // 用 memo 避免每 0.1s 重写一次 label。
+    var agLocked = !state.milestones.m10;
+    if (agLocked !== lastAgLocked) {
+      lastAgLocked = agLocked;
+      el.autoGrow.disabled = agLocked;
+      el.autoGrowRow.classList.toggle('off', agLocked);
+      el.autoGrowLabel.innerHTML = agLocked
+        ? '自动蔓延<span class="hint" style="display:inline">（未解锁 —— 连上落叶层 / 水脉 / 腐木 / 树根）</span>'
+        : '自动蔓延<span class="hint" style="display:inline">（关掉则只靠你手动点）</span>';
+      if (agLocked) el.autoGrow.checked = false;
+      else el.autoGrow.checked = state.autoGrow;
+    }
+
     // 升级列表
     C.UPGRADES.forEach(function (u) {
       var r = upRows[u.key], lv = state.up[u.key] || 0;
@@ -394,6 +409,7 @@ var UI = (function () {
     state = newState;
     window.MYC.game.state = newState;
     seenSoils = {};
+    lastAgLocked = null;              // 强制刷新自动蔓延开关的状态
     el.autoGrow.checked = newState.autoGrow;
     el.policy.value = newState.policy;
     updatePolicyHint();

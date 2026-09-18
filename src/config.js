@@ -202,7 +202,8 @@ var CONFIG = (function () {
     { id: 'm6', name: '扩张', need: '网络达到 60 格',        reward: '+2 基因点' },
     { id: 'm7', name: '抗虫', need: '驱除 5 只害虫',         reward: '害虫繁殖速度减半' },
     { id: 'm8', name: '循环', need: '完成一次散播',          reward: '+3 基因点' },
-    { id: 'm9', name: '净化', need: '净化 12 处菌瘟',        reward: '菌瘟蔓延速度降低' }
+    { id: 'm9', name: '净化', need: '净化 12 处菌瘟',        reward: '菌瘟蔓延速度降低' },
+    { id: 'm10', name: '感知', need: '探索到全部 4 种特殊基质', reward: '解锁「自动蔓延」' }
   ];
 
   return {

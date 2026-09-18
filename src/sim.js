@@ -67,11 +67,15 @@ var Sim = (function () {
       maxDist: 0,
       core: { x: (m.w >> 1), y: (m.h >> 1) },
       explored: { minX: 1e9, maxX: -1e9, minY: 1e9, maxY: -1e9, count: 0 },
+      discoveredSoils: {},         // 见过的基质类型 —— 「自动蔓延」解锁条件（m10）
       up: {},
       genes: genes || {},
       knowledge: knowledge || {},  // 已探明格子（换图后作废）
       policy: 'nearest',
-      autoGrow: true,
+      /* 自动蔓延**默认锁定**，探索到全部 4 种特殊基质后由里程碑 m10 解锁。
+       * 白送的话它毫无意义，前期也少了「跑图找齐基质」这个明确目标。
+       * 注意 doPrestige 不重置它 —— 解锁一次永久有效。 */
+      autoGrow: false,
       autoTimer: 0,
       prestiges: prestiges || 0,
       runs: [],                    // 每局的成绩
@@ -448,7 +452,9 @@ var Sim = (function () {
   }
 
   /* ------------------------------------------------------------- 感知范围 */
-  /* 顺手维护「已探明包围盒」—— 渲染层做视野取景要用，全图扫描太贵。 */
+  /* 顺手维护「已探明包围盒」—— 渲染层做视野取景要用，全图扫描太贵。
+   * 同时记录见过的基质类型 —— m10「探索到全部 4 种特殊基质」要用，
+   * O(1) 查询而不是每次全图扫（checkMilestones 每个 tick 都会跑）。 */
   function markKnown(state, x, y) {
     var c = state.grid[idx(x, y)];
     var e = state.explored;
@@ -458,6 +464,7 @@ var Sim = (function () {
     if (y < e.minY) e.minY = y;
     if (y > e.maxY) e.maxY = y;
     state.knowledge[x + ',' + y] = 1;
+    if (c.soil !== 'soil' && c.soil !== 'core') state.discoveredSoils[c.soil] = 1;
   }
 
   function reveal(state) {
@@ -957,6 +964,12 @@ var Sim = (function () {
       else if (m.id === 'm7') ok = state.counters.gnatsRemoved >= 5;
       else if (m.id === 'm8') ok = state.prestiges >= 1;
       else if (m.id === 'm9') ok = (state.counters.blightsCured || 0) >= 12;
+      else if (m.id === 'm10') {
+        /* 「连上」而不是「看到」—— 初始感知圈是圆的，运气好的种子
+         * 四种基质全在圈里，光靠开局那一次 reveal 就能解锁，等于白送（实测踩过）。
+         * 连上必须真的把菌丝长过去，是玩家点出来的，解锁才有分量。 */
+        ok = hasSoil('litter') && hasSoil('vein') && hasSoil('wood') && hasSoil('root');
+      }
       if (!ok) continue;
 
       state.milestones[m.id] = true;
@@ -979,6 +992,10 @@ var Sim = (function () {
       case 'm7': state.mods.gnatSlow = true; break;
       case 'm8': state.pendingGenes = (state.pendingGenes || 0) + 3; break;
       case 'm9': state.mods.blightSlow = true; break;
+      case 'm10':
+        state.autoGrow = true;
+        pushFloater(state, state.core.x, state.core.y, '自动蔓延!', 'spore');
+        break;
     }
   }
 
