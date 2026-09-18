@@ -871,10 +871,13 @@ var Sim = (function () {
   }
 
   function blightableNodeIds(state) {
+    /* 等级规则的第一半：初次滋生也不会碰 Lv(maxLevel)+ 的菌。
+     * 深耕练出来的高等级节点是安全的 —— 强化 = 产能 + 吞吐 + 抗瘟。 */
+    var maxL = CONFIG.BLIGHT.maxLevel;
     var out = [];
     for (var i = 1; i < state.nodes.length; i++) {
       var nd = state.nodes[i];
-      if (!nd.gnat && !nd.blighted) out.push(i);
+      if (!nd.gnat && !nd.blighted && nd.level <= maxL) out.push(i);
     }
     return out;
   }
@@ -891,12 +894,17 @@ var Sim = (function () {
   }
 
   /* 菌瘟只沿「相邻的健康菌丝」扩散 —— 所以蔓延路径可预判，
-   * 玩家看一眼地图就知道它会往哪爬，这是紧迫感的来源。 */
+   * 玩家看一眼地图就知道它会往哪爬，这是紧迫感的来源。
+   *
+   * 等级规则的第二半：Lv N 的菌瘟只能传给「等级 ≤ N」的邻居，
+   * 且封顶 maxLevel（源头若是被玩家手动强化超过上限的，也按上限算）。
+   * 于是「先净化哪一处」多了个判断维度：低级菌聚集的一侧烂得快。 */
   function spreadBlights(state) {
     var cfg = CONFIG.BLIGHT;
     var interval = cfg.spreadInterval * (state.mods.blightSlow ? 1.6 : 1);
     var chance = Math.min(0.85, cfg.spreadChance + state.prestiges * 0.03);
     var maxN = blightMaxCount(state);
+    var cap = cfg.maxLevel;
 
     for (var i = state.events.length - 1; i >= 0; i--) {
       var e = state.events[i];
@@ -904,12 +912,14 @@ var Sim = (function () {
       var nd = state.nodes[e.nodeId];
       if (!nd || !nd.blighted) continue;
 
+      var srcLvl = Math.min(nd.level, cap);
       var nb = neighbours(nd.x, nd.y), pool = [];
       for (var k = 0; k < nb.length; k++) {
         var nid = state.nodeAt[idx(nb[k][0], nb[k][1])];
         if (nid == null || nid === 0) continue;      // 核心免疫：全黑几十秒太惩罚
         var t = state.nodes[nid];
         if (t.gnat || t.blighted) continue;
+        if (t.level > srcLvl) continue;              // 高级菌有抵抗力：只往同级或更低传
         pool.push(nid);
       }
       if (pool.length && countBlights(state) < maxN && stateRng(state) < chance) {

@@ -507,6 +507,9 @@
           lines.push('⚠ 菌瘟蔓延中 —— 此格停产');
           lines.push('点击净化，奖励 +' + C.BLIGHT.reward + ' 养分');
           lines.push('会沿菌丝扩散（约 ' + Math.ceil(nd.blighted.spreadT) + 's 后尝试），放着不管也会自愈');
+          // 等级规则：源头只往下传，且封顶 maxLevel
+          var blCap = Math.min(nd.level, C.BLIGHT.maxLevel);
+          lines.push('只能传给 Lv' + blCap + ' 及以下的邻居菌丝');
         } else if (nd.gnat) {
           lines.push('⚠ 害虫占据中 —— 此格完全停产');
           lines.push('点击驱除，奖励 +' + C.EVENTS.gnatReward + ' 养分');
@@ -514,6 +517,8 @@
           lines.push('核心 —— 整张网络都从它出发');
         } else {
           lines.push('菌丝 Lv' + nd.level + '　离核 ' + nd.dist + ' 格');
+          // 超过感染上限的菌对菌瘟完全免疫 —— 深耕的隐性回报要说清楚
+          if (nd.level > C.BLIGHT.maxLevel) lines.push('★ 等级高到菌瘟感染不了');
           if (nd.cargo > 0) lines.push('货物流量 ' + nd.cargo.toFixed(1) + '/s');
           var uc = Sim.nodeUpgradeCost(st, nd);
           lines.push(isFinite(uc)

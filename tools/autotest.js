@@ -923,12 +923,14 @@
     var st = window.MYC.game.state, Sim = S.Sim, G = GRID();
     st.autoTimer = -1e6;                 // 冻住自动蔓延，节点集合才稳定
 
-    // 挑一个健康邻居最多的节点放菌瘟 —— 保证「能扩散」这个前提成立
-    var healthy = function (x, y) {
+    // 挑一个「可传染邻居」最多的节点放菌瘟 —— 保证「能扩散」这个前提成立。
+    // 等级规则生效后只有等级 ≤ 自己的邻居才可能被传，计数按同一条规则算。
+    var healthy = function (x, y, lvl) {
       var n = 0;
       [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (d) {
         var id = st.nodeAt[Sim.idx(x + d[0], y + d[1])];
-        if (id != null && id !== 0 && !st.nodes[id].gnat && !st.nodes[id].blighted) n++;
+        if (id != null && id !== 0 && !st.nodes[id].gnat && !st.nodes[id].blighted &&
+            st.nodes[id].level <= lvl) n++;
       });
       return n;
     };
@@ -936,7 +938,7 @@
     for (var i = 1; i < st.nodes.length; i++) {
       var nd = st.nodes[i];
       if (nd.gnat || nd.blighted) continue;
-      var n = healthy(nd.x, nd.y);
+      var n = healthy(nd.x, nd.y, nd.level);
       if (n > bestN) { bestN = n; best = i; }
     }
     S.bl = null;
@@ -977,6 +979,129 @@
     Sim.tick(st, 0.1);
     ok('菌瘟放着不管会自愈（绝不造成永久损失）', Sim.countBlights(st) === before - 1,
        before + ' → ' + Sim.countBlights(st));
+    st.autoTimer = 0;
+  });
+
+  /* ---- 菌瘟的等级规则：只往下传，Lv8+ 免疫 --------------------------------
+   * 深耕练出来的高等级菌有抵抗力：源头只能传给「等级 ≤ 源头」的邻居，
+   * 且自动感染封顶 maxLevel。这里直接摆布节点等级来验证两条边界。
+   * 每条规则都带正对照 —— 菌瘟确实在扩散时，「靶子没被感染」才有意义。 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
+    st.autoTimer = -1e6;
+    var maxL = C.BLIGHT.maxLevel;
+    // 清场：净化残留菌瘟，后面要精确控制感染状态
+    st.events.slice().forEach(function (e) {
+      if (e.kind === 'blight') Sim.removeBlight(st, e.nodeId);
+    });
+
+    /* 节点的非核心健康邻居 id 列表 */
+    function nbs(nd) {
+      var out = [];
+      [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (d) {
+        var id = st.nodeAt[Sim.idx(nd.x + d[0], nd.y + d[1])];
+        if (id != null && id !== 0 && !st.nodes[id].gnat && !st.nodes[id].blighted) out.push(id);
+      });
+      return out;
+    }
+    S.lvlSaved = {};                     // 被改过等级的节点 → 原始等级
+    function setLvl(id, lv) {
+      if (!(id in S.lvlSaved)) S.lvlSaved[id] = st.nodes[id].level;
+      st.nodes[id].level = lv;
+    }
+    function cureAll() {
+      st.events.slice().forEach(function (e) {
+        if (e.kind === 'blight') Sim.removeBlight(st, e.nodeId);
+      });
+    }
+
+    // —— 规则一：源头只能往下传 ——
+    // 找源头 X（Lv ≤ 上限），它有 ≥2 个「原本可传染」的低级邻居：
+    // 一个拉到 Lv9 当免疫靶子 Y，另一个保持低级当正对照。
+    var X = null, yId = null, ctrlId = null;
+    for (var i = 1; i < st.nodes.length && X === null; i++) {
+      var nd = st.nodes[i];
+      if (nd.gnat || nd.blighted || nd.level > maxL) continue;
+      var low = nbs(nd).filter(function (id) { return st.nodes[id].level <= nd.level; });
+      if (low.length >= 2) { X = i; ctrlId = low[0]; yId = low[1]; }
+    }
+    ok('规则一：找到带两个低级邻居的源头测试位', X !== null,
+       X !== null ? ('节点 ' + X + ' Lv' + st.nodes[X].level) : '网络里没有');
+    if (X !== null) {
+      setLvl(yId, maxL + 2);             // 靶子拉到 Lv9：按规则不可感染
+      S.yId = yId;
+      ok('规则一：源头菌瘟已投放', !!Sim.putBlight(st, X));
+      var reached2 = false;
+      for (var r = 0; r < 300; r++) {
+        Sim.spreadBlights(st);
+        if (Sim.countBlights(st) >= 2) reached2 = true;
+      }
+      ok('规则一：正对照 —— 菌瘟确实在低级菌之间扩散', reached2,
+         '菌瘟 ' + Sim.countBlights(st) + ' 处');
+      ok('规则一：Lv9 靶子始终未被感染（只往下传）',
+         !st.nodes[yId].blighted,
+         'Y=Lv' + st.nodes[yId].level + ' blighted=' + !!st.nodes[yId].blighted);
+      cureAll();
+    }
+
+    // —— 规则二：自动感染封顶 maxLevel ——
+    // 源头直接抬到 Lv10（超出上限）：即便源头超限，也不能传给 Lv9 邻居。
+    var Z = null, wId = null, ctrl2 = null;
+    for (var j = 1; j < st.nodes.length && Z === null; j++) {
+      var nd2 = st.nodes[j];
+      if (nd2.gnat || nd2.blighted) continue;
+      var low2 = nbs(nd2).filter(function (id) { return st.nodes[id].level <= maxL; });
+      if (low2.length >= 2) { Z = j; ctrl2 = low2[0]; wId = low2[1]; }
+    }
+    ok('规则二：找到源头测试位', Z !== null);
+    if (Z !== null) {
+      setLvl(Z, 10);
+      setLvl(wId, maxL + 2);
+      S.wId = wId;
+      cureAll();
+      ok('规则二：超上限源头菌瘟已投放（直接摆布）', !!Sim.putBlight(st, Z));
+      var reached3 = false;
+      for (var r2 = 0; r2 < 200; r2++) {
+        Sim.spreadBlights(st);
+        if (Sim.countBlights(st) >= 2) reached3 = true;
+      }
+      ok('规则二：正对照 —— Lv≤7 的邻居照常被感染', reached3,
+         '菌瘟 ' + Sim.countBlights(st) + ' 处');
+      ok('规则二：Lv9 靶子始终未被感染（封顶生效）',
+         !st.nodes[wId].blighted,
+         'W=Lv' + st.nodes[wId].level + ' blighted=' + !!st.nodes[wId].blighted);
+      cureAll();
+    }
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
+    var maxL = C.BLIGHT.maxLevel;
+    if (!S.lvlSaved) { ok('等级规则前置步骤已跑', false); return; }
+
+    // —— 规则三：初次滋生也不碰超上限的菌 ——
+    // 全员拉到 Lv9：菌瘟无处滋生；放开一个低级节点后，滋生点必是它。
+    var saved = st.nodes.map(function (n) { return n.level; });
+    st.nodes.forEach(function (n) { n.level = maxL + 2; });
+    ok('规则三：全员高等级时菌瘟无处滋生', Sim.spawnBlight(st) === null);
+
+    var pick = null;
+    for (var i = 1; i < st.nodes.length; i++) {
+      if (!st.nodes[i].gnat && !st.nodes[i].blighted) { pick = i; break; }
+    }
+    ok('规则三：存在可作靶子的健康节点', pick !== null);
+    if (pick !== null) {
+      st.nodes[pick].level = 0;
+      var b = Sim.spawnBlight(st);
+      ok('规则三：放开低级节点后滋生点必在等级上限内',
+         !!b && b.nodeId === pick && st.nodes[b.nodeId].level <= maxL,
+         b ? ('nodeId=' + b.nodeId + ' Lv' + st.nodes[b.nodeId].level) : 'null');
+      if (b) Sim.removeBlight(st, b.nodeId);
+    }
+
+    // 还原：先恢复本步快照（pick 等），再把规则一/二改过的节点复原到原始等级
+    st.nodes.forEach(function (n, i2) { n.level = saved[i2]; });
+    Object.keys(S.lvlSaved).forEach(function (k) { st.nodes[k].level = S.lvlSaved[k]; });
     st.autoTimer = 0;
   });
 

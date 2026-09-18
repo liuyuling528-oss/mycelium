@@ -355,7 +355,8 @@ var UI = (function () {
           pushLog('⚠ 害虫出现，占据了一格菌丝（点地图上的红点驱除）');
           toast('害虫出现 —— 点地图上的红点驱除');
         } else if (e.kind === 'blight') {
-          pushLog('⚠ 菌瘟出现！会沿菌丝扩散（点地图上的紫斑净化）');
+          pushLog('⚠ 菌瘟出现！会沿菌丝扩散，只感染 Lv' + C.BLIGHT.maxLevel +
+                  ' 及以下的菌丝（点地图上的紫斑净化）');
           toast('菌瘟出现 —— 会扩散，点地图上的紫斑净化');
         } else if (e.kind === 'rain') {
           pushLog('降雨带出现：区域内水分产出 ×' + C.EVENTS.buffMul);
