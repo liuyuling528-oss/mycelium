@@ -172,6 +172,25 @@ var CONFIG = (function () {
     gnatReward: 45         // 驱除一只奖励的养分
   };
 
+  /* ---- 菌瘟（后期挑战）-------------------------------------------------
+   * 和害虫的区别：害虫是「随机冒出来」，菌瘟会**沿着菌丝蔓延** ——
+   * 边缘不管，它就一路往核心爬，晚处理一次要多赔好几格产能。
+   *
+   * 但它**会自愈**：放着不管 42 秒自己好，绝不造成永久损失 ——
+   * 挑战来自「什么时候去处理、先处理哪一处」，而不是「回来一看全毁了」。
+   * （这条底线不能破：惩罚性设计会让「回来一看全毁了」的体验直接劝退。）
+   *
+   * 一定规模后才出现（minNodes），前期保持安宁；数量封顶，永远不会掏空网络。 */
+  var BLIGHT = {
+    minNodes: 32,          // 网络到这个规模才可能出现
+    spawnChance: 0.45,     // 事件判定时抽中菌瘟的概率（抽不中就走增益区）
+    maxCount: 8,           // 同时最多几处
+    spreadInterval: 9,     // 每处菌瘟每隔几秒尝试往外扩散一次
+    spreadChance: 0.55,    // 扩散成功率（随转生次数小幅上调）
+    recoverT: 42,          // 放着不管多少秒后自愈
+    reward: 90             // 主动净化的养分奖励（比害虫高，因为更紧急）
+  };
+
   /* ---- 里程碑 ---------------------------------------------------------
    * 渐进解锁。一开局就把所有东西摆在眼前，是「内容很多但很平」的常见死因。   */
   var MILESTONES = [
@@ -182,7 +201,8 @@ var CONFIG = (function () {
     { id: 'm5', name: '主干', need: '任一节点强化到 5 级',   reward: '全部产出 +10%' },
     { id: 'm6', name: '扩张', need: '网络达到 60 格',        reward: '+2 基因点' },
     { id: 'm7', name: '抗虫', need: '驱除 5 只害虫',         reward: '害虫繁殖速度减半' },
-    { id: 'm8', name: '循环', need: '完成一次散播',          reward: '+3 基因点' }
+    { id: 'm8', name: '循环', need: '完成一次散播',          reward: '+3 基因点' },
+    { id: 'm9', name: '净化', need: '净化 12 处菌瘟',        reward: '菌瘟蔓延速度降低' }
   ];
 
   return {
@@ -190,7 +210,8 @@ var CONFIG = (function () {
     SPORE_METABOLISM: SPORE_METABOLISM,
     GROW: GROW, TRANSPORT: TRANSPORT, UPGRADES: UPGRADES,
     PRESTIGE: PRESTIGE, GENES: GENES, POLICIES: POLICIES,
-    NODE_UP: NODE_UP, ABILITIES: ABILITIES, EVENTS: EVENTS, MILESTONES: MILESTONES
+    NODE_UP: NODE_UP, ABILITIES: ABILITIES, EVENTS: EVENTS, BLIGHT: BLIGHT,
+    MILESTONES: MILESTONES
   };
 })();
 

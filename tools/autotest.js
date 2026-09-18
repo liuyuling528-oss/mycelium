@@ -896,6 +896,70 @@
     st.autoTimer = 0;
   });
 
+  /* ---- 菌瘟（后期挑战）---------------------------------------------------
+   * 和害虫的区别只有一个：会沿菌丝蔓延。这是「后期没挑战」的解药，
+   * 所以蔓延/净化/自愈三条路径都要测。 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, G = GRID();
+    st.autoTimer = -1e6;                 // 冻住自动蔓延，节点集合才稳定
+
+    // 挑一个健康邻居最多的节点放菌瘟 —— 保证「能扩散」这个前提成立
+    var healthy = function (x, y) {
+      var n = 0;
+      [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (d) {
+        var id = st.nodeAt[Sim.idx(x + d[0], y + d[1])];
+        if (id != null && id !== 0 && !st.nodes[id].gnat && !st.nodes[id].blighted) n++;
+      });
+      return n;
+    };
+    var best = null, bestN = 0;
+    for (var i = 1; i < st.nodes.length; i++) {
+      var nd = st.nodes[i];
+      if (nd.gnat || nd.blighted) continue;
+      var n = healthy(nd.x, nd.y);
+      if (n > bestN) { bestN = n; best = i; }
+    }
+    S.bl = null;
+    ok('找到适合扩散的节点', !!best && bestN > 0, best ? ('节点 ' + best + ' 有 ' + bestN + ' 个健康邻居') : '没有');
+    if (best != null && bestN > 0) S.bl = Sim.putBlight(st, best);
+    ok('菌瘟可以投放', !!S.bl, S.bl ? '节点停产中' : '投放失败');
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim;
+    if (!S.bl) return;
+    ok('菌瘟让节点停产', st.nodes[S.bl.nodeId].disabled === true, 'disabled=' + st.nodes[S.bl.nodeId].disabled);
+    // 扩散：反复尝试（每次约 55% 成功率），几次之内必然蔓延出去
+    var tries = 0;
+    while (Sim.countBlights(st) < 2 && tries++ < 300) Sim.spreadBlights(st);
+    ok('菌瘟会沿菌丝扩散', Sim.countBlights(st) >= 2,
+       '尝试 ' + tries + ' 次后菌瘟 ' + Sim.countBlights(st) + ' 处');
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim;
+    var ev = null;
+    st.events.forEach(function (e) { if (e.kind === 'blight' && !ev) ev = e; });
+    if (!ev) { ok('菌瘟可以点击净化', false, '没有菌瘟可测'); return; }
+    S.cure = Sim.removeBlight(st, ev.nodeId);
+    ok('菌瘟可以点击净化', !!S.cure.ok, S.cure.ok ? ('+' + S.cure.reward + ' 养分') : S.cure.reason);
+    ok('净化计数累计', (st.counters.blightsCured || 0) >= 1,
+       'blightsCured=' + (st.counters.blightsCured || 0));
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim;
+    var ev = null;
+    st.events.forEach(function (e) { if (e.kind === 'blight' && !ev) ev = e; });
+    if (!ev) { ok('菌瘟放着不管会自愈', false, '没有菌瘟可测'); return; }
+    var before = Sim.countBlights(st);
+    ev.recoverT = 0.01;                  // 把自愈计时拨到尽头
+    Sim.tick(st, 0.1);
+    ok('菌瘟放着不管会自愈（绝不造成永久损失）', Sim.countBlights(st) === before - 1,
+       before + ' → ' + Sim.countBlights(st));
+    st.autoTimer = 0;
+  });
+
   /* ---- 转生换图 ----------------------------------------------------------
    * 必须放在最后：转生会把网络重置成核心一格，后面的测试都依赖大网络。 */
   step(function () {

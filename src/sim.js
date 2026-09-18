@@ -732,7 +732,10 @@ var Sim = (function () {
 
   function freeNodeIds(state) {
     var out = [];
-    for (var i = 1; i < state.nodes.length; i++) if (!state.nodes[i].gnat) out.push(i);
+    for (var i = 1; i < state.nodes.length; i++) {
+      var nd = state.nodes[i];
+      if (!nd.gnat && !nd.blighted) out.push(i);
+    }
     return out;
   }
 
@@ -747,13 +750,18 @@ var Sim = (function () {
   }
 
   function spawnEvent(state) {
-    var cfg = CONFIG.EVENTS;
+    var cfg = CONFIG.EVENTS, cfgB = CONFIG.BLIGHT;
     var ev = null;
 
-    // 害虫：只在网络有规模后出现，开局就被骚扰很烦人
+    // 害虫：前期的小麻烦，网络有规模后才出现
     if (state.nodes.length >= 20 && countGnats(state) < cfg.gnatMax && stateRng(state) < 0.4) {
       var pool = freeNodeIds(state);
       if (pool.length) ev = putGnat(state, pool[Math.floor(stateRng(state) * pool.length)]);
+    } else if (state.nodes.length >= cfgB.minNodes &&
+               countBlights(state) < blightMaxCount(state) &&
+               stateRng(state) < cfgB.spawnChance) {
+      // 菌瘟：后期的真威胁，会蔓延 —— 这是「后期像腹泻」的解药
+      ev = spawnBlight(state);
     }
 
     if (!ev) {
@@ -777,7 +785,7 @@ var Sim = (function () {
   }
 
   function tickEvents(state, dt) {
-    var cfg = CONFIG.EVENTS, i, e;
+    var cfg = CONFIG.EVENTS, cfgB = CONFIG.BLIGHT, i, e;
 
     for (i = state.events.length - 1; i >= 0; i--) {
       e = state.events[i];
@@ -791,6 +799,20 @@ var Sim = (function () {
             var pool = freeNodeIds(state);
             if (pool.length) putGnat(state, pool[Math.floor(stateRng(state) * pool.length)]);
           }
+        }
+      } else if (e.kind === 'blight') {
+        // 菌瘟：会扩散（威胁），也会自愈（底线 —— 不造成永久损失）
+        e.spreadT -= dt;
+        e.recoverT -= dt;
+        if (e.recoverT <= 0) {
+          var nd = state.nodes[e.nodeId];
+          if (nd) { nd.blighted = null; nd.disabled = false; }
+          state.events.splice(i, 1);
+          continue;
+        }
+        if (e.spreadT <= 0) {
+          e.spreadT = cfgB.spreadInterval * (state.mods.blightSlow ? 1.6 : 1);
+          spreadBlights(state);
         }
       } else {
         e.ttl -= dt;
@@ -820,6 +842,100 @@ var Sim = (function () {
     return { ok: true, reward: CONFIG.EVENTS.gnatReward };
   }
 
+  /* ---- 菌瘟（后期挑战）------------------------------------------------
+   * 与害虫的差别只有一个：**会沿着菌丝蔓延**。
+   * 害虫随机冒出来，菌瘟从网络边缘往核心爬 —— 于是「先处理哪一处、
+   * 要不要放着让它烂」变成了真正的空间决策。
+   * 底线不变：它会自愈（recoverT），绝不造成永久损失。 */
+  function countBlights(state) {
+    var n = 0;
+    for (var i = 0; i < state.events.length; i++) if (state.events[i].kind === 'blight') n++;
+    return n;
+  }
+
+  /* 同时最多几处：随转生次数放宽一点，但封顶 —— 永远不会把网络掏空 */
+  function blightMaxCount(state) {
+    return Math.min(CONFIG.BLIGHT.maxCount, 3 + Math.floor(state.prestiges * 1.5));
+  }
+
+  function blightableNodeIds(state) {
+    var out = [];
+    for (var i = 1; i < state.nodes.length; i++) {
+      var nd = state.nodes[i];
+      if (!nd.gnat && !nd.blighted) out.push(i);
+    }
+    return out;
+  }
+
+  function putBlight(state, nodeId) {
+    var nd = state.nodes[nodeId];
+    if (!nd || nd.blighted || nd.gnat) return null;
+    var cfg = CONFIG.BLIGHT;
+    var b = { kind: 'blight', nodeId: nodeId, spreadT: cfg.spreadInterval, recoverT: cfg.recoverT };
+    nd.blighted = b;
+    nd.disabled = true;
+    state.events.push(b);
+    return b;
+  }
+
+  /* 菌瘟只沿「相邻的健康菌丝」扩散 —— 所以蔓延路径可预判，
+   * 玩家看一眼地图就知道它会往哪爬，这是紧迫感的来源。 */
+  function spreadBlights(state) {
+    var cfg = CONFIG.BLIGHT;
+    var interval = cfg.spreadInterval * (state.mods.blightSlow ? 1.6 : 1);
+    var chance = Math.min(0.85, cfg.spreadChance + state.prestiges * 0.03);
+    var maxN = blightMaxCount(state);
+
+    for (var i = state.events.length - 1; i >= 0; i--) {
+      var e = state.events[i];
+      if (e.kind !== 'blight') continue;
+      var nd = state.nodes[e.nodeId];
+      if (!nd || !nd.blighted) continue;
+
+      var nb = neighbours(nd.x, nd.y), pool = [];
+      for (var k = 0; k < nb.length; k++) {
+        var nid = state.nodeAt[idx(nb[k][0], nb[k][1])];
+        if (nid == null || nid === 0) continue;      // 核心免疫：全黑几十秒太惩罚
+        var t = state.nodes[nid];
+        if (t.gnat || t.blighted) continue;
+        pool.push(nid);
+      }
+      if (pool.length && countBlights(state) < maxN && stateRng(state) < chance) {
+        var nb2 = putBlight(state, pool[Math.floor(stateRng(state) * pool.length)]);
+        if (nb2) e.spreadT = interval;
+      }
+    }
+  }
+
+  function spawnBlight(state) {
+    var pool = blightableNodeIds(state);
+    if (!pool.length) return null;
+    // 偏好离核远的：从网络边缘开始烂，玩家有时间反应
+    var best = null, bestDist = -1;
+    for (var k = 0; k < 4; k++) {
+      var id = pool[Math.floor(stateRng(state) * pool.length)];
+      var d = state.nodes[id].dist;
+      if (d > bestDist) { bestDist = d; best = id; }
+    }
+    return best == null ? null : putBlight(state, best);
+  }
+
+  function removeBlight(state, nodeId) {
+    var nd = state.nodes[nodeId];
+    if (!nd || !nd.blighted) return { ok: false, reason: '这里没有菌瘟' };
+    for (var i = 0; i < state.events.length; i++) {
+      if (state.events[i] === nd.blighted) { state.events.splice(i, 1); break; }
+    }
+    nd.blighted = null;
+    nd.disabled = false;
+    state.counters.blightsCured = (state.counters.blightsCured || 0) + 1;
+    var reward = CONFIG.BLIGHT.reward;
+    state.res.nutrient += reward;
+    state.total.nutrient += reward;
+    pushFloater(state, nd.x, nd.y, '+' + reward, 'nutrient');
+    return { ok: true, reward: reward };
+  }
+
   /* ---- 里程碑（永久成就层，跨转生保留）-------------------------------- */
   function checkMilestones(state) {
     var done = [], i, m, ok;
@@ -840,6 +956,7 @@ var Sim = (function () {
       else if (m.id === 'm6') ok = state.nodes.length >= 60;
       else if (m.id === 'm7') ok = state.counters.gnatsRemoved >= 5;
       else if (m.id === 'm8') ok = state.prestiges >= 1;
+      else if (m.id === 'm9') ok = (state.counters.blightsCured || 0) >= 12;
       if (!ok) continue;
 
       state.milestones[m.id] = true;
@@ -861,6 +978,7 @@ var Sim = (function () {
       case 'm6': state.pendingGenes = (state.pendingGenes || 0) + 2; break;
       case 'm7': state.mods.gnatSlow = true; break;
       case 'm8': state.pendingGenes = (state.pendingGenes || 0) + 3; break;
+      case 'm9': state.mods.blightSlow = true; break;
     }
   }
 
@@ -1077,6 +1195,9 @@ var Sim = (function () {
     abilityReady: abilityReady, useAbility: useAbility, abilityCfg: abilityCfg,
     spawnEvent: spawnEvent, removeGnat: removeGnat, buffAt: buffAt,
     countGnats: countGnats, checkMilestones: checkMilestones,
+    // 菌瘟（后期挑战）
+    countBlights: countBlights, removeBlight: removeBlight,
+    spawnBlight: spawnBlight, spreadBlights: spreadBlights, putBlight: putBlight,
     pushFloater: pushFloater,
     cellYieldOf: function (state, soil) { return cellYield(state, soil); }
   };

@@ -504,7 +504,11 @@
         }
       } else if (cell.node != null) {
         var nd = st.nodes[cell.node];
-        if (nd.gnat) {
+        if (nd.blighted) {
+          lines.push('⚠ 菌瘟蔓延中 —— 此格停产');
+          lines.push('点击净化，奖励 +' + C.BLIGHT.reward + ' 养分');
+          lines.push('会沿菌丝扩散（约 ' + Math.ceil(nd.blighted.spreadT) + 's 后尝试），放着不管也会自愈');
+        } else if (nd.gnat) {
           lines.push('⚠ 害虫占据中 —— 此格完全停产');
           lines.push('点击驱除，奖励 +' + C.EVENTS.gnatReward + ' 养分');
         } else if (nd.id === 0) {
@@ -580,6 +584,15 @@
       if (cell.node != null) {
         var nd = st.nodes[cell.node];
 
+        if (nd.blighted) {                   // 菌瘟：会扩散，优先级比害虫高
+          var rb = Sim.removeBlight(st, nd.id);
+          if (rb.ok) {
+            game.dirty = true;
+            if (game.ui) game.ui.pushLog('净化菌瘟，+' + rb.reward + ' 养分');
+            return { ok: true, msg: '菌瘟已净化' };
+          }
+          return { ok: false, msg: rb.reason };
+        }
         if (nd.gnat) {                       // 有虫 → 驱除
           var rr = Sim.removeGnat(st, nd.id);
           if (rr.ok) {
@@ -696,7 +709,7 @@
       var pulse = 0.5 + 0.5 * Math.sin(time / 420);
       for (var i = 0; i < st.events.length; i++) {
         var e = st.events[i];
-        if (e.kind === 'gnat') continue;
+        if (e.kind === 'gnat' || e.kind === 'blight') continue;
         var col = (e.kind === 'rain') ? COL.water : COL.spore;
         var x = centerX(e.x), y = centerY(e.y), r = e.r * GRID.CELL;
         g.fillStyle(col, 0.09 + 0.05 * pulse);
@@ -710,7 +723,9 @@
       }
     }
 
-    /* 害虫：压在节点上的红色标记，闪烁提醒 —— 它是唯一「必须回应」的东西 */
+    /* 害虫（红）与菌瘟（紫）：压在节点上的标记 —— 它们是唯二「必须回应」的东西。
+     * 菌瘟会蔓延，所以加一圈**扩散倒计时环**：环走完它就往外爬一格。
+     * 紧迫感必须来自可见的信息，而不是凭空觉得慌。 */
     drawGnats(st, time) {
       var g = this.gnatGfx;
       g.clear();
@@ -718,14 +733,29 @@
       var pulse = 0.5 + 0.5 * Math.sin(time / 180);
       for (var i = 0; i < st.events.length; i++) {
         var e = st.events[i];
-        if (e.kind !== 'gnat') continue;
-        var nd = st.nodes[e.nodeId];
-        if (!nd) continue;
-        var x = centerX(nd.x), y = centerY(nd.y), c = GRID.CELL;
-        g.fillStyle(0xd0503a, 0.16 + 0.16 * pulse).fillCircle(x, y, c * 0.80);
-        g.fillStyle(0x7a2a1c, 1).fillCircle(x, y, c * 0.34);
-        g.fillStyle(0xe86a4a, 1).fillCircle(x, y, c * 0.20);
-        g.lineStyle(2, 0xffb08a, 0.45 + 0.45 * pulse).strokeCircle(x, y, c * 0.46);
+        if (e.kind === 'gnat') {
+          var nd = st.nodes[e.nodeId];
+          if (!nd) continue;
+          var x = centerX(nd.x), y = centerY(nd.y), c = GRID.CELL;
+          g.fillStyle(0xd0503a, 0.16 + 0.16 * pulse).fillCircle(x, y, c * 0.80);
+          g.fillStyle(0x7a2a1c, 1).fillCircle(x, y, c * 0.34);
+          g.fillStyle(0xe86a4a, 1).fillCircle(x, y, c * 0.20);
+          g.lineStyle(2, 0xffb08a, 0.45 + 0.45 * pulse).strokeCircle(x, y, c * 0.46);
+        } else if (e.kind === 'blight') {
+          var bnd = st.nodes[e.nodeId];
+          if (!bnd) continue;
+          var bx = centerX(bnd.x), by = centerY(bnd.y), bc = GRID.CELL;
+          var cfgB = C.BLIGHT;
+          g.fillStyle(0x6b3fa0, 0.18 + 0.16 * pulse).fillCircle(bx, by, bc * 0.86);
+          g.fillStyle(0x2c1745, 1).fillCircle(bx, by, bc * 0.36);
+          g.fillStyle(0xa97bd6, 1).fillCircle(bx, by, bc * 0.19);
+          // 扩散倒计时环：走满一圈就尝试往外爬一格
+          var prog = 1 - Math.max(0, e.spreadT) / (cfgB.spreadInterval * (st.mods.blightSlow ? 1.6 : 1));
+          g.lineStyle(1, 0xd0a8ff, 0.22).strokeCircle(bx, by, bc * 0.55);
+          g.lineStyle(2.2, 0xd0a8ff, 0.9).beginPath();
+          g.arc(bx, by, bc * 0.55, -Math.PI / 2, -Math.PI / 2 + Math.min(1, prog) * Math.PI * 2);
+          g.strokePath();
+        }
       }
     }
 

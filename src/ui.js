@@ -323,11 +323,13 @@ var UI = (function () {
     // 事件条
     var parts = [];
     state.events.forEach(function (e) {
-      if (e.kind === 'gnat') return;
+      if (e.kind === 'gnat' || e.kind === 'blight') return;
       parts.push((e.kind === 'rain' ? '降雨带' : '孢子季') + ' ' + Math.ceil(e.ttl) + 's');
     });
     var gn = window.MYC.Sim.countGnats(state);
     if (gn) parts.push('害虫 ×' + gn + '（点它驱除）');
+    var bl = window.MYC.Sim.countBlights(state);
+    if (bl) parts.push('⚠ 菌瘟 ×' + bl + '（会扩散！点它净化）');
     el.eventLine.textContent = parts.length ? ('事件：' + parts.join('　·　')) : '';
 
     // 通知：新事件 / 新里程碑（由 sim 塞进 state.newEvents / newMilestones）
@@ -336,6 +338,9 @@ var UI = (function () {
         if (e.kind === 'gnat') {
           pushLog('⚠ 害虫出现，占据了一格菌丝（点地图上的红点驱除）');
           toast('害虫出现 —— 点地图上的红点驱除');
+        } else if (e.kind === 'blight') {
+          pushLog('⚠ 菌瘟出现！会沿菌丝扩散（点地图上的紫斑净化）');
+          toast('菌瘟出现 —— 会扩散，点地图上的紫斑净化');
         } else if (e.kind === 'rain') {
           pushLog('降雨带出现：区域内水分产出 ×' + C.EVENTS.buffMul);
         } else {

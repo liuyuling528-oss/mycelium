@@ -39,6 +39,7 @@ function respondToEvents(state) {
   for (let i = state.events.length - 1; i >= 0; i--) {
     const e = state.events[i];
     if (e.kind === 'gnat') Sim.removeGnat(state, e.nodeId);
+    else if (e.kind === 'blight') Sim.removeBlight(state, e.nodeId);
   }
 }
 
@@ -113,8 +114,10 @@ function run(strategy, seed, duration) {
 
     spendUpgrades(state, strategy.priority);
 
-    // 内容层：技能照用、害虫照驱除（一个「会回应」的玩家）
-    respondToEvents(state);
+    // 内容层：技能照用、害虫照驱除、菌瘟照净化 —— 但**只有「会回应」的玩家**才做。
+    // 挂机跑不回应事件：害虫会繁殖、菌瘟会蔓延，产能实打实地掉。
+    // 这就是「注意力有价值」的模型 —— 不回应的代价必须在对照里体现出来。
+    if (strategy.clicks > 0) respondToEvents(state);
     // 深耕流另外把养分投到少数节点上
     if (strategy.nodeFocus && state.res.nutrient > 400) upgradeNodes(state, 3);
 
