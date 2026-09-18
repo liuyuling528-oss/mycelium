@@ -1277,6 +1277,102 @@
     st.autoTimer = 0;
   });
 
+  /* ---- 维护耗水与降级 ----------------------------------------------------
+   * 机制：每个等级每秒耗水；水量低于缓冲线时，**离核最远的先降级**。
+   * 三条必须守住的语义（都能被写错，所以都要断言）：
+   *   ① 只减等级，绝不移除节点（「绝不永久损失」底线）
+   *   ② 远的先降（位置 = 成本）
+   *   ③ 无等级的网络完全不触发（不误伤扩张流）
+   * 每条都带正对照 —— 没有正对照，「没降级」在机制压根没跑时也会通过。 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
+    var saved = st.nodes.map(function (n) { return n.level; });
+    var savedWater = st.res.water;
+    var savedDown = st.counters.maintainDowngrades;
+
+    // 维持费只挂等级：Lv0 节点成本为 0
+    st.nodes.forEach(function (n) { n.level = 0; });
+    ok('维持费：全 Lv0 网络的总成本为 0', Sim.totalMaintainCost(st) === 0,
+       '合计 ' + Sim.totalMaintainCost(st).toFixed(3) + '/s');
+
+    /* 正对照：把水塞满、给一个节点 5 级 → 不应有降级。
+     * 先证明「机制在正常情况下不动手」，后面的降级断言才有意义。 */
+    var probe = null, farId = null, farDist = -1;
+    for (var i = 1; i < st.nodes.length; i++) {
+      if (st.nodes[i].dist > farDist) { farDist = st.nodes[i].dist; farId = i; }
+      if (probe === null && st.nodes[i].dist === 1) probe = i;
+    }
+    ok('维护费：找到近核与最远端的测试节点',
+       probe !== null && farId !== null && farId !== probe,
+       '近核 ' + probe + '  最远 ' + farId + '（' + farDist + ' 格）');
+
+    if (probe !== null && farId !== null) {
+      st.nodes[probe].level = 5;
+      st.res.water = 1e9;                       // 水充足
+      var did = Sim.settleMaintenance(st, 1);
+      ok('正对照：水充足时不降级', did === 0 && st.nodes[probe].level === 5,
+         '本次降级 ' + did + ' 级，Lv' + st.nodes[probe].level + ' 保持');
+
+      /* —— 核心断言：远端先降 ——
+       * 配额给到「刚好 1 级」：如果实现真的按「远的先降」排序，
+       * 唯一该掉级的就是最远那个节点，近核的必须原封不动。
+       * （给大配额会让两个都降，那样就分不出「谁先」了 —— 实测踩过。） */
+      st.nodes[probe].level = 5;
+      st.nodes[farId].level = 5;
+      st.res.water = 0;                          // 付不起
+      var before = { p: st.nodes[probe].level, f: st.nodes[farId].level };
+      var done = Sim.settleMaintenance(st, 1 / C.MAINT.downgradePerSec);  // 配额 = 1 级
+      ok('缺水时确实发生降级（正对照）', done > 0, '本次降级 ' + done + ' 级');
+      ok('远端先降：配额只够 1 级时，掉级的是最远的节点',
+         done === 1 && st.nodes[farId].level === before.f - 1,
+         '远端 Lv' + before.f + ' → Lv' + st.nodes[farId].level + '（降 ' + done + ' 级）');
+      ok('远端先降：近核节点在配额耗尽后被完整保住',
+         st.nodes[probe].level === before.p,
+         '近核 Lv' + st.nodes[probe].level + '（应保持 Lv' + before.p + '）');
+
+      /* —— 绝不摧毁节点：降级不是删除 —— */
+      var nBefore = st.nodes.length;
+      st.nodes.forEach(function (n) { n.level = 9; });
+      st.res.water = 0;
+      for (var g = 0; g < 60; g++) Sim.settleMaintenance(st, 0.5);
+      ok('降级只减等级、不移除节点',
+         st.nodes.length === nBefore && st.nodes[farId] != null && st.nodes[probe] != null,
+         '节点数 ' + nBefore + ' → ' + st.nodes.length);
+      ok('降到 Lv0 就停住（不会降成负数）',
+         st.nodes.every(function (n) { return n.level >= 0; }),
+         '最低等级 ' + Math.min.apply(null, st.nodes.map(function (n) { return n.level; })));
+
+      /* —— 水不会被扣成负数 —— */
+      ok('水不会被扣成负数', st.res.water >= 0, '水量 ' + Math.round(st.res.water));
+    }
+
+    // 还原
+    st.nodes.forEach(function (n, i2) { n.level = saved[i2]; });
+    st.res.water = savedWater;
+    st.counters.maintainDowngrades = savedDown;
+    Sim.rebuildNetwork(st);
+  });
+
+  /* ---- 维护费不误伤扩张流（无等级网络零降级）------------------------------
+   * 这是设计上的关键性质：维持费只挂等级、不挂节点数，
+   * 所以「只铺不练」的玩家永远不会被它碰到。写成断言防止以后被改坏。 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim;
+    var saved = st.nodes.map(function (n) { return n.level; });
+    var savedWater = st.res.water;
+
+    st.nodes.forEach(function (n) { n.level = 0; });
+    st.res.water = 0;                         // 极端情况：一滴水都没有
+    var total = 0;
+    for (var g = 0; g < 40; g++) total += Sim.settleMaintenance(st, 0.5);
+    ok('无等级网络即使滴水不剩也零降级（不误伤扩张流）', total === 0,
+       '累计降级 ' + total + ' 级，' + st.nodes.length + ' 个 Lv0 节点');
+
+    st.nodes.forEach(function (n, i2) { n.level = saved[i2]; });
+    st.res.water = savedWater;
+    Sim.rebuildNetwork(st);
+  });
+
   /* ---- 自动蔓延解锁（m10）------------------------------------------------
    * 条件 = 连上 4 种基质 + 菌丝达到 N 格（都在 counters 里，跨转生保留）。
    * 这里像玩家一样把缺的补齐：优先长缺失基质的候选格，再把规模点上去。 */

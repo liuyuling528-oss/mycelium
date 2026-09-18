@@ -241,7 +241,14 @@ var UI = (function () {
 
     el.clock.textContent = clk(state.t);
     el.vWater.textContent = fmt(state.res.water);
-    el.rWater.textContent = rate(rt.water);
+    /* 水分速率显示**净值**：产出减去维持费。
+     * 维持费是后期的主要支出，藏在「产出」里会让玩家看不懂水为什么涨不上去
+     * （设计教训：面板上的信号必须直接指向该做的决策）。
+     * 碰到缓冲线时标红 —— 那就是「该买水分效率 / 该少练几个远处节点」的时刻。 */
+    var mCost = state.maintainCost || 0;
+    var netWater = rt.water - mCost;
+    el.rWater.textContent = rate(netWater) + (mCost > 0 ? '（维持 -' + mCost.toFixed(1) + '）' : '');
+    el.rWater.classList.toggle('warn', !!state.maintainPressure);
     el.vNutrient.textContent = fmt(state.res.nutrient);
     el.rNutrient.textContent = rate(rt.nutrient);
     el.vSpore.textContent = fmt(state.res.spore);

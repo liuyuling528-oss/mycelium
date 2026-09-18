@@ -145,6 +145,9 @@ html { -webkit-text-size-adjust: 100%; }
 .res .label { flex: 1 1 auto; color: var(--muted); }
 .res .val { font-variant-numeric: tabular-nums; font-size: 15px; }
 .res .rate { color: var(--muted); font-size: 11.5px; min-width: 74px; text-align: right; font-variant-numeric: tabular-nums; }
+/* 维持费告警：水碰到缓冲线（开始降级）时闪红 ——
+ * 面板上的信号必须直接指向该做的决策，而不是让玩家自己猜为什么掉级。 */
+.res .rate.warn { color: var(--bad); }
 .c-water    { background: var(--water); }
 .c-nutrient { background: var(--nutrient); }
 .c-spore    { background: var(--spore); }

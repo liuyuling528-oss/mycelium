@@ -598,6 +598,83 @@ var Sim = (function () {
     return accepted;
   }
 
+  /* ------------------------------------------------------- 维护耗水与降级 */
+  /* 维持费 = 等级 × costPerLevel（每秒）。
+   * 只挂等级不挂节点数：挂节点数会变成「扩张惩罚」（和扩张永远有收益冲突），
+   * 只挂等级则维持费正比于「投入的深度」——
+   * 练得越狠后期压力越大，这正是「深耕流」该有的代价。 */
+  function maintainCostOf(state, nd) {
+    return (nd.level || 0) * CONFIG.MAINT.costPerLevel;
+  }
+
+  function totalMaintainCost(state) {
+    var sum = 0;
+    for (var i = 0; i < state.nodes.length; i++) sum += maintainCostOf(state, state.nodes[i]);
+    return sum;
+  }
+
+  /* 降级的候选顺序：**离核最远的先降**。
+   * 这是玩家明确要的语义（「离中心远的就先降级」），也把「位置」
+   * 从「只是运输损耗」提升成「占着就有成本」—— 想维持远处的富矿，
+   * 就得沿路多留水。同距离时等级高的先降（保住更多节点有产出）。 */
+  function downgradeOrder(state) {
+    var out = [];
+    for (var i = 1; i < state.nodes.length; i++) {          // 跳过核心
+      var nd = state.nodes[i];
+      if (nd.level > 0 && nd.dist >= 0) out.push(nd);
+    }
+    out.sort(function (a, b) {
+      if (b.dist !== a.dist) return b.dist - a.dist;        // 远的优先
+      return b.level - a.level;                             // 同距先降高等级
+    });
+    return out;
+  }
+
+  /* 结算维持费。逻辑：
+   *   ① 正常扣水；
+   *   ② 水量低于「维持费 × bufferSec」的缓冲线 → 开始降级；
+   *   ③ 每次最多降 downgradePerSec × dt 级，远的先降；
+   *   ④ 水不许变成负数 —— 真见底就归零，缺口由降级补上。
+   *
+   * 降级**只减等级、绝不移除节点**（守住「绝不永久损失」底线）。
+   * 降级的代价不在水里，而在「产出和吞吐掉回上一级」——
+   * 所以它读起来是「你维持不起了，撤回一部分投资」，而不是「系统罚你」。 */
+  function settleMaintenance(state, dt) {
+    var cost = totalMaintainCost(state);
+    if (cost <= 0) { state.maintainCost = 0; state.maintainPressure = false; return 0; }
+
+    state.maintainCost = cost;
+    state.res.water -= cost * dt;
+
+    var buffer = cost * CONFIG.MAINT.bufferSec;
+    /* 降级配额：只有真的低于缓冲线才动手。
+     * 缓冲的存在让「掉级」变成一件玩家看得见后果的事 ——
+     * 水开始变红时还有时间反应，而不是等级无声地滑下去。 */
+    var quota = CONFIG.MAINT.downgradePerSec * dt;
+    var downgraded = 0;
+
+    if (state.res.water < buffer) {
+      var order = downgradeOrder(state);
+      for (var i = 0; i < order.length && downgraded < quota; i++) {
+        var nd = order[i];
+        if (nd.level <= 0) continue;
+        nd.level -= 1;
+        downgraded++;
+      }
+      if (downgraded > 0) {
+        state.counters.maintainDowngrades = (state.counters.maintainDowngrades || 0) + downgraded;
+        recomputeCapacity(state);
+      }
+    }
+
+    state.maintainPressure = downgraded > 0 || state.res.water < 0;
+    /* 水不许变成负数：真见底就归零。
+     * 欠账不用「水」结算，它直接体现为下一 tick 仍然在降级 ——
+     * 玩家永远看不到负数水量，也永远不会因为一次扣款而瞬间崩掉网络。 */
+    if (state.res.water < 0) state.res.water = 0;
+    return downgraded;
+  }
+
   /* ---------------------------------------------------------------- 主循环 */
   function tick(state, dt) {
     state.t += dt;
@@ -608,6 +685,9 @@ var Sim = (function () {
     if (state.pulseT > 0) state.pulseT = Math.max(0, state.pulseT - dt);
 
     computeFlow(state, dt);
+
+    // 维护耗水：菌丝的持续成本。缺水时远端先降级（见 settleMaintenance）
+    settleMaintenance(state, dt);
 
     // 自动蔓延
     var interval = autoIntervalOf(state);
@@ -1267,6 +1347,9 @@ var Sim = (function () {
     // 菌瘟（后期挑战）
     countBlights: countBlights, removeBlight: removeBlight,
     spawnBlight: spawnBlight, spreadBlights: spreadBlights, putBlight: putBlight,
+    // 维护耗水
+    maintainCostOf: maintainCostOf, totalMaintainCost: totalMaintainCost,
+    settleMaintenance: settleMaintenance,
     pushFloater: pushFloater,
     cellYieldOf: function (state, soil) { return cellYield(state, soil); }
   };

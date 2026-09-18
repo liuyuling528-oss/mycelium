@@ -520,6 +520,12 @@
           // 超过感染上限的菌对菌瘟完全免疫 —— 深耕的隐性回报要说清楚
           if (nd.level > C.BLIGHT.maxLevel) lines.push('★ 等级高到菌瘟感染不了');
           if (nd.cargo > 0) lines.push('货物流量 ' + nd.cargo.toFixed(1) + '/s');
+          /* 维持费：等级越高这项越大。写出来玩家才能算清
+           * 「再多练一级」的真实代价 —— 不写的话降级会显得莫名其妙。 */
+          var mc = Sim.maintainCostOf(st, nd);
+          if (mc > 0) {
+            lines.push('维持耗水 ' + mc.toFixed(2) + '/s（缺水时离核远的先掉级）');
+          }
           var uc = Sim.nodeUpgradeCost(st, nd);
           lines.push(isFinite(uc)
             ? ('点击强化：' + uc + ' 养分 → Lv' + (nd.level + 1))
