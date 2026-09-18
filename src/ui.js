@@ -260,7 +260,8 @@ var UI = (function () {
       el.autoGrow.disabled = agLocked;
       el.autoGrowRow.classList.toggle('off', agLocked);
       el.autoGrowLabel.innerHTML = agLocked
-        ? '自动蔓延<span class="hint" style="display:inline">（未解锁 —— 连上落叶层 / 水脉 / 腐木 / 树根）</span>'
+        ? '自动蔓延<span class="hint" style="display:inline">（未解锁 —— 连上 4 种特殊基质，且菌丝达到 ' +
+          C.GROW.autoUnlockNodes + ' 格）</span>'
         : '自动蔓延<span class="hint" style="display:inline">（关掉则只靠你手动点）</span>';
       if (agLocked) el.autoGrow.checked = false;
       else el.autoGrow.checked = state.autoGrow;

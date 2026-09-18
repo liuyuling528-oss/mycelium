@@ -210,15 +210,12 @@
     var st0 = window.MYC.game.state;
     ok('自动蔓延默认锁定', st0.autoGrow === false,
        'autoGrow=' + st0.autoGrow + '（锁定的话玩家必须手动点着跑图）');
-    /* 「已探到哪些基质」是种子相关的，所以这里不断言具体种类，只断言设计不变量：
-     * 开局只有核心一格，绝不可能已经「连上」全部 4 种 —— 否则解锁等于白送。
-     * （m10 的条件是 hasSoil：真的把菌丝长到那格上，光看到不算。） */
-    var conCount = ['litter', 'vein', 'wood', 'root'].filter(function (s) {
-      for (var i = 0; i < st0.nodes.length; i++) if (st0.nodes[i].soil === s) return true;
-      return false;
-    }).length;
-    ok('开局不可能已连上全部 4 种基质（解锁条件有意义）', conCount < 4,
-       '开局已连上 ' + conCount + ' / 4');
+    /* 开局只有核心一格，离解锁门槛（m10：连上 4 种基质 + 菌丝达到 N 格）很远 ——
+     * 否则解锁等于白送。maxNodes 开局是 0（核心不走 addNode）。 */
+    var C = window.MYC.CONFIG;
+    ok('开局离解锁门槛很远（条件有意义）',
+       (st0.counters.maxNodes || 0) < C.GROW.autoUnlockNodes,
+       'maxNodes=' + (st0.counters.maxNodes || 0) + '  门槛=' + C.GROW.autoUnlockNodes);
     ok('开关确实被禁用', document.getElementById('autoGrow').disabled === true,
        'disabled=' + document.getElementById('autoGrow').disabled);
 
@@ -984,42 +981,48 @@
   });
 
   /* ---- 自动蔓延解锁（m10）------------------------------------------------
-   * 条件是「连上」—— 是否有机发生取决于地图和玩家行为，不能直接当断言。
-   * 所以这里像玩家一样把缺的补齐：优先长缺失基质的候选格，没有就往外铺。
-   * 这样解锁链路才是确定性可测的。 */
+   * 条件 = 连上 4 种基质 + 菌丝达到 N 格（都在 counters 里，跨转生保留）。
+   * 这里像玩家一样把缺的补齐：优先长缺失基质的候选格，再把规模点上去。 */
   step(function () {
-    var st = window.MYC.game.state, Sim = S.Sim;
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
     var missing = function () {
       return ['litter', 'vein', 'wood', 'root'].filter(function (s) {
         return !st.nodes.some(function (n) { return n.soil === s; });
       });
     };
-    st.res.water = 50000;
+    var needMore = function () {
+      return missing().length > 0 || (st.counters.maxNodes || 0) < C.GROW.autoUnlockNodes;
+    };
+    st.res.water = 500000;
     var guard = 0;
-    while (missing().length && guard++ < 80) {
+    while (needMore() && guard++ < 600) {
       var cs = Sim.candidates(st);
       var pick = null;
       for (var i = 0; i < cs.length && !pick; i++) {
         if (missing().indexOf(cs[i].soil) >= 0) pick = cs[i];
       }
-      if (!pick) pick = cs[0];          // 边界上没有？就随便铺一格把边界推过去
+      if (!pick) pick = cs[0];
       if (!pick) break;
       Sim.growAt(st, pick.x, pick.y);
     }
     S.needLeft = missing();
-    ok('补齐解锁条件（像玩家一样长过去）', S.needLeft.length === 0,
-       S.needLeft.length ? ('80 步内没连上 ' + S.needLeft.join('/')) : '全部连上');
+    S.nodeShort = Math.max(0, C.GROW.autoUnlockNodes - (st.counters.maxNodes || 0));
+    ok('补齐解锁条件（像玩家一样长过去）',
+       S.needLeft.length === 0 && S.nodeShort === 0,
+       (S.needLeft.length ? ('缺基质 ' + S.needLeft.join('/') + ' ') : '') +
+       (S.nodeShort ? ('菌丝还差 ' + S.nodeShort + ' 格') : '全部满足'));
     st.autoTimer = -1e6;
     Sim.tick(st, 0.05);                 // 条件补齐后，checkMilestones 在下一次 tick 发奖
   });
 
   step(function () {
     var st = window.MYC.game.state;
-    if (S.needLeft && S.needLeft.length) {
-      R.push('  SKIP 有机解锁：地图运气太差，没能在 80 步内连齐 4 种基质');
+    if ((S.needLeft && S.needLeft.length) || (S.nodeShort && S.nodeShort > 0)) {
+      R.push('  SKIP 有机解锁：600 步内没补齐条件（基质 ' +
+             (S.needLeft || []).join('/') + '，菌丝差 ' + S.nodeShort + ' 格）');
       return;
     }
-    ok('连齐 4 种基质后 m10 自动解锁自动蔓延',
+    ok('满足条件后 m10 自动解锁自动蔓延',
        !!st.milestones.m10 && st.autoGrow === true,
        'm10=' + !!st.milestones.m10 + '  autoGrow=' + st.autoGrow);
     ok('解锁后开关恢复可用', document.getElementById('autoGrow').disabled === false,

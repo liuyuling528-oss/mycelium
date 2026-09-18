@@ -89,7 +89,7 @@ var Sim = (function () {
       nextEventAt: CONFIG.EVENTS.firstAt,
       milestones: {},              // 已完成的里程碑 id
       mods: { water: 1, nutrient: 1, spore: 1 },
-      counters: { gnatsRemoved: 0, maxNodeLevel: 0 },
+      counters: { gnatsRemoved: 0, maxNodeLevel: 0, maxNodes: 0, connectedSoils: {} },
       floaters: []                 // 浮动数字，供渲染层消费
     };
     CONFIG.UPGRADES.forEach(function (u) { state.up[u.key] = 0; });
@@ -400,6 +400,11 @@ var Sim = (function () {
     state.nodes.push(nd);
     state.nodeAt[idx(x, y)] = nd.id;
     state.grid[idx(x, y)].node = nd.id;
+    // 里程碑进度（m10）：历史最高节点数 + 历史连上过的基质。
+    // 放在 counters 里跨转生保留 —— 转生清空网络不该倒扣成就进度。
+    if (state.nodes.length > (state.counters.maxNodes || 0)) state.counters.maxNodes = state.nodes.length;
+    if (!state.counters.connectedSoils) state.counters.connectedSoils = {};
+    if (soil !== 'core') state.counters.connectedSoils[soil] = 1;
     rebuildNetwork(state);
     reveal(state);
     return nd;
@@ -967,8 +972,13 @@ var Sim = (function () {
       else if (m.id === 'm10') {
         /* 「连上」而不是「看到」—— 初始感知圈是圆的，运气好的种子
          * 四种基质全在圈里，光靠开局那一次 reveal 就能解锁，等于白送（实测踩过）。
-         * 连上必须真的把菌丝长过去，是玩家点出来的，解锁才有分量。 */
-        ok = hasSoil('litter') && hasSoil('vein') && hasSoil('wood') && hasSoil('root');
+         * 连上必须真的把菌丝长过去，是玩家点出来的，解锁才有分量。
+         * 进度读 counters（跨转生保留）：转生清空网络不能倒扣成就进度，
+         * 否则玩家在 200 格转生一次就得重爬，体验莫名其妙（实测数据）。
+         * 门槛数值见 CONFIG.GROW.autoUnlockNodes 的注释。 */
+        var cs = state.counters.connectedSoils || {};
+        ok = !!(cs.litter && cs.vein && cs.wood && cs.root) &&
+             (state.counters.maxNodes || 0) >= CONFIG.GROW.autoUnlockNodes;
       }
       if (!ok) continue;
 
@@ -1177,6 +1187,14 @@ var Sim = (function () {
       state.nodeAt[idx(n[0], n[1])] = i;
       state.grid[idx(n[0], n[1])].node = i;
     });
+    /* 旧存档没有 maxNodes / connectedSoils：从节点列表补算一遍，
+     * 否则老玩家的里程碑进度会从零开始。 */
+    if (state.counters.connectedSoils == null) state.counters.connectedSoils = {};
+    if (state.counters.maxNodes == null) state.counters.maxNodes = 0;
+    state.nodes.forEach(function (n) {
+      if (n.soil !== 'core') state.counters.connectedSoils[n.soil] = 1;
+    });
+    if (state.nodes.length > state.counters.maxNodes) state.counters.maxNodes = state.nodes.length;
     rebuildNetwork(state);
     reveal(state);
     return state;
