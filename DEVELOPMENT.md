@@ -321,6 +321,23 @@ Phaser 只当它是配置对象，自定义方法不会挂到实例上，表现�
 - **`git add -A` 前先清理临时产物**（见上文）。另外本仓库主分支是 `main`，不是 `master`
 - 打包用 Python `zipfile`，`Compress-Archive` 在本机会静默失败（只建空目录、退出码仍是 0）
 
+### 验证线上版本时，**不要**加 `Cache-Control: no-cache`
+
+`tools/verify_online.py` 拉线上文件做断言。踩过的坑：
+给请求加上 `Cache-Control: no-cache` / `Pragma: no-cache` 之后，
+**GitHub Pages 的 CDN 会返回一层陈旧缓存**（拉到旧版内容），
+于是刚推送的新代码全部断言失败 —— 看起来像「推送没生效」，
+实际上 `git log origin/main` 早已是新提交、也是新提交。
+
+同一个 URL、同一时刻，另一个只带普通 UA 的脚本拿到的是新版：
+
+| 请求头 | 拿到的 config.js |
+|---|---|
+| `Cache-Control: no-cache` | 9537 字节（旧） |
+| 仅 `User-Agent: Mozilla/5.0` + `?cb=<时间戳>` | 10863 字节（新）✓ |
+
+**正确做法**：只加普通 UA + 一个时间戳 query 参数绕缓存。加时间戳就够了。
+
 ---
 
 ## 已知可继续做的方向
