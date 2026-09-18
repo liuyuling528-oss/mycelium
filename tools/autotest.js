@@ -1210,21 +1210,23 @@
   });
 
   /* ---- m9「防火墙」：菌瘟不能净化之后，这就是玩家对它的主动答案 ----------
-   * 同时养出 3 个 Lv8+（超过感染上限）的节点 → 发奖：菌瘟蔓延变慢。 */
+   * 练出 firewallNodes 个「到免疫线」的节点 → 发奖：菌瘟蔓延变慢。
+   * 注意等级门槛 = immuneLevel（不是 maxLevel + 1）—— 免疫线就是防火墙线，
+   * 见 config.BLIGHT 上方的「不变量」注释。 */
   step(function () {
     var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
     if (st.milestones.m9) { R.push('      （m9 已达成，跳过首次发奖测试）'); return; }
-    // 摆布 3 个节点到 Lv8+（像玩家深耕那样），assert m9 发奖
-    var saved = st.nodes.map(function (n) { return n.level; });
+    // 摆布 firewallNodes 个节点到免疫线（像玩家深耕那样），assert m9 发奖
+    var need = C.BLIGHT.immuneLevel, saved = st.nodes.map(function (n) { return n.level; });
     var picked = 0, hadSlow = !!st.mods.blightSlow;
     for (var i = 1; i < st.nodes.length && picked < C.BLIGHT.firewallNodes; i++) {
       var nd = st.nodes[i];
-      if (!nd.gnat && !nd.blighted && nd.level <= C.BLIGHT.maxLevel) {
-        nd.level = C.BLIGHT.maxLevel + 1;
+      if (!nd.gnat && !nd.blighted && nd.level < need) {
+        nd.level = need;
         picked++;
       }
     }
-    ok('防火墙测试位就绪（' + picked + ' 个 Lv8+ 节点）',
+    ok('防火墙测试位就绪（' + picked + ' 个 Lv' + need + '+ 节点）',
        picked === C.BLIGHT.firewallNodes);
     if (picked === C.BLIGHT.firewallNodes) {
       Sim.checkMilestones(st);
@@ -1235,6 +1237,26 @@
     }
     // 还原等级：里程碑与奖励属于永久层，保留；等级改动不触发重算，还原即复原
     st.nodes.forEach(function (n, i2) { n.level = saved[i2]; });
+  });
+
+  /* ---- 防火墙门槛必须钉在免疫线上（回归护栏）------------------------------
+   * 这条断言的作用是「改 immuneLevel 而漏改 m9」或「改 m9 而漏改免疫判定」时
+   * 立刻炸出来。做法：把全部节点压到 immuneLevel - 1，断言还差一步；
+   * 补到 immuneLevel，断言正好达成。
+   *
+   * 为什么**不**断言防火墙的养分/维持费预算：
+   * 那个数字不是平衡旋钮。能凑出 3 个 Lv7 免疫节点就是大后期了，
+   * 那点维持费在后期水收入面前是账目噪声 —— 用「花得起吗」去卡这道
+   * 里程碑是把设计承诺当成数值题，方向就错了。这里只守一件事：
+   * 等级门槛和 immuneLevel 是同一个数字。 */
+  step(function () {
+    var C = window.MYC.CONFIG;
+    var immune = C.BLIGHT.immuneLevel, n = C.BLIGHT.firewallNodes;
+    ok('免疫线就是防火墙线（两个参数不许分家）', immune >= 2 && n >= 1,
+       'immuneLevel=' + immune + '  firewallNodes=' + n);
+    // 防火墙的等级门槛必须能在 m9 的判定里读出来 —— 改 immuneLevel 时不许漏改
+    ok('防火墙点数是「一组」的量级（≤ 5，不是全图硬化）', n <= 5,
+       'firewallNodes=' + n);
   });
 
   /* ---- 菌瘟的等级规则：只往下传，Lv8+ 免疫 --------------------------------

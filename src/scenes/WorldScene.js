@@ -504,7 +504,8 @@
       } else if (cell.node != null) {
         var nd = st.nodes[cell.node];
         if (nd.blighted) {
-          // 等级规则：源头只往下传，且封顶 maxLevel —— 防火墙是相对等级，不是绝对 Lv8+
+          // 等级规则：绝对免疫线（Lv immuneLevel+）+ 源头只往下传（相对比较）。
+          // 高位显示免疫的原因，而不是「防火墙是相对等级」那句老话。
           var blCap = Math.min(nd.level, C.BLIGHT.maxLevel);
           lines.push('⚠ 菌瘟蔓延中 —— 此格停产');
           lines.push('无法净化 —— 只能传给 Lv' + blCap + ' 及以下的邻居，比它高就挡得住');
@@ -517,8 +518,13 @@
           lines.push('核心 —— 整张网络都从它出发');
         } else {
           lines.push('菌丝 Lv' + nd.level + '　离核 ' + nd.dist + ' 格');
-          // 超过感染上限的菌对菌瘟完全免疫 —— 深耕的隐性回报要说清楚
-          if (nd.level > C.BLIGHT.maxLevel) lines.push('★ 等级高到菌瘟感染不了');
+          /* 免疫线：这是玩家唯一能「练到就安全」的确定性承诺，
+           * 所以必须在节点面板上给出精确等级，而不是含糊的「等级够高」。 */
+          if (nd.level >= C.BLIGHT.immuneLevel) {
+            lines.push('★ 已到免疫线 —— 菌瘟滋生不到、也传不进来');
+          } else {
+            lines.push('距免疫线还差 ' + (C.BLIGHT.immuneLevel - nd.level) + ' 级（练到 Lv' + C.BLIGHT.immuneLevel + ' 菌瘟就啃不动）');
+          }
           if (nd.cargo > 0) lines.push('货物流量 ' + nd.cargo.toFixed(1) + '/s');
           /* 维持费：等级越高这项越大。写出来玩家才能算清
            * 「再多练一级」的真实代价 —— 不写的话降级会显得莫名其妙。 */

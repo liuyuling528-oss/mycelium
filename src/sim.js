@@ -611,12 +611,27 @@ var Sim = (function () {
   }
 
   /* ------------------------------------------------------- 维护耗水与降级 */
-  /* 维持费 = 等级 × costPerLevel（每秒）。
+  /* 维持费 = 等级^exponent × costPerLevel（每秒）。
+   *
    * 只挂等级不挂节点数：挂节点数会变成「扩张惩罚」（和扩张永远有收益冲突），
    * 只挂等级则维持费正比于「投入的深度」——
-   * 练得越狠后期压力越大，这正是「深耕流」该有的代价。 */
+   * 练得越狠后期压力越大，这正是「深耕流」该有的代价。
+   *
+   * **必须超线性**：线性时维持费只看等级总和，「10 个 Lv10」和「100 个 Lv1」
+   * 成本完全相同 —— 而摊薄能抗降级（一次掉 1 级且分散），深耕一掉掉一片，
+   * 于是理性玩家必然摊平，深耕被系统性惩罚。平方后集中/摊薄 = 10×，
+   * 深耕才有真代价。完整推导见 config.MAINT 的注释。 */
   function maintainCostOf(state, nd) {
-    return (nd.level || 0) * CONFIG.MAINT.costPerLevel;
+    var lv = nd.level || 0;
+    if (lv <= 0) return 0;
+    var e = CONFIG.MAINT.exponent;
+    /* exponent 必须 ≥ 1：< 1 会让成本凹向下，「摊薄比深耕还贵」，
+     * 整个取舍反了。config 的注释说得很清楚但没人拦得住改参数的人。 */
+    if (!(e >= 1)) e = 2;
+    /* e = 2 是最常见的情形，直接乘比 Math.pow 快 —— 这个函数每个 tick
+     * 会对每个节点调用一次，大地图上就是几千次/秒。 */
+    var base = (e === 2) ? lv * lv : Math.pow(lv, e);
+    return base * CONFIG.MAINT.costPerLevel;
   }
 
   function totalMaintainCost(state) {
@@ -1040,13 +1055,13 @@ var Sim = (function () {
   }
 
   function blightableNodeIds(state) {
-    /* 等级规则的第一半：初次滋生也不会碰 Lv(maxLevel)+ 的菌。
-     * 深耕练出来的高等级节点是安全的 —— 强化 = 产能 + 吞吐 + 抗瘟。 */
-    var maxL = CONFIG.BLIGHT.maxLevel;
+    /* 初次滋生：不会碰 Lv(immuneLevel)+ 的菌 —— 深耕练出来的高等级节点
+     * 是安全的（强化 = 产能 + 吞吐 + 抗瘟）。 */
+    var maxL = CONFIG.BLIGHT.immuneLevel;
     var out = [];
     for (var i = 1; i < state.nodes.length; i++) {
       var nd = state.nodes[i];
-      if (!nd.gnat && !nd.blighted && nd.level <= maxL) out.push(i);
+      if (!nd.gnat && !nd.blighted && nd.level < maxL) out.push(i);
     }
     return out;
   }
@@ -1065,8 +1080,11 @@ var Sim = (function () {
   /* 菌瘟只沿「相邻的健康菌丝」扩散 —— 所以蔓延路径可预判，
    * 玩家看一眼地图就知道它会往哪爬，这是紧迫感的来源。
    *
-   * 等级规则：Lv N 的菌瘟只能传给「等级 ≤ N」的邻居 ——
-   * **把周边菌丝练到比瘟的等级高，就能挡住它**。
+   * 两条等级规则，叠加生效：
+   *   ① 相对规则：Lv N 的菌瘟只能传给「等级 ≤ N」的邻居 ——
+   *      **把周边菌丝练到比瘟的等级高，就能挡住它**。
+   *   ② 绝对规则：**Lv(immuneLevel)+ 的菌丝完全免疫**，任何菌瘟都传不进去。
+   *      这是硬承诺 —— 给深耕一个确定的终点（「练到 7 级就安全了」）。
    * 生命周期：面前一个可感染的邻居都没有 = 被围死，连续 failLimit 个周期
    * 就熄灭（节点保留、恢复健康）；只要还有活路就一直活着烂下去。
    * 注意「抽签没中」不算被围死 —— 它可以传，只是这个周期运气差。 */
@@ -1076,6 +1094,7 @@ var Sim = (function () {
     var chance = Math.min(0.85, cfg.spreadChance + state.prestiges * 0.03);
     var maxN = blightMaxCount(state);
     var cap = cfg.maxLevel;
+    var immune = cfg.immuneLevel;
 
     for (var i = state.events.length - 1; i >= 0; i--) {
       var e = state.events[i];
@@ -1090,6 +1109,7 @@ var Sim = (function () {
         if (nid == null || nid === 0) continue;      // 核心免疫：全黑几十秒太惩罚
         var t = state.nodes[nid];
         if (t.gnat || t.blighted) continue;
+        if (t.level >= immune) continue;             // 绝对免疫：Lv7+ 传不进去
         if (t.level > srcLvl) continue;              // 比瘟等级高的邻居：挡住去路
         pool.push(nid);
       }
@@ -1162,12 +1182,18 @@ var Sim = (function () {
       else if (m.id === 'm7') ok = state.counters.gnatsRemoved >= 5;
       else if (m.id === 'm8') ok = state.prestiges >= 1;
       else if (m.id === 'm9') {
-        /* 「防火墙」：同时养出 3 个超过感染上限（Lv8+）的节点。
+        /* 「防火墙」：同时养出 firewallNodes 个**达到免疫线**的节点。
+         * 等级门槛直接引用 immuneLevel —— 和传染判定是同一个数字
+         * （理由见 config.BLIGHT 上方的「不变量」注释）：
+         * 练到免疫线，既是免疫，也就是防火墙的一块砖。
          * 菌瘟不能手动净化之后，这就是玩家对菌瘟的主动答案 ——
-         * 里程碑奖励（蔓延变慢）也顺理成章：防火墙越强，瘟越爬不动。 */
+         * 里程碑奖励（蔓延变慢）也顺理成章：防火墙越强，瘟越爬不动。
+         * 注意这里**不做任何「花不花得起」的校验**：能凑出这几个免疫节点
+         * 就已经是大后期，维持费不是这道坎的约束（见 config 里的注释）。 */
+        var fwLvl = CONFIG.BLIGHT.immuneLevel;
         var fw = 0;
         for (var j = 0; j < state.nodes.length; j++) {
-          if (state.nodes[j].level > CONFIG.BLIGHT.maxLevel) fw++;
+          if (state.nodes[j].level >= fwLvl) fw++;
         }
         ok = fw >= CONFIG.BLIGHT.firewallNodes;
       }
