@@ -198,6 +198,39 @@
 
   /* ------------------------------------------------------------ 测试步骤 */
 
+  /* ---- 步骤 0：把游戏重置到「干净开局」-----------------------------------
+   *
+   * 为什么必须放在最前面：自测自己会玩一遍（长满网络、打通全部里程碑、
+   * 转生十来次），并在结束时把状态留在 localStorage 里。
+   * 同一个浏览器 profile 再跑一次时，读到的就是那个「终局存档」——
+   * 于是「开局该是锁定状态」「转生后地图会变大」这类断言必然失败。
+   * 那种失败看起来完全像回归，实际只是上一次自测的残留。
+   *
+   * 之前各条断言各自绕过（有的造 fresh 状态、有的放宽判据），
+   * 结果失败还会在断言之间**搬家** —— 因为整条链的起点是脏的。
+   * 在这里一次性清掉，所有断言才回到同一个可复现的起点。
+   * 注意：必须用 Sim.newGame 重建 state 并 rebind，不能只删 localStorage，
+   * 因为 main.js 已经把旧 state 的引用交给了 UI 与场景。 */
+  step(function () {
+    var Sim = window.MYC.Sim, g = window.MYC.game, UI = g.ui;
+    try { localStorage.removeItem(UI.KEY); } catch (e) {}
+    try { localStorage.removeItem(UI.SEEDKEY); } catch (e) {}
+    var s = Sim.newGame(20260918, {}, {});
+    g.state = s;
+    UI.rebind(s);
+    if (g.scene) {
+      g.scene.lastKnown = -1; g.scene.lastSoilSig = null;
+      g.scene.lastNodeCount = 0; g.scene.pops = {};
+      if (g.scene.onMapChanged) g.scene.onMapChanged();
+    }
+    g.dirty = true;
+    ok('自测起点是干净开局（清掉上次自测的残留存档）',
+       s.prestiges === 0 && s.nodes.length === 1 && !s.autoGrow &&
+       Object.keys(s.milestones).length === 0,
+       '转生 ' + s.prestiges + ' 次 / ' + s.nodes.length + ' 格 / 地图 ' +
+       s.mapW + '×' + s.mapH + ' / autoGrow=' + s.autoGrow);
+  });
+
   step(function () {
     ok('Phaser 已加载', typeof Phaser !== 'undefined', 'Phaser ' + Phaser.VERSION);
     ok('canvas 已创建', !!canvas(), canvas() ? canvas().width + 'x' + canvas().height : 'none');
@@ -206,17 +239,42 @@
 
     /* 先断言「默认锁定」，再置位 —— 顺序反了测的就是空气。
      * 自动蔓延现在由 m10（探索全部 4 种特殊基质）解锁，白送毫无意义。
-     * 注意：开局保底会立刻记到落叶层/水脉，所以「记录为空」不是有效断言。 */
-    var st0 = window.MYC.game.state;
-    ok('自动蔓延默认锁定', st0.autoGrow === false,
-       'autoGrow=' + st0.autoGrow + '（锁定的话玩家必须手动点着跑图）');
+     * 注意：开局保底会立刻记到落叶层/水脉，所以「记录为空」不是有效断言。
+     *
+     * 这三条断言的是**开局状态**，而自测本身会把 autoGrow 置为 true 并一路
+     * 把 m10 打通（那是刻意的，后面几十条断言依赖网络自己在长）。
+     * 所以在同一个 localStorage 上重跑时，读到的已经是「上一局结束时的存档」——
+     * 断言必然失败。那不是回归，是测试污染。
+     * 解法：用 Sim.newGame 临时造一个干净的开局状态来断言，而不是读当前存档。
+     * 这样这组断言可以反复跑，也真正测到了「开局」这个状态。 */
+    var fresh = window.MYC.Sim.newGame(20260918, {}, {});
+    ok('自动蔓延默认锁定', fresh.autoGrow === false,
+       'autoGrow=' + fresh.autoGrow + '（锁定的话玩家必须手动点着跑图）');
     /* 开局只有核心一格，离解锁门槛（m10：连上 4 种基质 + 菌丝达到 N 格）很远 ——
      * 否则解锁等于白送。maxNodes 开局是 0（核心不走 addNode）。 */
     var C = window.MYC.CONFIG;
     ok('开局离解锁门槛很远（条件有意义）',
-       (st0.counters.maxNodes || 0) < C.GROW.autoUnlockNodes,
-       'maxNodes=' + (st0.counters.maxNodes || 0) + '  门槛=' + C.GROW.autoUnlockNodes);
-    ok('开关确实被禁用', document.getElementById('autoGrow').disabled === true,
+       (fresh.counters.maxNodes || 0) < C.GROW.autoUnlockNodes,
+       'maxNodes=' + (fresh.counters.maxNodes || 0) + '  门槛=' + C.GROW.autoUnlockNodes);
+    ok('开局尚未达成 m10（解锁才有意义）', !fresh.milestones.m10,
+       'm10=' + !!fresh.milestones.m10);
+
+    /* 开关的 disabled 状态反映的是**当前存档**，所以这条仍读实时状态。
+     * 当前存档若已解锁 m10，开关就该是可用的 —— 断言跟着实际状态走。 */
+    var st0 = window.MYC.game.state;
+    var wantDisabled = !st0.milestones.m10;
+    ok('自动蔓延开关的可用性与解锁状态一致',
+       document.getElementById('autoGrow').disabled === wantDisabled,
+       'disabled=' + document.getElementById('autoGrow').disabled +
+       '  m10=' + !!st0.milestones.m10);
+    /* 上一条依赖 UI 已经用**重置后的** state 刷过一遍。
+     * rebind 只强制刷新开关这一处，锁状态的完整刷新在 UI.update 的
+     * 解锁检查分支里 —— 而那个分支是按 lastAgLocked 做增量的，
+     * 重置时它可能恰好等于目标值而不重刷。所以这里显式驱动一次面板更新，
+     * 把「重置 → 面板」这条链走完，而不是让它依赖帧调度。 */
+    window.MYC.game.ui.update(0, window.MYC.game);
+    ok('重置后面板已跟上新状态（锁定开关被重新计算）',
+       document.getElementById('autoGrow').disabled === wantDisabled,
        'disabled=' + document.getElementById('autoGrow').disabled);
 
     /* 自测假定已解锁：不置位的话网络不会自己长，
@@ -352,9 +410,15 @@
    * 要测「未解锁」就找一个还没达成的里程碑；要测技能机制就直接 arrange。 */
   step(function () {
     var st = window.MYC.game.state, C = window.MYC.CONFIG, Sim = S.Sim;
-    var pending = C.MILESTONES.filter(function (m) { return !st.milestones[m.id]; });
-    ok('存在尚未达成的里程碑（渐进解锁有效）', pending.length > 0,
-       '待达成 ' + pending.length + ' 个：' + pending.map(function (m) { return m.name; }).join('、'));
+    /* 断言的是「里程碑体系是渐进解锁的」这一**性质**，不是「当前存档还有没打完的」。
+     * 一个玩到底的存档确实会全达成 —— 那时断言「存在未达成项」必然失败，
+     * 但体系本身没坏。所以改成拿一个干净开局来验证性质：
+     * 开局应该几乎全部未达成，这才是「渐进」的证据。 */
+    var fresh = Sim.newGame(20260918, {}, {});
+    var freshPending = C.MILESTONES.filter(function (m) { return !fresh.milestones[m.id]; });
+    ok('里程碑是渐进解锁的（干净开局几乎全部未达成）',
+       freshPending.length >= C.MILESTONES.length - 1,
+       '开局待达成 ' + freshPending.length + '/' + C.MILESTONES.length + ' 个');
     ok('已达成里程碑的奖励确实生效', !st.milestones.m1 || !!st.unlocked.pulse,
        'm1=' + !!st.milestones.m1 + ' → pulse 解锁=' + !!st.unlocked.pulse);
 
@@ -466,7 +530,26 @@
     ok('增益区外不受影响', Sim.buffAt(st, core.x + 12, core.y + 12) === null);
     Sim.tick(st, 0.1);
     var w1 = (st.rate || {}).water || 0;
-    ok('增益区确实提升了产出', w1 > w0, '水分速率 ' + w0.toFixed(2) + ' -> ' + w1.toFixed(2));
+    /* 这里比较的是**毛产出**，所以必须先把维持费的影响排除掉。
+     *
+     * state.rate.water 来自 computeFlow 的 accepted.water，是「进账」，
+     * 本身不含维持费；但同一 tick 里 settleMaintenance 会立刻把维持费从
+     * state.res.water 里扣掉。当网络规模大、等级总和高时，
+     * 维持费可能超过降雨带的增量，于是**两帧之间净水量在下降** ——
+     * 那是真的（玩家确实在亏），但不是「降雨带没生效」。
+     *
+     * 所以判据取「同一帧内、同一网络状态下」的对比：把增益区撤掉重算一次，
+     * 与开着增益区的那一帧比。这样维持费在两帧里是同一笔，被抵消掉了。 */
+    var withBuff = w1;
+    st.events = [];
+    Sim.tick(st, 0.1);
+    var noBuff = (st.rate || {}).water || 0;
+    ok('增益区确实提升了产出', withBuff > noBuff,
+       '有增益 ' + withBuff.toFixed(2) + ' vs 无增益 ' + noBuff.toFixed(2) +
+       '（净速率 ' + w0.toFixed(2) + ' → ' + w1.toFixed(2) +
+       '，维持费 ' + (st.maintainCost || 0).toFixed(1) + '/s）');
+
+    st.events = [{ kind: 'rain', x: core.x, y: core.y, r: 2, ttl: 40, dur: 45 }];
     ok('增益区倍率正确', (Sim.buffAt(st, core.x, core.y).water === C.EVENTS.buffMul),
        '×' + Sim.buffAt(st, core.x, core.y).water);
   });
@@ -1316,12 +1399,21 @@
       /* —— 核心断言：远端先降 ——
        * 配额给到「刚好 1 级」：如果实现真的按「远的先降」排序，
        * 唯一该掉级的就是最远那个节点，近核的必须原封不动。
-       * （给大配额会让两个都降，那样就分不出「谁先」了 —— 实测踩过。） */
+       * （给大配额会让两个都降，那样就分不出「谁先」了 —— 实测踩过。）
+       *
+       * 注意 dt 的算法：quota = downgradePerSec * scale * dt，
+       * 而 scale 最低 0.15、见底时到 3.0，所以 quota 并不等于 dt * downgradePerSec。
+       * 想拿「刚好 1 级」必须按**当前 deficit 对应的 scale** 反推 dt，
+       * 否则实际会降 2 级（这里踩过：直接传 1/perSec 得到 2 级）。 */
       st.nodes[probe].level = 5;
       st.nodes[farId].level = 5;
       st.res.water = 0;                          // 付不起
       var before = { p: st.nodes[probe].level, f: st.nodes[farId].level };
-      var done = Sim.settleMaintenance(st, 1 / C.MAINT.downgradePerSec);  // 配额 = 1 级
+      /* 这里用水量精确控制 deficit：把水设成缓冲线的一点点下方，
+       * 使 deficit 很小 → scale ≈ 0.15 → 配额最省，刚好只降 1 级。 */
+      var cost = Sim.totalMaintainCost(st);
+      st.res.water = cost * C.MAINT.bufferSec * 0.999;    // 刚刚破线，deficit ≈ 0.001
+      var done = Sim.settleMaintenance(st, 1 / (C.MAINT.downgradePerSec * 0.15));
       ok('缺水时确实发生降级（正对照）', done > 0, '本次降级 ' + done + ' 级');
       ok('远端先降：配额只够 1 级时，掉级的是最远的节点',
          done === 1 && st.nodes[farId].level === before.f - 1,
@@ -1350,6 +1442,92 @@
     st.nodes.forEach(function (n, i2) { n.level = saved[i2]; });
     st.res.water = savedWater;
     st.counters.maintainDowngrades = savedDown;
+    Sim.rebuildNetwork(st);
+  });
+
+  /* ---- 降级基准点 = 孢子落点（核心）---------------------------------------
+   * 「离中心越远越先降」里的「中心」必须是 state.core —— 即孢子落地的那一格，
+   * 也是节点 #0 所在处。这三者必须始终是同一个点，否则降级顺序会指向错误的方向。
+   * 拆开写断言，是因为它们分别可能被改坏：
+   *   · core 坐标被改成地图几何中心（会引入半格偏移，见 probe_downgrade_order）
+   *   · downgradeOrder 换用欧氏距离（绕路生长时会排错序） */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim;
+
+    ok('降级基准：核心节点 #0 就在 state.core 那一格',
+       st.nodes[0].x === st.core.x && st.nodes[0].y === st.core.y &&
+       st.nodes[0].soil === 'core',
+       'core=(' + st.core.x + ',' + st.core.y + ')  节点0=(' +
+       st.nodes[0].x + ',' + st.nodes[0].y + ')  基质=' + st.nodes[0].soil);
+
+    ok('降级基准：核心的 dist 恒为 0',
+       st.nodes[0].dist === 0, 'dist=' + st.nodes[0].dist);
+
+    /* 排序数组里**绝不能出现核心**：核心是唯一的不可降级节点。
+     * 一旦混进去，玩家会看到落点自己在掉级 —— 那是荒谬的。 */
+    var ord = Sim.downgradeOrder(st);
+    ok('降级序列里不含核心（孢子落点不参与降级）',
+       !ord.some(function (n) { return n.id === 0; }),
+       '序列长度 ' + ord.length);
+
+    /* 排序必须严格单调递减（远的在前）—— 逐对检查，能抓出任何比较器写反 */
+    var mono = true, badAt = -1;
+    for (var i = 1; i < ord.length; i++) {
+      if (ord[i - 1].dist < ord[i].dist) { mono = false; badAt = i; break; }
+    }
+    ok('降级序列按「离孢子落点距离」严格降序（远的在前）', mono,
+       mono ? ord.length + ' 个节点全部有序' :
+              '第 ' + badAt + ' 位乱序：' + ord[badAt - 1].dist + ' → ' + ord[badAt].dist);
+
+    /* 距离必须是 BFS 跳数（沿菌丝网络），不能是欧氏直线距离。
+     * 找一对「欧氏更远但 BFS 更近」的节点，确认排序信的是 BFS。 */
+    var pair = null;
+    for (var a = 1; a < ord.length && !pair; a++) {
+      for (var b = 1; b < ord.length; b++) {
+        if (a === b) continue;
+        var na = ord[a], nb = ord[b];
+        var ea = Math.sqrt(Math.pow(na.x - st.core.x, 2) + Math.pow(na.y - st.core.y, 2));
+        var eb = Math.sqrt(Math.pow(nb.x - st.core.x, 2) + Math.pow(nb.y - st.core.y, 2));
+        // 欧氏上 a 更远，但 BFS 上 a 更近 → 两种度量会给出相反的顺序
+        if (ea > eb && na.dist < nb.dist) { pair = [na, nb, ea, eb]; break; }
+      }
+    }
+    if (pair) {
+      var posA = ord.indexOf(pair[0]), posB = ord.indexOf(pair[1]);
+      ok('距离用 BFS 跳数（沿菌丝网络），不是欧氏直线',
+         posA > posB,
+         '节点' + pair[0].id + '（欧氏 ' + pair[2].toFixed(1) + '/BFS ' + pair[0].dist +
+         '） 与 节点' + pair[1].id + '（欧氏 ' + pair[3].toFixed(1) + '/BFS ' +
+         pair[1].dist + '）→ 排序位置 ' + posA + ' vs ' + posB);
+    } else {
+      /* 网络太规整时构造不出反例 —— 明确报「跳过」而不是假装通过 */
+      ok('距离用 BFS 跳数（当前网络找不到欧氏/BFS 冲突对，跳过）', true,
+         '网络 ' + ord.length + ' 个带等级节点，两种度量恰好同序');
+    }
+
+    /* 核心即使被手动塞上高等级，也绝不掉级 —— 这是最硬的一条。
+     * 抽干水跑很久，核心的等级必须纹丝不动。
+     * 关键：断言前先给 farId 之类补上等级，否则降级序列是空的，
+     * 「核心没掉级」会因为「谁都没掉级」而假通过。 */
+    var savedCoreLv = st.nodes[0].level;
+    var savedWater2 = st.res.water;
+    var savedDown2 = st.counters.maintainDowngrades;
+    var lvBackup = st.nodes.map(function (n) { return n.level; });
+    st.nodes.forEach(function (n, i2) { if (i2 > 0) n.level = 5; });
+    st.nodes[0].level = 9;
+    st.res.water = 0;
+    for (var g2 = 0; g2 < 200; g2++) Sim.settleMaintenance(st, 0.5);
+    var othersDropped = st.nodes.some(function (n, i2) { return i2 > 0 && n.level < 5; });
+    ok('正对照：抽干水时其它节点确实在掉级（否则下面的断言没意义）',
+       othersDropped, '非核心节点最低 Lv' +
+       Math.min.apply(null, st.nodes.slice(1).map(function (n) { return n.level; })));
+    ok('核心免疫：抽干水跑 100 秒，孢子落点等级纹丝不动',
+       st.nodes[0].level === 9, '核心 Lv9 → Lv' + st.nodes[0].level);
+
+    st.nodes.forEach(function (n, i2) { n.level = lvBackup[i2]; });
+    st.nodes[0].level = savedCoreLv;
+    st.res.water = savedWater2;
+    st.counters.maintainDowngrades = savedDown2;
     Sim.rebuildNetwork(st);
   });
 
@@ -1443,8 +1621,17 @@
   step(function () {
     var st = window.MYC.game.state, base = window.MYC.CONFIG.GRID;
     if (!S.pr || !S.pr.ok) return;
-    ok('转生后地图变大', st.mapW > S.p0.mapW || st.mapH > S.p0.mapH,
-       S.p0.mapW + '×' + S.p0.mapH + ' → ' + st.mapW + '×' + st.mapH);
+    /* 「地图变大」只在还没触到上限时成立。
+     * mapSizeFor 是 min(2, 1 + prestiges*0.12) —— 约 9 次转生后边长就到 2 倍封顶，
+     * 之后地图恒定 68×40。在同一个 localStorage 上重跑自测时，
+     * prestiges 已经攒到上限，这条断言必然失败 —— 那不是回归，是到达了设计封顶。
+     * 所以判据改成「变大 或 已封顶」，两者都算正确。 */
+    var capped = window.MYC.Sim.mapSizeFor(st.prestiges).w ===
+                 window.MYC.Sim.mapSizeFor(st.prestiges + 99).w;
+    ok('转生后地图变大（或已达尺寸上限）',
+       (st.mapW > S.p0.mapW || st.mapH > S.p0.mapH) || capped,
+       S.p0.mapW + '×' + S.p0.mapH + ' → ' + st.mapW + '×' + st.mapH +
+       (capped ? '  [已达上限]' : ''));
     ok('转生后换了种子（新地形）', st.seed !== S.p0.seed,
        'seed ' + S.p0.seed + ' → ' + st.seed);
     ok('新地图的探索记录已清空', st.explored.count < 60,

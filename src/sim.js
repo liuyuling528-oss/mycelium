@@ -222,6 +222,7 @@ var Sim = (function () {
       x: x, y: y,
       soil: soil,
       level: 0,            // 强化等级：提升本节点产出与吞吐
+      pinned: false,       // 玩家锁定：缺水降级时排到最后（取舍的出口）
       disabled: false,     // 被害虫占据时停止产出
       gnat: null,          // 占据它的害虫（null 表示没有）
       dist: 0,
@@ -434,13 +435,24 @@ var Sim = (function () {
     return base - c.dist * distWeight - c.cost * 0.01;
   }
 
+  /* 自动蔓延走一步。返回 true 表示「这一拍用掉了」，false 表示「暂时走不动」。
+   *
+   * 注意返回值语义 —— 这里踩过一个隐蔽的坑：
+   * 曾经返回 best（对象）或 null，而 tick 里写的是
+   *     if (!autoStep(state)) { state.autoTimer = 0; break; }
+   * 于是「长了新节点」= 返回真对象 → 循环继续（正确）
+   *     「水不够了」  = 返回 null    → 计时器清零（也正确）
+   * 但两种情况共用同一个「假值」出口，且计时器被清零后
+   * **每帧都会重新尝试一次**（因为 autoTimer += dt 很快又攒够一拍），
+   * 白白跑 60 次/秒的 bestCandidate（每次都要重算全部候选格）。
+   * 现在改成显式布尔，失败时才清零。 */
   function autoStep(state) {
-    if (!state.autoGrow) return null;
+    if (!state.autoGrow) return false;
     var best = bestCandidate(state);
-    if (!best || best.cost > state.res.water) return null;
+    if (!best || best.cost > state.res.water) return false;
     state.res.water -= best.cost;
     addNode(state, best.x, best.y, best.soil);
-    return best;
+    return true;
   }
 
   /* 当前策略下最值得长的格子。渲染层用它高亮「推荐格」，玩家手动点它即可 —— 
@@ -616,7 +628,14 @@ var Sim = (function () {
   /* 降级的候选顺序：**离核最远的先降**。
    * 这是玩家明确要的语义（「离中心远的就先降级」），也把「位置」
    * 从「只是运输损耗」提升成「占着就有成本」—— 想维持远处的富矿，
-   * 就得沿路多留水。同距离时等级高的先降（保住更多节点有产出）。 */
+   * 就得沿路多留水。
+   *
+   * 顺序（先降谁）：
+   *   ① 玩家**没锁定**的节点优先降 —— 这是玩家的取舍出口：
+   *      他挑出要紧的节点锁住，其余交给系统按距离砍。
+   *   ② 同锁定状态下，远的先降。
+   *   ③ 同距离时等级高的先降 —— 一次降级省下的维持费最多，效率最高。
+   */
   function downgradeOrder(state) {
     var out = [];
     for (var i = 1; i < state.nodes.length; i++) {          // 跳过核心
@@ -624,43 +643,112 @@ var Sim = (function () {
       if (nd.level > 0 && nd.dist >= 0) out.push(nd);
     }
     out.sort(function (a, b) {
+      var al = a.pinned ? 1 : 0, bl = b.pinned ? 1 : 0;
+      if (al !== bl) return al - bl;                        // 没锁的先降
       if (b.dist !== a.dist) return b.dist - a.dist;        // 远的优先
       return b.level - a.level;                             // 同距先降高等级
     });
     return out;
   }
 
+  /* 锁定 / 解锁一个节点（玩家的取舍开关）。
+   * 锁定的节点排在降级序列最末 —— 只要还有没锁的可降，就不动它。
+   * 注意：**锁不是永久免疫**。如果只剩下锁定节点可降（水实在太少），
+   * 它照样会掉级 —— 否则「锁住一切」就成了绕开机制的漏洞。 */
+  function togglePin(state, nodeId) {
+    var nd = state.nodes[nodeId];
+    if (!nd) return { ok: false, reason: '这里没有菌丝' };
+    if (nd.id === 0) return { ok: false, reason: '核心不能锁定' };
+    nd.pinned = !nd.pinned;
+    return { ok: true, pinned: nd.pinned };
+  }
+
+  function pinnedCount(state) {
+    var n = 0;
+    for (var i = 1; i < state.nodes.length; i++) if (state.nodes[i].pinned) n++;
+    return n;
+  }
+
   /* 结算维持费。逻辑：
    *   ① 正常扣水；
    *   ② 水量低于「维持费 × bufferSec」的缓冲线 → 开始降级；
-   *   ③ 每次最多降 downgradePerSec × dt 级，远的先降；
+   *   ③ 降级速度**与缺水程度成正比**（见下），远的先降（锁定的最后）；
    *   ④ 水不许变成负数 —— 真见底就归零，缺口由降级补上。
    *
    * 降级**只减等级、绝不移除节点**（守住「绝不永久损失」底线）。
    * 降级的代价不在水里，而在「产出和吞吐掉回上一级」——
-   * 所以它读起来是「你维持不起了，撤回一部分投资」，而不是「系统罚你」。 */
+   * 所以它读起来是「你维持不起了，撤回一部分投资」，而不是「系统罚你」。
+   *
+   * 【为什么降级速度要按缺水程度缩放】
+   * 早期版本用的是固定配额（每秒固定降 3 级），实测发现一个致命问题：
+   * 等级总和稳定在 ~200 且**几乎不随 costPerLevel 变化**
+   * （k 从 1 涨到 12，累计降级次数始终 ~4700）——
+   * 因为瓶颈不是水量，而是那个固定配额：玩家练 1 级立刻被砍掉，
+   * 「一练就掉」，等级永远堆不起来。提高 k 完全无效。
+   *
+   * 改成按缺水程度缩放后：
+   *   · 刚好低于缓冲线 → 极慢地降（几乎察觉不到，玩家有时间反应）
+   *   · 严重缺水 → 快速降（真的养不起就干脆利落地收缩）
+   * 这样「能维持多少等级」才真正由水收支决定 ——
+   * 即由 costPerLevel 决定，k 才成为一个有意义的旋钮。
+   */
   function settleMaintenance(state, dt) {
     var cost = totalMaintainCost(state);
-    if (cost <= 0) { state.maintainCost = 0; state.maintainPressure = false; return 0; }
+    if (cost <= 0) {
+      state.maintainCost = 0; state.maintainPressure = false;
+      state.maintainQuota = 0;
+      return 0;
+    }
 
     state.maintainCost = cost;
     state.res.water -= cost * dt;
 
     var buffer = cost * CONFIG.MAINT.bufferSec;
-    /* 降级配额：只有真的低于缓冲线才动手。
-     * 缓冲的存在让「掉级」变成一件玩家看得见后果的事 ——
-     * 水开始变红时还有时间反应，而不是等级无声地滑下去。 */
-    var quota = CONFIG.MAINT.downgradePerSec * dt;
     var downgraded = 0;
 
     if (state.res.water < buffer) {
+      /* 缺水程度 0~1：刚好碰到缓冲线 → 0；水见底 → 1。 */
+      var deficit = (buffer - state.res.water) / Math.max(1e-6, buffer);
+      if (deficit > 1) deficit = 1;
+      /* 缩放系数：最低 0.15（碰到线就开始缓慢收缩，不至于无限期不动），
+       * 完全见底时放大到 3 倍基准速度。 */
+      var scale = 0.15 + deficit * deficit * 2.85;
+      var quota = CONFIG.MAINT.downgradePerSec * scale * dt;
+
+      /* 配额不足 1 级时不能白扔 —— 攒起来。
+       *
+       * 为什么必须有这个累加器：浏览器以 60fps 跑，单帧 dt ≈ 0.0167。
+       * 轻度缺水时 quota ≈ 0.45 * 0.0167 ≈ 0.0075 级/帧，
+       * 恒定小于 1 —— 如果直接丢掉，降级永远不会发生，
+       * 「碰到缓冲线就开始缓慢收缩」就成了空话（实际表现是彻底卡住不动）。
+       * 累积到 1 级再一次性降，等价于「平均每秒降 scale×perSec 级」，
+       * 既保住了缓慢的手感，也保住了「确实在收缩」的语义。 */
+      state.maintainQuota = (state.maintainQuota || 0) + quota;
+      var budget = Math.floor(state.maintainQuota + 1e-9);   // 吸收浮点误差
+
       var order = downgradeOrder(state);
-      for (var i = 0; i < order.length && downgraded < quota; i++) {
+      /* 预算制循环：`downgraded + 1 <= budget` 而不是 `downgraded < quota`。
+       *
+       * 差别在配额 < 1 时的行为，非常关键：
+       *   budget = 0（轻度缺水）时，若写成 `downgraded < quota`，
+       *   第一次判断 0 < 0.45 成立 → 降 1 级 ——
+       *   于是**任何非零配额都至少降 1 级**，降级速度在低端被量化成
+       *   固定每秒 1 级，缩放完全失效，玩家看到的是「刚开始缺水就猛地掉级」。
+       *   改成预算制后：budget=0 一次都不降；budget=1 最多降 1 级。
+       *
+       * 实测踩过：quota 精确等于 1.0 时旧写法会降 2 级
+       * （浮点误差让它算成 1.0000000000000002，撑过了第二次比较）。 */
+      for (var i = 0; i < order.length && downgraded + 1 <= budget; i++) {
         var nd = order[i];
         if (nd.level <= 0) continue;
         nd.level -= 1;
         downgraded++;
       }
+      state.maintainQuota -= downgraded;
+      /* 保护：满级节点全降完了但配额还在攒（没东西可降），
+       * 累加器不该无限膨胀 —— 夹在 1 级以内，恢复供水的瞬间
+       * 才不会突然雪崩式连降。 */
+      if (state.maintainQuota > 1) state.maintainQuota = 1;
       if (downgraded > 0) {
         state.counters.maintainDowngrades = (state.counters.maintainDowngrades || 0) + downgraded;
         recomputeCapacity(state);
@@ -693,8 +781,8 @@ var Sim = (function () {
     var interval = autoIntervalOf(state);
     state.autoTimer += dt;
     while (state.autoTimer >= interval) {
-      state.autoTimer -= interval;
       if (!autoStep(state)) { state.autoTimer = 0; break; }
+      state.autoTimer -= interval;
     }
 
     // 内容层
@@ -1270,7 +1358,7 @@ var Sim = (function () {
       cd: state.cd, unlocked: state.unlocked, pulseT: state.pulseT,
       milestones: state.milestones, mods: state.mods, counters: state.counters,
       nextEventAt: state.nextEventAt,
-      nodes: state.nodes.map(function (n) { return [n.x, n.y, n.soil, n.level]; })
+      nodes: state.nodes.map(function (n) { return [n.x, n.y, n.soil, n.level, n.pinned ? 1 : 0]; })
     });
   }
 
@@ -1297,6 +1385,7 @@ var Sim = (function () {
     d.nodes.forEach(function (n, i) {
       var nd = makeNode(state, n[0], n[1], n[2], i);
       nd.level = n[3] || 0;
+      nd.pinned = !!n[4];        // 旧存档没有第 5 位 → 默认未锁定
       state.nodes.push(nd);
       state.nodeAt[idx(n[0], n[1])] = i;
       state.grid[idx(n[0], n[1])].node = i;
@@ -1331,6 +1420,7 @@ var Sim = (function () {
 
   return {
     newGame: newGame, tick: tick, growAt: growAt, canGrowAt: canGrowAt,
+    mapSizeFor: mapSizeFor,
     candidates: candidates, growCostAt: growCostAt, cellYield: cellYield,
     transportEfficiency: transportEfficiency,
     upgradeCost: upgradeCost, buyUpgrade: buyUpgrade,
@@ -1349,7 +1439,8 @@ var Sim = (function () {
     spawnBlight: spawnBlight, spreadBlights: spreadBlights, putBlight: putBlight,
     // 维护耗水
     maintainCostOf: maintainCostOf, totalMaintainCost: totalMaintainCost,
-    settleMaintenance: settleMaintenance,
+    settleMaintenance: settleMaintenance, downgradeOrder: downgradeOrder,
+    togglePin: togglePin, pinnedCount: pinnedCount,
     pushFloater: pushFloater,
     cellYieldOf: function (state, soil) { return cellYield(state, soil); }
   };
