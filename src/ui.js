@@ -198,7 +198,11 @@ var UI = (function () {
     if (!r.ok) { toast(r.reason); return; }
     window.MYC.game.shake();
     pushLog('散播孢子！获得 ' + r.gained + ' 基因点（第 ' + r.record.run + ' 次，用了 ' + clk(r.record.seconds) + '）');
+    pushLog('孢子落在一片新的土壤上 —— 地图更大了（' + state.mapW + '×' + state.mapH + '）');
     toast('散播孢子成功，获得 ' + r.gained + ' 基因点');
+    // 换图了：场景里的地形缓存、已探明数、镜头全都要重来
+    var sc = window.MYC.game.scene;
+    if (sc && sc.onMapChanged) sc.onMapChanged();
     window.MYC.game.save(true);
   }
 
@@ -351,8 +355,11 @@ var UI = (function () {
     scanDiscoveries();
   }
 
-  /* 第一次探明某种基质时提示一下，让探索有反馈 */
+  /* 第一次探明某种基质时提示一下，让探索有反馈。
+   * 全部见过后直接短路 —— 地图变大之后，每 0.1s 扫一遍全图就是纯浪费。 */
+  var seenAllSoils = false;
   function scanDiscoveries() {
+    if (seenAllSoils) return;
     for (var i = 0; i < state.grid.length; i++) {
       var c = state.grid[i];
       if (!c.known || seenSoils[c.soil]) continue;
@@ -362,6 +369,11 @@ var UI = (function () {
         pushLog('发现 ' + s.name + '：' + describe(s));
       }
     }
+    var all = true;
+    for (var k in C.SOILS) {
+      if (k !== 'soil' && k !== 'core' && !seenSoils[k]) { all = false; break; }
+    }
+    if (all) seenAllSoils = true;
   }
 
   function describe(s) {

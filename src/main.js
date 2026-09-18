@@ -1,4 +1,4 @@
-/* ============================================================================
+﻿/* ============================================================================
  * main.js — 启动：Phaser 引导 + 存档管理
  *
  * 全局桥梁都挂在 MYC.game 上：
@@ -59,7 +59,7 @@
         var s = Sim.deserialize(raw);
         this.state = s;
         UI.rebind(s);
-        if (this.scene) { this.scene.lastKnown = -1; this.scene.lastNodeCount = 0; this.scene.pops = {}; }
+        if (this.scene) { this.scene.lastKnown = -1; this.scene.lastSoilSig = null; this.scene.lastNodeCount = 0; this.scene.pops = {}; }
         this.dirty = true;
         UI.toast('已读取存档');
       } catch (e) {
@@ -73,7 +73,7 @@
       var s = Sim.newGame(randomSeed(), this.state.genes, {});
       this.state = s;
       UI.rebind(s);
-      if (this.scene) { this.scene.lastKnown = -1; this.scene.lastNodeCount = 0; this.scene.pops = {}; }
+      if (this.scene) { this.scene.lastKnown = -1; this.scene.lastSoilSig = null; this.scene.lastNodeCount = 0; this.scene.pops = {}; }
       this.dirty = true;
       UI.pushLog('新地图已生成，种子 ' + s.seed);
       this.save(true);

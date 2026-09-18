@@ -96,6 +96,18 @@
   }
   function step(fn) { steps.push(fn); }
 
+  /* 地图尺寸随转生次数长大 —— 一律读 state 里的实际尺寸，
+   * 别用 CONFIG.GRID（那是基础值，转生几次之后就对不上了）。 */
+  function GRID() {
+    var st = window.MYC.game.state;
+    var base = window.MYC.CONFIG.GRID;
+    return {
+      W: (st && st.mapW) || base.W,
+      H: (st && st.mapH) || base.H,
+      CELL: base.CELL, OX: base.OX, OY: base.OY
+    };
+  }
+
   function canvas() { return document.querySelector('#game canvas'); }
 
   /* 世界格 -> 屏幕坐标。
@@ -108,7 +120,7 @@
    * 公式与摄像机一致：世界点 = 视野中心 + (画布点 - 画布中心)/zoom。
    */
   function cellToClient(x, y) {
-    var G = window.MYC.CONFIG.GRID;
+    var G = GRID();
     var sc = window.MYC.game.scene;
     var cv = canvas(), r = cv.getBoundingClientRect();
     var z = sc.viewZoom, cw = sc.scale.width, ch = sc.scale.height;
@@ -120,24 +132,6 @@
       x: r.left + ix * (r.width / cv.width),
       y: r.top + iy * (r.height / cv.height),
       inside: true
-    };
-  }
-
-  /* 同一件事走摄像机那条路再算一遍，专门用来交叉验证「摄像机确实在
-   * 场景以为的位置」。只在视野稳定的时刻调用。 */
-  function cellToClientViaCamera(x, y) {
-    var G = window.MYC.CONFIG.GRID;
-    var cam = window.MYC.game.scene.cameras.main;
-    var cv = canvas(), r = cv.getBoundingClientRect();
-    var o = cam.getWorldPoint(0, 0);
-    var ex = cam.getWorldPoint(1, 0);
-    var ey = cam.getWorldPoint(0, 1);
-    var kx = 1 / (ex.x - o.x), ky = 1 / (ey.y - o.y);
-    var wx = G.OX + x * G.CELL + G.CELL / 2;
-    var wy = G.OY + y * G.CELL + G.CELL / 2;
-    return {
-      x: r.left + (wx - o.x) * kx * (r.width / cv.width),
-      y: r.top + (wy - o.y) * ky * (r.height / cv.height)
     };
   }
 
@@ -326,8 +320,8 @@
     ok('再跑 10 分钟数值不发散', finite,
        '水 ' + Math.round(st.res.water) + ' 养分 ' + Math.round(st.res.nutrient) +
        ' 孢子 ' + Math.round(st.res.spore) + ' 节点 ' + st.nodes.length);
-    ok('节点数在合法范围', st.nodes.length > 0 && st.nodes.length <= window.MYC.CONFIG.GRID.W * window.MYC.CONFIG.GRID.H,
-       st.nodes.length + ' 格 / 上限 ' + (window.MYC.CONFIG.GRID.W * window.MYC.CONFIG.GRID.H));
+    ok('节点数在合法范围', st.nodes.length > 0 && st.nodes.length <= st.mapW * st.mapH,
+       st.nodes.length + ' 格 / 上限 ' + (st.mapW * st.mapH) + '（地图 ' + st.mapW + '×' + st.mapH + '）');
   });
 
   /* ---- 内容层（技能 / 里程碑 / 节点强化 / 事件）----
@@ -504,7 +498,7 @@
   });
 
   step(function () {
-    var sc = window.MYC.game.scene, cam = sc.cameras.main, G = window.MYC.CONFIG.GRID;
+    var sc = window.MYC.game.scene, cam = sc.cameras.main, G = GRID();
     var core = window.MYC.game.state.nodes[0];
     var wx = G.OX + core.x * G.CELL + G.CELL / 2, wy = G.OY + core.y * G.CELL + G.CELL / 2;
     var v = cam.worldView;
@@ -513,11 +507,18 @@
        'core=(' + wx.toFixed(0) + ',' + wy.toFixed(0) + ')  视野 x ' +
        v.left.toFixed(0) + '..' + v.right.toFixed(0) + '  y ' + v.top.toFixed(0) + '..' + v.bottom.toFixed(0));
 
-    // 缩放的硬下限：绝不能小于「整张地图刚好装下」，否则网络边缘会被裁出画面
-    var whole = Math.min(cam.width / (G.OX * 2 + G.W * G.CELL),
-                         cam.height / (G.OY * 2 + G.H * G.CELL));
-    ok('视野不小于整张地图（不裁剪网络）', cam.zoom >= whole - 0.003,
-       'zoom=' + cam.zoom.toFixed(3) + '  下限=' + whole.toFixed(3));
+    /* 地图会随转生变大，视野允许比整张图更小（最小到整图的 0.85），
+     * 但**已探明区域必须完整可见** —— 这才是「不裁剪网络」的准确表述。
+     * 用 state.explored 的包围盒核对（sim 增量维护，不在测试里重算）。
+     * 先 snapView 把视野钉到目标值：缓动未收敛时直接比 cam.zoom 会假失败。 */
+    sc.snapView();
+    var e = window.MYC.game.state.explored;
+    var pad = 2;
+    var bw = (e.maxX - e.minX + 1 + pad * 2) * G.CELL;
+    var bh = (e.maxY - e.minY + 1 + pad * 2) * G.CELL;
+    var fitExplored = Math.min(cam.width / bw, cam.height / bh);
+    ok('视野装得下整个已探明区域（不裁剪网络）', cam.zoom <= fitExplored + 0.01,
+       'zoom=' + cam.zoom.toFixed(3) + '  上限=' + fitExplored.toFixed(3));
 
     ok('格子没有被放大到失真', G.CELL * cam.zoom <= 48,
        '格子约 ' + (G.CELL * cam.zoom).toFixed(0) + 'px');
@@ -614,18 +615,18 @@
        '  视野 x ' + Math.round(v.left) + '..' + Math.round(v.right));
   });
 
-  /* 交叉验证：cellToClient 用的是场景自己维护的视野状态，
-   * 这里用摄像机那条路（getWorldPoint）再算一遍同一格，两条路必须一致。
-   * 不一致就说明「摄像机不在场景以为的位置」—— 那是比点击点偏严重得多的 bug。 */
+  /* 交叉验证：场景维护的视野状态必须真的写进了摄像机。
+   * 读 cam.midPoint / cam.zoom —— centerOn/setZoom 会**同步**更新它们；
+   * 不要用 cam.worldView（渲染阶段才更新，headless 下经常旧一帧），
+   * 也不要比较像素坐标（自动取景一直在缓动，两次读数之间镜头自己会动）。 */
   step(function () {
-    var sc = window.MYC.game.scene, st = window.MYC.game.state;
-    if (!S.ctrl) return;
-    var a = cellToClient(S.ctrl.x, S.ctrl.y);
-    var b = cellToClientViaCamera(S.ctrl.x, S.ctrl.y);
-    var d = Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
-    ok('摄像机与场景视野状态一致（两条换算路径互证）', d < 2,
-       '两条路径的差 ' + d.toFixed(2) + 'px（cell ' +
-       S.ctrl.x + ',' + S.ctrl.y + '）');
+    var sc = window.MYC.game.scene, cam = sc.cameras.main;
+    var mp = cam.midPoint;
+    var dc = Math.max(Math.abs(mp.x - sc.viewCx), Math.abs(mp.y - sc.viewCy));
+    var dz = Math.abs(cam.zoom - sc.viewZoom);
+    ok('摄像机与场景视野状态一致（两条路径互证）', dc < 1.5 && dz < 0.01,
+       '中心差 ' + dc.toFixed(2) + 'px（摄像机 ' + mp.x.toFixed(1) + ',' + mp.y.toFixed(1) +
+       ' vs 场景 ' + sc.viewCx.toFixed(1) + ',' + sc.viewCy.toFixed(1) + '）  zoom 差 ' + dz.toFixed(4));
   });
 
   step(function () {
@@ -718,6 +719,9 @@
 
   step(function () {
     var sc = window.MYC.game.scene;
+    /* 先把视野钉住（切手动、缩放不变）：自动取景会跟着网络一直在缓动，
+     * 锚点测试前后两次读数之间镜头自己会动，测出来的就不是滚轮了。 */
+    sc.setView(sc.viewZoom, sc.viewCx, sc.viewCy);
     /* 锚点故意放在偏离中心的位置 —— 用画布正中心测锚点，
      * 中心缩放本来就是「不动」的，验不出锚点算错。 */
     S.p = canvasPoint(0.35, 0.4);
@@ -855,7 +859,7 @@
     st.autoTimer = -1e6;
     st.res.water = 50000;
     // 折腾完这一堆手势之后，普通点击必须仍然有效 —— 输入状态别被拖坏
-    var G = window.MYC.CONFIG.GRID;
+    var G = GRID();
     var rng = visibleCells();
     var x0 = rng.x0, x1 = rng.x1, y0 = rng.y0, y1 = rng.y1;
     var target = null;
@@ -890,6 +894,56 @@
     ok('折腾完手势后，点击依然长得出菌丝', st.nodes.length === S.after.n + 1,
        S.after.n + ' -> ' + st.nodes.length + ' 格');
     st.autoTimer = 0;
+  });
+
+  /* ---- 转生换图 ----------------------------------------------------------
+   * 必须放在最后：转生会把网络重置成核心一格，后面的测试都依赖大网络。 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim;
+    S.p0 = { prestiges: st.prestiges, mapW: st.mapW, mapH: st.mapH, seed: st.seed,
+             nodes: st.nodes.length, knowledge: Object.keys(st.knowledge).length };
+    st.res.spore = 1e9;              // 强制满足转生条件
+    st.total.nutrient = 1e9;
+    st.total.spore = 1e9;
+    S.pr = Sim.doPrestige(st);
+    ok('转生可以执行', !!S.pr.ok, S.pr.ok ? ('获得 ' + S.pr.gained + ' 基因点') : S.pr.reason);
+    if (S.pr.ok) {
+      var sc = window.MYC.game.scene;
+      if (sc && sc.onMapChanged) sc.onMapChanged();   // 真实流程由 update() 检测触发
+    }
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, base = window.MYC.CONFIG.GRID;
+    if (!S.pr || !S.pr.ok) return;
+    ok('转生后地图变大', st.mapW > S.p0.mapW || st.mapH > S.p0.mapH,
+       S.p0.mapW + '×' + S.p0.mapH + ' → ' + st.mapW + '×' + st.mapH);
+    ok('转生后换了种子（新地形）', st.seed !== S.p0.seed,
+       'seed ' + S.p0.seed + ' → ' + st.seed);
+    ok('新地图的探索记录已清空', st.explored.count < 60,
+       '已探明 ' + st.explored.count + ' 格（转生前 ' + S.p0.nodes + ' 格）');
+    ok('网络重置为核心一格', st.nodes.length === 1, st.nodes.length + ' 格');
+    ok('转生计数 +1', st.prestiges === S.p0.prestiges + 1,
+       S.p0.prestiges + ' → ' + st.prestiges);
+
+    /* 尺寸阶梯：边长 = 基础 × min(2, 1 + 0.12 × 转生次数)，封顶防止经济失控 */
+    var s = Math.min(2, 1 + st.prestiges * 0.12);
+    ok('地图尺寸符合阶梯', st.mapW === Math.round(base.W * s) && st.mapH === Math.round(base.H * s),
+       '期望 ' + Math.round(base.W * s) + '×' + Math.round(base.H * s) +
+       '，实际 ' + st.mapW + '×' + st.mapH);
+
+    var sc = window.MYC.game.scene;
+    ok('场景缓存已随换图重置', sc.lastSoilSig === null && sc.viewMode === 'auto',
+       'soilSig=' + sc.lastSoilSig + ' viewMode=' + sc.viewMode);
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim;
+    if (!S.pr || !S.pr.ok) return;
+    st.res.water = 50000;
+    var b = Sim.bestCandidate(st);
+    var r = b && Sim.growAt(st, b.x, b.y);
+    ok('新地图上能继续生长', !!(r && r.ok), r ? ('-' + r.cost + ' 水') : '没有可生长的格');
   });
 
   /* 主循环断言放在最后：headless 下 rAF 的推进时机不确定，

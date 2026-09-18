@@ -18,9 +18,32 @@ var Sim = (function () {
 
   var SOILS = CONFIG.SOILS, GRID = CONFIG.GRID;
 
+  /* ---- 当前地图尺寸 ----
+   * 地图随转生次数长大（见 mapSizeFor），所以尺寸是 per-run 的，不再是常量。
+   * 绝大多数逻辑都是「以 state 为参数的局部计算」，对大小无感知；
+   * 真正用到 W/H 的只有 idx / inBounds / neighbours 这几个底层换算 —— 它们读这里。
+   * 一个进程同时只有一张活动地图：浏览器只有一份 state；
+   * headless_sim 逐个跑策略（串行），newGame / deserialize 会顺手更新它。 */
+  var _MAP = { w: GRID.W, h: GRID.H };
+
+  /* 地图随转生次数长大：给长期玩家一个「世界在变大」的目标，
+   * 同时必须封顶 —— 孢子收入正比于节点数，地图无上限 = 经济失控。
+   * 每次转生边长 +12%，最多 2 倍/边（面积 4 倍，约 68×40）。 */
+  function mapSizeFor(prestiges) {
+    var s = Math.min(2, 1 + (prestiges || 0) * 0.12);
+    return { w: Math.round(GRID.W * s), h: Math.round(GRID.H * s) };
+  }
+
+  /* 切换活动地图尺寸。newGame / doPrestige 用。 */
+  function applyMapSize(state, m) {
+    _MAP.w = m.w; _MAP.h = m.h;
+    state.mapW = m.w; state.mapH = m.h;
+    state.core = { x: (m.w >> 1), y: (m.h >> 1) };
+  }
+
   /* ---------------------------------------------------------------- 工具 */
-  function idx(x, y) { return y * GRID.W + x; }
-  function inBounds(x, y) { return x >= 0 && y >= 0 && x < GRID.W && y < GRID.H; }
+  function idx(x, y) { return y * _MAP.w + x; }
+  function inBounds(x, y) { return x >= 0 && y >= 0 && x < _MAP.w && y < _MAP.h; }
 
   function emptyVec() { return { water: 0, nutrient: 0, spore: 0 }; }
   function addVec(a, b) { a.water += b.water; a.nutrient += b.nutrient; a.spore += b.spore; return a; }
@@ -28,9 +51,11 @@ var Sim = (function () {
   function scaleVec(v, k) { return { water: v.water * k, nutrient: v.nutrient * k, spore: v.spore * k }; }
 
   /* ------------------------------------------------------------ 新开一局 */
-  function newGame(seed, genes, knowledge) {
+  function newGame(seed, genes, knowledge, prestiges) {
+    var m = mapSizeFor(prestiges || 0);
     var state = {
       seed: seed >>> 0,
+      mapW: m.w, mapH: m.h,        // 本局地图尺寸（随转生次数长大）
       t: 0,                        // 本局已过秒数
       res: { water: 0, nutrient: 0, spore: 0 },
       total: { water: 0, nutrient: 0, spore: 0 },
@@ -40,14 +65,15 @@ var Sim = (function () {
       nodeAt: [],
       byDist: [],
       maxDist: 0,
-      core: { x: (GRID.W >> 1), y: (GRID.H >> 1) },
+      core: { x: (m.w >> 1), y: (m.h >> 1) },
+      explored: { minX: 1e9, maxX: -1e9, minY: 1e9, maxY: -1e9, count: 0 },
       up: {},
       genes: genes || {},
-      knowledge: knowledge || {},  // 已探明格子，跨转生保留
+      knowledge: knowledge || {},  // 已探明格子（换图后作废）
       policy: 'nearest',
       autoGrow: true,
       autoTimer: 0,
-      prestiges: 0,
+      prestiges: prestiges || 0,
       runs: [],                    // 每局的成绩
       log: [],
 
@@ -64,6 +90,7 @@ var Sim = (function () {
     };
     CONFIG.UPGRADES.forEach(function (u) { state.up[u.key] = 0; });
     CONFIG.GENES.forEach(function (g) { if (state.genes[g.key] == null) state.genes[g.key] = 0; });
+    applyMapSize(state, m);
 
     generateMap(state);
     state.res.water = CONFIG.START.water + state.genes.gWater * 150;
@@ -81,24 +108,28 @@ var Sim = (function () {
   function generateMap(state) {
     var rnd = RNG.makeRng(state.seed);
     var i, x, y;
+    var W = _MAP.w, H = _MAP.h;
+    /* 特征数量按面积缩放：地图大了，矿脉/岩石/腐木的**密度**不能变稀，
+     * 否则大地图就是一片空地，等于惩罚转生多的玩家。 */
+    var dens = (W * H) / (GRID.W * GRID.H);
 
-    for (y = 0; y < GRID.H; y++) {
-      for (x = 0; x < GRID.W; x++) {
+    for (y = 0; y < H; y++) {
+      for (x = 0; x < W; x++) {
         state.grid[idx(x, y)] = { x: x, y: y, soil: 'soil', known: false, node: null };
       }
     }
 
     // 落叶层的丰度用噪声铺，形成自然的斑块
-    for (y = 0; y < GRID.H; y++) {
-      for (x = 0; x < GRID.W; x++) {
+    for (y = 0; y < H; y++) {
+      for (x = 0; x < W; x++) {
         var n = RNG.fbm(x * CONFIG.GEN.noiseScale, y * CONFIG.GEN.noiseScale, state.seed, 3);
         state.grid[idx(x, y)].soil = (n > CONFIG.GEN.litterThreshold) ? 'litter' : 'soil';
       }
     }
 
     // 岩石簇：障碍物就是空间取舍的来源
-    for (i = 0; i < CONFIG.GEN.rockClusters; i++) {
-      var cx = Math.floor(rnd() * GRID.W), cy = Math.floor(rnd() * GRID.H);
+    for (i = 0; i < Math.round(CONFIG.GEN.rockClusters * dens); i++) {
+      var cx = Math.floor(rnd() * W), cy = Math.floor(rnd() * H);
       var n = Math.max(1, Math.round(CONFIG.GEN.rockClusterSize * (0.5 + rnd())));
       var rx = cx, ry = cy;
       for (var k = 0; k < n; k++) {
@@ -109,8 +140,8 @@ var Sim = (function () {
     }
 
     // 水脉按「河流」走，细细长长，值得为之绕路
-    for (i = 0; i < CONFIG.GEN.veinRivers; i++) {
-      var vx = Math.floor(rnd() * GRID.W), vy = Math.floor(rnd() * GRID.H);
+    for (i = 0; i < Math.round(CONFIG.GEN.veinRivers * dens); i++) {
+      var vx = Math.floor(rnd() * W), vy = Math.floor(rnd() * H);
       var ax = rnd() * 2 - 1, ay = rnd() * 2 - 1;
       for (var s = 0; s < CONFIG.GEN.veinLength; s++) {
         var w = CONFIG.GEN.veinWidth;
@@ -123,13 +154,13 @@ var Sim = (function () {
         if (inBounds(vx, vy)) state.grid[idx(vx, vy)].soil = 'vein';
         ax += (rnd() * 2 - 1) * 0.35; ay += (rnd() * 2 - 1) * 0.35;
         vx += Math.round(ax); vy += Math.round(ay);
-        if (!inBounds(vx, vy)) { vx = Math.max(0, Math.min(GRID.W - 1, vx)); vy = Math.max(0, Math.min(GRID.H - 1, vy)); }
+        if (!inBounds(vx, vy)) { vx = Math.max(0, Math.min(W - 1, vx)); vy = Math.max(0, Math.min(H - 1, vy)); }
       }
     }
 
     // 腐木与树根：成团出现，是高价值目标
-    placeBlobs(state, rnd, 'wood', CONFIG.GEN.woodBlobs, CONFIG.GEN.woodBlobSize);
-    placeBlobs(state, rnd, 'root', CONFIG.GEN.rootBlobs, CONFIG.GEN.rootBlobSize);
+    placeBlobs(state, rnd, 'wood', Math.round(CONFIG.GEN.woodBlobs * dens), CONFIG.GEN.woodBlobSize);
+    placeBlobs(state, rnd, 'root', Math.round(CONFIG.GEN.rootBlobs * dens), CONFIG.GEN.rootBlobSize);
 
     // 核心周围保证是软的，别一开局就被岩石封死
     var cx0 = state.core.x, cy0 = state.core.y;
@@ -164,7 +195,7 @@ var Sim = (function () {
 
   function placeBlobs(state, rnd, soil, count, avgSize) {
     for (var i = 0; i < count; i++) {
-      var cx = Math.floor(rnd() * GRID.W), cy = Math.floor(rnd() * GRID.H);
+      var cx = Math.floor(rnd() * _MAP.w), cy = Math.floor(rnd() * _MAP.h);
       var n = Math.max(1, Math.round(avgSize * (0.5 + rnd())));
       var x = cx, y = cy;
       for (var k = 0; k < n; k++) {
@@ -242,9 +273,9 @@ var Sim = (function () {
   function neighbours(x, y) {
     var out = [];
     if (x > 0) out.push([x - 1, y]);
-    if (x < GRID.W - 1) out.push([x + 1, y]);
+    if (x < _MAP.w - 1) out.push([x + 1, y]);
     if (y > 0) out.push([x, y - 1]);
-    if (y < GRID.H - 1) out.push([x, y + 1]);
+    if (y < _MAP.h - 1) out.push([x, y + 1]);
     return out;
   }
 
@@ -417,6 +448,18 @@ var Sim = (function () {
   }
 
   /* ------------------------------------------------------------- 感知范围 */
+  /* 顺手维护「已探明包围盒」—— 渲染层做视野取景要用，全图扫描太贵。 */
+  function markKnown(state, x, y) {
+    var c = state.grid[idx(x, y)];
+    var e = state.explored;
+    if (!c.known) { c.known = true; e.count++; }
+    if (x < e.minX) e.minX = x;
+    if (x > e.maxX) e.maxX = x;
+    if (y < e.minY) e.minY = y;
+    if (y > e.maxY) e.maxY = y;
+    state.knowledge[x + ',' + y] = 1;
+  }
+
   function reveal(state) {
     // 基础半径 2：已探明区域要比网络大一圈，玩家才有空间提前规划往哪长。
     // 半径 1 时可见区刚好贴着网络边缘，等于没有前瞻。
@@ -429,8 +472,7 @@ var Sim = (function () {
           if (!inBounds(x, y)) continue;
           // 用欧氏距离而不是曼哈顿距离，探明区域是圆形而不是菱形
           if (Math.sqrt(dx * dx + dy * dy) > r + 0.5) continue;
-          state.grid[idx(x, y)].known = true;
-          state.knowledge[x + ',' + y] = 1;
+          markKnown(state, x, y);
         }
       }
     }
@@ -879,6 +921,19 @@ var Sim = (function () {
     state.runs.push(record);
 
     state.prestiges += 1;
+
+    /* 换一张新地图：尺寸随转生次数长大，种子从旧地图**确定性**推出。
+     * 不能用 Math.random —— headless_sim 靠「同一种子 → 同一张地图序列」
+     * 来比较策略，一随机每次跑出来的对照就不可比了。
+     * 注意 hash2 返回的是 [0,1) 浮点，必须乘回去再取整 ——
+     * 直接 >>>0 会永远得到 0（所有玩家转生后都拿到同一张图，实测踩过）。
+     * 换图的代价：上一张地图的探索记录作废（reward 换成了更大的世界 + 基因）。 */
+    state.seed = (RNG.hash2(state.prestiges, 7717, state.seed) * 4294967296) >>> 0;
+    applyMapSize(state, mapSizeFor(state.prestiges));
+    generateMap(state);
+    state.knowledge = {};
+    state.explored = { minX: 1e9, maxX: -1e9, minY: 1e9, maxY: -1e9, count: 0 };
+
     state.res = { water: CONFIG.START.water + state.genes.gWater * 150,
                   nutrient: 0, spore: 0 };
     state.total = { water: 0, nutrient: 0, spore: 0 };
@@ -906,11 +961,6 @@ var Sim = (function () {
     // 基因点兑现
     state.pendingGenes = (state.pendingGenes || 0) + gained;
 
-    // 地图知识保留，重新标 known
-    for (var key in state.knowledge) {
-      var p = key.split(','), x = +p[0], y = +p[1];
-      if (inBounds(x, y)) state.grid[idx(x, y)].known = true;
-    }
     rebuildNetwork(state);
     reveal(state);
     state.lastRecord = record;
@@ -935,10 +985,22 @@ var Sim = (function () {
     return { ok: true };
   }
 
+  /* 把 knowledge 应用回网格（known 标记 + 探索包围盒）。
+   * deserialize 里此前**漏了这一步** —— 读档后已探明区域会整个消失，
+   * 玩家看到的是一张只剩核心周围一圈的黑图。 */
+  function applyKnowledge(state) {
+    for (var key in state.knowledge) {
+      var p = key.split(','), x = +p[0], y = +p[1];
+      if (!inBounds(x, y)) continue;
+      markKnown(state, x, y);
+    }
+  }
+
   /* ---------------------------------------------------------------- 存档 */
   function serialize(state) {
     return JSON.stringify({
-      v: 2,
+      v: 3,
+      mapW: state.mapW, mapH: state.mapH,
       seed: state.seed,
       res: state.res, total: state.total, t: state.t,
       up: state.up, genes: state.genes, knowledge: state.knowledge,
@@ -955,7 +1017,9 @@ var Sim = (function () {
 
   function deserialize(json) {
     var d = JSON.parse(json);
-    var state = newGame(d.seed, d.genes, d.knowledge);
+    /* 新尺寸由 prestiges 推出；旧存档（v2，没有 mapW 字段）也走同一条路，
+     * 只是地形和探索记录对不上号 —— 一次性迁移痕迹，无碍游玩。 */
+    var state = newGame(d.seed, d.genes, d.knowledge, d.prestiges || 0);
     state.up = d.up; state.res = d.res; state.total = d.total; state.t = d.t;
     state.policy = d.policy; state.autoGrow = d.autoGrow;
     state.prestiges = d.prestiges; state.runs = d.runs || [];
@@ -967,6 +1031,7 @@ var Sim = (function () {
     if (d.mods) state.mods = d.mods;
     if (d.counters) state.counters = d.counters;
     if (d.nextEventAt != null) state.nextEventAt = d.nextEventAt;
+    applyKnowledge(state);   // 读档必须恢复已探明区域（之前一直漏了）
 
     state.nodes = []; state.nodeAt = [];
     for (var i = 0; i < state.grid.length; i++) state.grid[i].node = null;

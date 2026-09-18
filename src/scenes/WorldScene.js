@@ -32,13 +32,27 @@
     rock:     0x2b2b31
   };
 
-  /* 世界尺寸（游戏坐标）—— 和屏幕无关，摄像机负责把它映射到画布上 */
-  var WORLD_W = GRID.OX * 2 + GRID.W * GRID.CELL;
-  var WORLD_H = GRID.OY * 2 + GRID.H * GRID.CELL;
+  /* 世界尺寸（游戏坐标）—— **随转生次数变化**，所以是方法不是常量。
+   * 转生会当场换一张更大的图，缓存的尺寸立刻就是错的。 */
+  function mapSize() {
+    var st = window.MYC.game && window.MYC.game.state;
+    return { w: (st && st.mapW) || GRID.W, h: (st && st.mapH) || GRID.H };
+  }
+  function worldW() { return GRID.OX * 2 + mapSize().w * GRID.CELL; }
+  function worldH() { return GRID.OY * 2 + mapSize().h * GRID.CELL; }
+
+  /* 当前可见的世界矩形（按场景自己维护的视野状态算，不读渲染阶段才更新的 worldView） */
+  function viewRect() {
+    var sc = window.MYC.game.scene;
+    var z = sc.viewZoom || 1;
+    var w = (sc.scale.width || worldW()) / z;
+    var h = (sc.scale.height || worldH()) / z;
+    return { left: sc.viewCx - w / 2, right: sc.viewCx + w / 2,
+             top: sc.viewCy - h / 2, bottom: sc.viewCy + h / 2 };
+  }
 
   /* 格子的屏幕尺寸上限（CSS px）：防止开局那几个格子被放大成马赛克。
-   * 没有「尺寸下限」，因为下限必须是「整张地图都装得下」——
-   * 网络铺满整张图时格子必然变小，这是不裁剪整张地图的代价。 */
+   * 下限是「视野不小于已探明区域 ×0.85」（见 zoomLimits），不裁掉网络。 */
   var CELL_MAX_CSS = 46;
 
   function clampCenter(c, view, world) {
@@ -116,13 +130,15 @@
       /* 自适应视野：画布尺寸随容器变（Scale.RESIZE），
        * 这里负责把世界按合适的缩放摆进画布。 */
       this.viewZoom = 1;
-      this.viewCx = WORLD_W / 2;
-      this.viewCy = WORLD_H / 2;
+      this.viewCx = worldW() / 2;
+      this.viewCy = worldH() / 2;
       /* 'auto'   跟着网络自动取景（默认，缓动）
        * 'manual' 用户自己缩放过/拖过，镜头交还给用户。
        * 一旦手动操作就必须停掉自动取景 —— 否则每帧的自动缓动会立刻把用户的操作顶回去，
        * 用起来像「镜头在跟你抢」。 */
       this.viewMode = 'auto';
+      this.seenMapW = mapSize().w;   // 转生换图检测用：地图尺寸一变就重置场景
+      this.seenMapH = mapSize().h;
       this.drag = null;           // 单指/鼠标拖拽状态
       this.pinch = null;          // 捏合过程中的上一帧参考值
       this.pinching = false;
@@ -152,33 +168,27 @@
     /* ------------------------------------------------------------ 视野自适应
      * 目标：已探明的区域 + 一点余量刚好铺满画布，同时
      *   · 不超过 CELL_MAX_CSS（否则开局几个格子撑满屏幕，很怪）
-     *   · 不低于「整张地图刚好装下」的缩放（绝不裁掉网络的任何部分）
+     *   · 不低于「已探明区域 ×0.85」的缩放（绝不裁掉网络的任何部分）
      */
     targetView() {
       var st = window.MYC.game.state;
+      var m = mapSize();
       // 容器刚挂上时可能还是 0×0，退回世界尺寸，免得算出 NaN 缩放
-      var availW = this.scale.width || WORLD_W;
-      var availH = this.scale.height || WORLD_H;
+      var availW = this.scale.width || worldW();
+      var availH = this.scale.height || worldH();
+
+      /* 已探明包围盒由 sim 的 reveal() 增量维护（state.explored），
+       * 这里**绝不**全图扫描 —— 大地图上那是每帧几千次循环。 */
+      var e = st.explored;
+      var minX, maxX, minY, maxY;
+      if (e && e.count > 0) {
+        minX = e.minX; maxX = e.maxX; minY = e.minY; maxY = e.maxY;
+      } else {
+        minX = maxX = st.core.x;
+        minY = maxY = st.core.y;
+      }
 
       var pad = 2;
-      var minX = GRID.W, maxX = 0, minY = GRID.H, maxY = 0, any = false;
-      if (st) {
-        for (var y = 0; y < GRID.H; y++) {
-          for (var x = 0; x < GRID.W; x++) {
-            if (!st.grid[Sim.idx(x, y)].known) continue;
-            any = true;
-            if (x < minX) minX = x;
-            if (x > maxX) maxX = x;
-            if (y < minY) minY = y;
-            if (y > maxY) maxY = y;
-          }
-        }
-      }
-      if (!any) {
-        minX = maxX = (st ? st.core.x : Math.floor(GRID.W / 2));
-        minY = maxY = (st ? st.core.y : Math.floor(GRID.H / 2));
-      }
-
       var bw = (maxX - minX + 1 + pad * 2) * GRID.CELL;
       var bh = (maxY - minY + 1 + pad * 2) * GRID.CELL;
       var cx = (minX + maxX + 1) / 2 * GRID.CELL + GRID.OX;
@@ -187,18 +197,19 @@
       // 画布可能被 CSS 缩放过（Fit 模式下），换算成真实的屏幕像素
       var ratio = (this.scale.displaySize.width / this.scale.width) || 1;
 
-      var whole = Math.min(availW / WORLD_W, availH / WORLD_H);   // 整张地图刚好装下
+      var worldPxW = worldW(), worldPxH = worldH();
+      var whole = Math.min(availW / worldPxW, availH / worldPxH); // 整张地图刚好装下
       var z = Math.min(availW / bw, availH / bh);                 // 装下「已探明 + 余量」
       z = Math.min(z, CELL_MAX_CSS / (GRID.CELL * ratio));
-      /* 下限就是 whole：视野再小也不能小于「整张地图」，否则会裁掉网络的边缘。
-       * 注意 max 必须在 min 之后 —— 上限也不能违反「不裁剪」这条。 */
-      z = Math.max(z, whole);
+      /* 下限是「已探明区域装得下」（不裁网络），但允许比整张地图更小 ——
+       * 地图现在会随转生变大，「必须看到整张图」会让后期格子小到没法点。 */
+      z = Math.max(z, whole * 0.85);
 
       var viewW = availW / z, viewH = availH / z;
       return {
         zoom: z,
-        cx: clampCenter(cx, viewW, WORLD_W),
-        cy: clampCenter(cy, viewH, WORLD_H)
+        cx: clampCenter(cx, viewW, worldPxW),
+        cy: clampCenter(cy, viewH, worldPxH)
       };
     }
 
@@ -228,30 +239,34 @@
      * 中心始终夹在世界内：拖动不能把地图拖出画面外就找不回来了。
      */
     zoomLimits() {
-      var availW = this.scale.width || WORLD_W;
-      var availH = this.scale.height || WORLD_H;
-      var whole = Math.min(availW / WORLD_W, availH / WORLD_H);
+      var availW = this.scale.width || worldW();
+      var availH = this.scale.height || worldH();
+      var ww = worldW(), wh = worldH();
+      var whole = Math.min(availW / ww, availH / wh);
       var ratio = (this.scale.displaySize.width / this.scale.width) || 1;
       return { min: whole * 0.85, max: Math.max(whole, 2.4 / ratio) };
     }
 
     setView(zoom, cx, cy) {
       var lim = this.zoomLimits();
-      var availW = this.scale.width || WORLD_W;
-      var availH = this.scale.height || WORLD_H;
+      var availW = this.scale.width || worldW();
+      var availH = this.scale.height || worldH();
       var z = Phaser.Math.Clamp(zoom, lim.min, lim.max);
       this.viewMode = 'manual';
       this.viewZoom = z;
-      this.viewCx = clampCenter(cx, availW / z, WORLD_W);
-      this.viewCy = clampCenter(cy, availH / z, WORLD_H);
+      this.viewCx = clampCenter(cx, availW / z, worldW());
+      this.viewCy = clampCenter(cy, availH / z, worldH());
       this.applyView();
       this.syncViewBtn();
     }
 
     /* 画布内部像素 → 世界坐标 */
+    /* 画布内部像素 → 世界坐标。
+     * 与 screenToWorldView 同一套换算 —— **不要**读 cam.worldView，
+     * 那是渲染阶段才写的，缩放/拖动进行中会拿到旧一帧的值，
+     * 滚轮和捏合的锚点就会飘（实测一次偏 30+ 世界单位）。 */
     toWorld(sx, sy) {
-      var cam = this.cameras.main, v = cam.worldView;
-      return { x: v.x + sx / cam.zoom, y: v.y + sy / cam.zoom };
+      return this.screenToWorldView(sx, sy);
     }
 
     /* 以屏幕上某点为锚点缩放：该点下面的世界坐标保持不动，手感才对 */
@@ -324,15 +339,16 @@
      */
     screenToWorldView(sx, sy) {
       var z = this.viewZoom || 1;
-      var w = (this.scale.width || WORLD_W) / z;
-      var h = (this.scale.height || WORLD_H) / z;
+      var w = (this.scale.width || worldW()) / z;
+      var h = (this.scale.height || worldH()) / z;
       return { x: this.viewCx - w / 2 + sx / z, y: this.viewCy - h / 2 + sy / z };
     }
 
     cellFromWorld(w) {
+      var m = mapSize();
       var gx = Math.floor((w.x - GRID.OX) / GRID.CELL);
       var gy = Math.floor((w.y - GRID.OY) / GRID.CELL);
-      if (gx < 0 || gy < 0 || gx >= GRID.W || gy >= GRID.H) return null;
+      if (gx < 0 || gy < 0 || gx >= m.w || gy >= m.h) return null;
       return { x: gx, y: gy };
     }
 
@@ -505,6 +521,21 @@
       this.showTip(w, lines.join('\n'));
     }
 
+    /* 转生换图后由 UI 调用：地图尺寸/地形全变了，缓存与镜头都得重来 */
+    onMapChanged() {
+      this.lastKnown = -1;
+      this.lastSoilSig = null;
+      this.lastNodeCount = 0;
+      this.pops = {};
+      this.hover = null;
+      this.hoverKey = '';
+      this.tip.setVisible(false);
+      /* 新地图从自动取景开始 —— 镜头重新跟着网络走，不然玩家面对的是
+         上一张图留下的视野，可能正对着一片空地。 */
+      this.viewMode = 'auto';
+      this.syncViewBtn();
+    }
+
     showTip(w, text) {
       if (!this.tipP) this.tipP = { x: 0, y: 0 };
       this.tipP.x = w.x; this.tipP.y = w.y;
@@ -521,8 +552,8 @@
       if (!this.tip.visible || !this.tipP) return;
       // 同样只用场景自己的视野状态算边界 —— 不读渲染阶段才更新的 worldView
       var z = this.viewZoom || 1;
-      var wv = (this.scale.width || WORLD_W) / z;
-      var hv = (this.scale.height || WORLD_H) / z;
+      var wv = (this.scale.width || worldW()) / z;
+      var hv = (this.scale.height || worldH()) / z;
       var L = this.viewCx - wv / 2, T = this.viewCy - hv / 2;
       var R = L + wv, B = T + hv;
       if (this.tip.text !== this.tipText) this.tip.setText(this.tipText);
@@ -597,7 +628,8 @@
           for (var dx = -1; dx <= 1; dx++) {
             if (!dx && !dy) continue;
             var tx = c.x + dx, ty = c.y + dy;
-            if (tx < 0 || ty < 0 || tx >= GRID.W || ty >= GRID.H) continue;
+            var mp = mapSize();
+            if (tx < 0 || ty < 0 || tx >= mp.w || ty >= mp.h) continue;
             ring.push({ x: tx, y: ty, d: dx * dx + dy * dy });
           }
         }
@@ -615,6 +647,14 @@
       var game = window.MYC.game;
       var st = game.state;
       if (!st) return;
+
+      /* 转生会当场换一张（更大的）图：尺寸一变，地形缓存/已探明数/镜头全部重来。
+       * 自己检测而不是指望 UI 记得通知 —— 读档、换种子这些路径同样会换图。 */
+      if (st.mapW !== this.seenMapW || st.mapH !== this.seenMapH) {
+        this.seenMapW = st.mapW; this.seenMapH = st.mapH;
+        this.onMapChanged();
+      }
+
       var dt = Math.min(delta / 1000, 0.25);
       this.frames++;
 
@@ -719,16 +759,25 @@
     }
 
     // ---------------------------------------------------------------- 绘制
+    /* 土壤层：只在「可见范围或已探明数」变化时重绘，且**只画可见窗口**。
+     * 早期版本每次都全图重画 —— 34×20 没问题，地图随转生长大之后
+     * 一万多个 fillRect 会造成明显的掉帧。 */
     drawSoil(st) {
-      var known = 0;
-      for (var i = 0; i < st.grid.length; i++) if (st.grid[i].known) known++;
-      if (known === this.lastKnown) return;
-      this.lastKnown = known;
+      var m = mapSize();
+      var v = viewRect();
+      var pad = 1;
+      var x0 = Math.max(0, Math.floor((v.left - GRID.OX) / GRID.CELL) - pad);
+      var x1 = Math.min(m.w - 1, Math.ceil((v.right - GRID.OX) / GRID.CELL) + pad);
+      var y0 = Math.max(0, Math.floor((v.top - GRID.OY) / GRID.CELL) - pad);
+      var y1 = Math.min(m.h - 1, Math.ceil((v.bottom - GRID.OY) / GRID.CELL) + pad);
+      var sig = x0 + ',' + y0 + ',' + x1 + ',' + y1 + ',' + st.explored.count;
+      if (sig === this.lastSoilSig) return;
+      this.lastSoilSig = sig;
 
       var g = this.soilGfx, cell = GRID.CELL;
       g.clear();
-      for (var y = 0; y < GRID.H; y++) {
-        for (var x = 0; x < GRID.W; x++) {
+      for (var y = y0; y <= y1; y++) {
+        for (var x = x0; x <= x1; x++) {
           var c = st.grid[Sim.idx(x, y)];
           var px = cellPx(x), py = cellPy(y);
           if (!c.known) {
@@ -745,13 +794,13 @@
         }
       }
       g.lineStyle(1, COL.gridLine, 0.55);
-      for (var x2 = 0; x2 <= GRID.W; x2++) {
+      for (var x2 = x0; x2 <= x1 + 1; x2++) {
         var lx = GRID.OX + x2 * cell;
-        g.beginPath(); g.moveTo(lx, GRID.OY); g.lineTo(lx, GRID.OY + GRID.H * cell); g.strokePath();
+        g.beginPath(); g.moveTo(lx, GRID.OY + y0 * cell); g.lineTo(lx, GRID.OY + (y1 + 1) * cell); g.strokePath();
       }
-      for (var y2 = 0; y2 <= GRID.H; y2++) {
+      for (var y2 = y0; y2 <= y1 + 1; y2++) {
         var ly = GRID.OY + y2 * cell;
-        g.beginPath(); g.moveTo(GRID.OX, ly); g.lineTo(GRID.OX + GRID.W * cell, ly); g.strokePath();
+        g.beginPath(); g.moveTo(GRID.OX + x0 * cell, ly); g.lineTo(GRID.OX + (x1 + 1) * cell, ly); g.strokePath();
       }
     }
 
