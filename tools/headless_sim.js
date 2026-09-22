@@ -565,11 +565,17 @@ console.log(' 结论');
 console.log('='.repeat(80));
 
 let failed = false;
+/* 判据是**按默认 1800s 标定**的：门槛（转生 1.5 次）说的是「半小时的局」。
+ * 传更短的时长（如 600）时这条必然不过 —— 那不是回归，是口径不匹配。
+ * 所以消息里一律回显**本次实际时长**，别写死「30 分钟」误导人。 */
+const durMin = (DURATION / 60).toFixed(0);
+const calib = DURATION >= 1800 ? '' :
+  `（⚠️ 判据按 1800s 标定，本次只跑 ${durMin} 分钟，后面各组不会执行）`;
 if (best.prestiges < 0.5 && best.genes < 1) {
-  console.log(' ❌ 失败：游戏根本无法推进（没有任何策略能转生）。必须先修数值。');
+  console.log(` ❌ 失败：${durMin} 分钟里游戏根本无法推进（没有任何策略能转生）。必须先修数值。`);
   failed = true;
 } else if (best.prestiges < 1.5) {
-  console.log(` ❌ 失败：最好的策略 30 分钟只能转生 ${best.prestiges.toFixed(2)} 次 —— 转生滚雪球是放置游戏的引擎，太慢等于没有。`);
+  console.log(` ❌ 失败：最好的策略 ${durMin} 分钟只能转生 ${best.prestiges.toFixed(2)} 次 —— 转生滚雪球是放置游戏的引擎，太慢等于没有。${calib}`);
   failed = true;
 } else if (ratio < 1.5) {
   console.log(` ❌ 失败：最强与最弱策略只差 ${ratio.toFixed(2)} 倍 —— 玩家的决策不影响结果。`);
