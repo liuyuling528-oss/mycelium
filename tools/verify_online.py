@@ -50,20 +50,24 @@ ws = texts["src/scenes/WorldScene.js"]
 css = texts["style.css"]
 
 check("config 有 MAINT 配置块", "MAINT" in cfg and "costPerLevel" in cfg)
-/* 标定锚点：K = 100/49 让 Lv7 恰好 = 100/s。
- * 曾写成 "costPerLevel: 0.25" —— 那是更早一版的值，早就对不上了，
- * 等于这条检查一直在误报，顺手修掉。 */
+# 标定锚点：K = 100/49 让 Lv7 恰好 = 100/s。
+# 曾写成 "costPerLevel: 0.25" —— 那是更早一版的值，早就对不上了，
+# 等于这条检查一直在误报，顺手修掉。
 check("config 的 costPerLevel 是 100/49（Lv7 = 100/s 的锚点）",
       "costPerLevel: 100 / 49" in cfg, "（旧版是 0.25 或 0.02）")
 check("config 导出 MAINT", "MAINT: MAINT" in cfg)
 
-/* 降级触发条件：水见底（<= 0）才开始。
- * 旧版是「水量低于 维持费 × bufferSec(40s)」的缓冲线 ——
- * 那条会让玩家在水还是正数时掉级，已删除。 */
+# 降级触发条件：水见底（<= 0）才开始。
+# 旧版是「水量低于 维持费 × bufferSec(40s)」的缓冲线 ——
+# 那条会让玩家在水还是正数时掉级，已删除。
 check("sim 的降级触发条件是「水见底」",
       "state.res.water <= 0" in sim)
-check("sim 不再有旧的缓冲线（bufferSec）",
-      "bufferSec" not in sim and "bufferSec" not in cfg)
+# 注意别用裸的 "bufferSec" 做判断 —— 代码注释里**故意**留着历史说明
+# （「旧版是 维持费 × bufferSec(40s)」），裸串匹配会误报。
+# 要查的是「字段真的没了」：config 里不该再有 `bufferSec:` 这个键，
+# sim 里不该再引用 `MAINT.bufferSec`。
+check("config 里已没有 bufferSec 字段", "bufferSec:" not in cfg)
+check("sim 里已不引用 MAINT.bufferSec", "MAINT.bufferSec" not in sim)
 
 check("sim 有 settleMaintenance", "function settleMaintenance" in sim)
 check("sim 有降级排序（远端优先）", "downgradeOrder" in sim)
