@@ -234,8 +234,7 @@
 菌瘟,BLIGHT.failLimit,2,,,BLIGHT
 维持费,MAINT.costPerLevel,2.040816,水/s,K = 100/49，让 Lv7 恰好 = 100/s,MAINT
 维持费,MAINT.exponent,2,,平方曲线（改它必须重标 K）,MAINT
-维持费,MAINT.bufferSec,40,s,水量低于「总维持费×40s」就开始降级,MAINT
-维持费,MAINT.downgradePerSec,3,级/s,降级速度上限,MAINT
+维持费,MAINT.downgradePerSec,3,级/s,水见底（= 0）后每秒降几级,MAINT
 维持费曲线,Lv1 单节点,2.04,水/s,,MAINT
 维持费曲线,Lv2 单节点,8.16,水/s,,MAINT
 维持费曲线,Lv3 单节点,18.37,水/s,,MAINT
@@ -271,6 +270,7 @@
 里程碑,m8 循环,完成一次散播,,奖励：+3 基因点,MILESTONES
 里程碑,m9 防火墙,同时拥有 3 个 Lv7+ 的菌丝节点（练到免疫线，菌瘟再也啃不动）,,奖励：菌瘟蔓延速度降低,MILESTONES
 里程碑,m10 感知,菌丝达到 250 格且连上 4 种特殊基质,,奖励：解锁「自动蔓延」,MILESTONES
+里程碑,m11 共生菌株,完成一次散播且菌丝达到 400 格,,奖励：菌株槽位 +1（可同时带 2 种）,MILESTONES
 产出乘区,节点等级,×(1 + 0.25×等级),,最多 ×3.5（Lv10）,NODE_UP
 产出乘区,吸收/水分/共生升级,×(1 + 0.18×等级),,各自独立乘,UPGRADES
 产出乘区,丰饶基因,×(1 + 0.12×等级),,,GENES

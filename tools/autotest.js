@@ -2036,31 +2036,55 @@
       ok('正对照：水充足时不降级', did === 0 && st.nodes[probe].level === 5,
          '本次降级 ' + did + ' 级，Lv' + st.nodes[probe].level + ' 保持');
 
+      /* —— 设计承诺的守门断言：水还有余额就一级都不许掉 ——
+       * 玩家明确提过「是我的总水分变成 0 了才开始降级」。
+       * 旧版在水量低于「维持费 × bufferSec」时就开始降级，
+       * 玩家在水还是正数的时候就看着等级往下掉 —— 那条规则已被删除。
+       * 这条断言就是防止它哪天偷偷回来。
+       * 故意把水设得**很紧**（只够付 0.5 秒），只要 > 0 就不该动手。 */
+      st.nodes[probe].level = 5;
+      st.nodes[farId].level = 5;
+      st.maintainQuota = 0;
+      var costKeep = Sim.totalMaintainCost(st);
+      st.res.water = costKeep * 0.5;              // 只够付 0.5 秒，但明确 > 0
+      var dKeep = Sim.settleMaintenance(st, 0.25); // 只走 0.25 秒，水还剩一半
+      ok('水还有余额（>0）时绝不降级 —— 哪怕只够付 0.5 秒',
+         dKeep === 0 && st.nodes[farId].level === 5 && st.nodes[probe].level === 5,
+         '降级 ' + dKeep + ' 级，剩余水 ' + st.res.water.toFixed(2));
+      ok('水位还是正数时才不降级（此时的告警灯也该是灭的）',
+         st.res.water > 0 && st.maintainPressure === false,
+         '水 ' + st.res.water.toFixed(2) + '  pressure=' + st.maintainPressure);
+
       /* —— 核心断言：远端先降 ——
        * 配额给到「刚好 1 级」：如果实现真的按「远的先降」排序，
        * 唯一该掉级的就是最远那个节点，近核的必须原封不动。
        * （给大配额会让两个都降，那样就分不出「谁先」了 —— 实测踩过。）
        *
-       * 注意 dt 的算法：quota = downgradePerSec * scale * dt，
-       * 而 scale 最低 0.15、见底时到 3.0，所以 quota 并不等于 dt * downgradePerSec。
-       * 想拿「刚好 1 级」必须按**当前 deficit 对应的 scale** 反推 dt，
-       * 否则实际会降 2 级（这里踩过：直接传 1/perSec 得到 2 级）。 */
+       * dt 的算法：quota = downgradePerSec * dt，所以
+       * dt = 1 / downgradePerSec 恰好给出 1 级配额。
+       * 触发条件是「水见底」，所以这里把水设成 0。 */
       st.nodes[probe].level = 5;
       st.nodes[farId].level = 5;
-      st.res.water = 0;                          // 付不起
+      st.maintainQuota = 0;
+      st.res.water = 0;                          // 见底 —— 唯一的降级触发条件
       var before = { p: st.nodes[probe].level, f: st.nodes[farId].level };
-      /* 这里用水量精确控制 deficit：把水设成缓冲线的一点点下方，
-       * 使 deficit 很小 → scale ≈ 0.15 → 配额最省，刚好只降 1 级。 */
-      var cost = Sim.totalMaintainCost(st);
-      st.res.water = cost * C.MAINT.bufferSec * 0.999;    // 刚刚破线，deficit ≈ 0.001
-      var done = Sim.settleMaintenance(st, 1 / (C.MAINT.downgradePerSec * 0.15));
-      ok('缺水时确实发生降级（正对照）', done > 0, '本次降级 ' + done + ' 级');
+      var done = Sim.settleMaintenance(st, 1 / C.MAINT.downgradePerSec);
+      ok('水见底时确实发生降级（正对照）', done > 0, '本次降级 ' + done + ' 级');
       ok('远端先降：配额只够 1 级时，掉级的是最远的节点',
          done === 1 && st.nodes[farId].level === before.f - 1,
          '远端 Lv' + before.f + ' → Lv' + st.nodes[farId].level + '（降 ' + done + ' 级）');
       ok('远端先降：近核节点在配额耗尽后被完整保住',
          st.nodes[probe].level === before.p,
          '近核 Lv' + st.nodes[probe].level + '（应保持 Lv' + before.p + '）');
+
+      /* 速度断言：连续喂 1 秒 → 恰好降 downgradePerSec 级。
+       * 上面那次是构造性给 1 级配额，量不出速度，所以单独再跑一次。 */
+      st.nodes.forEach(function (n) { n.level = 9; });
+      st.maintainQuota = 0;
+      st.res.water = 0;
+      var dSpeed = Sim.settleMaintenance(st, 1.0);
+      ok('降级速度 = downgradePerSec（水见底 1 秒降 ' + C.MAINT.downgradePerSec + ' 级）',
+         dSpeed === C.MAINT.downgradePerSec, '实降 ' + dSpeed + ' 级');
 
       /* —— 绝不摧毁节点：降级不是删除 —— */
       var nBefore = st.nodes.length;

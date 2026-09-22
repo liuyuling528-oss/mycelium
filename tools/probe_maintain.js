@@ -67,7 +67,7 @@ function run(player, seed, duration, maintK) {
   var samples = [];
   var nextSample = 0;
   var clickTimer = 0;
-  var dipped = 0;                          // 有降级发生的 tick 数
+  var dipped = 0;                          // 水见底（maintainPressure）的 tick 数
   var downgrades = 0;
   var minWater = Infinity;
   var maxFwLv = 0;

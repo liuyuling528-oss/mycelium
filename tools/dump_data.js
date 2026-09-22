@@ -265,9 +265,8 @@ Object.keys(CONFIG.BLIGHT).forEach(function (k) {
 add('维持费', 'MAINT.costPerLevel', round(CONFIG.MAINT.costPerLevel, 6), '水/s',
   'K = 100/49，让 Lv7 恰好 = 100/s', 'MAINT');
 add('维持费', 'MAINT.exponent', CONFIG.MAINT.exponent, '', '平方曲线（改它必须重标 K）', 'MAINT');
-add('维持费', 'MAINT.bufferSec', CONFIG.MAINT.bufferSec, 's',
-  '水量低于「总维持费×40s」就开始降级', 'MAINT');
-add('维持费', 'MAINT.downgradePerSec', CONFIG.MAINT.downgradePerSec, '级/s', '降级速度上限', 'MAINT');
+add('维持费', 'MAINT.downgradePerSec', CONFIG.MAINT.downgradePerSec, '级/s',
+  '水见底（= 0）后每秒降几级', 'MAINT');
 [1, 2, 3, 5, 7, 10].forEach(function (lv) {
   add('维持费曲线', 'Lv' + lv + ' 单节点', round(lv * lv * CONFIG.MAINT.costPerLevel, 2),
     '水/s', '', 'MAINT');
