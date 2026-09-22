@@ -148,6 +148,15 @@ html { -webkit-text-size-adjust: 100%; }
 /* 维持费告警：水碰到缓冲线（开始降级）时闪红 ——
  * 面板上的信号必须直接指向该做的决策，而不是让玩家自己猜为什么掉级。 */
 .res .rate.warn { color: var(--bad); }
+/* 壤土递减汇总：水行下面的一小行说明字。
+ * 它存在的唯一理由是「机制生效的可视证据」—— 玩家看到远端大片壤土在
+ * 偷偷扣水，才会想到去买水脉/收窄网络，而不是以为这功能没做。 */
+.topsoil { color: var(--muted); font-size: 11px; padding: 2px 0 5px 19px;
+           font-variant-numeric: tabular-nums; }
+.topsoil.hide { display: none; }
+.topsoil b { font-weight: 400; }
+.topsoil b.neg { color: var(--bad); }
+.topsoil b.pos { color: var(--good, #6abf69); }
 .c-water    { background: var(--water); }
 .c-nutrient { background: var(--nutrient); }
 .c-spore    { background: var(--spore); }
@@ -176,7 +185,39 @@ button:disabled { opacity: .38; cursor: default; }
 button.primary { border-color: #4a6b3e; background: #1b2a16; }
 button.primary:hover:not(:disabled) { background: #23361c; }
 button.tiny { padding: 3px 9px; font-size: 12px; }
+/* 结构模式当前项：冷青高亮，和地图上主干/汇流的配色一致 */
+button.tiny.on { border-color: #4d8f88; background: #16292a; color: #9fe8dd; }
 .hint { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin: 7px 0 0; }
+
+/* ---- 存档槽 ---------------------------------------------------------- */
+/* 每个槽两行：标题行（槽名 + 状态）和副行（摘要 + 操作按钮）。
+   用 grid 让按钮固定贴右，摘要过长时省略而不挤压按钮。 */
+.slots { display: flex; flex-direction: column; gap: 6px; margin-top: 9px; }
+.slots:empty { display: none; }
+.slot {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 3px 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+}
+.slot.empty { opacity: .55; border-style: dashed; }
+.slot .slot-title { font-size: 12.5px; }
+.slot .slot-title b { color: #9fe8dd; font-weight: 500; }
+.slot .slot-sub {
+  grid-column: 1;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.slot .slot-btns { grid-column: 2; grid-row: 1 / span 2; display: flex; gap: 5px; }
+.slot .slot-btns button { padding: 2px 7px; font-size: 11.5px; }
 
 .switch { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
 .switch input { accent-color: #6f9c5c; width: 15px; height: 15px; }
@@ -200,6 +241,14 @@ button.tiny { padding: 3px 9px; font-size: 12px; }
 .item button { grid-row: 1 / span 2; grid-column: 2; min-width: 84px; }
 .item.owned { opacity: .55; }
 .item.owned .buy { display: none; }
+
+/* ---- 菌株 ------------------------------------------------------------ */
+/* 装上 = 高亮边框 + 按钮变「卸下」。用颜色区分而不是换行数，
+ * 免得列表高度在点来点去时跳。 */
+.item.strain { align-items: start; }
+.item.strain.on { border-color: #5a7d4c; background: #1b2419; }
+.item.strain .strain-hint { display: block; margin-top: 3px; opacity: .85; }
+.item.strain button.on { border-color: #5a7d4c; color: #cfe6bf; }
 
 /* ---- 技能 ------------------------------------------------------------ */
 .abilities { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px; }
@@ -252,6 +301,8 @@ button.tiny { padding: 3px 9px; font-size: 12px; }
 
 /* 自动蔓延未解锁时的灰化 */
 .switch.off { opacity: .45; cursor: not-allowed; }
+/* 规则行也要能在未解锁时整体变灰（它只作用于自动蔓延） */
+.row.off { opacity: .45; }
 
 /* ============================================================================
  * 窄屏 / 手机 / 竖屏平板
@@ -292,7 +343,110 @@ button.tiny { padding: 3px 9px; font-size: 12px; }
   #log { max-height: 130px; }
 }
 
-/* 更窄：技能栏改两列，按钮别再被挤成一条线 */
+/* ============================================================================
+ * 转生抉择（Roguelike 三选一）
+ * 这是本作唯一一个**阻塞式**界面：没选完不能继续玩。
+ * 所以它必须盖住地图（否则玩家会一边看着卡一边继续点格子），
+ * 而且要有明确的「你必须选一个」的视觉压迫感。
+ * ==========================================================================*/
+#choiceOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;                 /* 高于 #stage 的 sticky(5) 和 toast */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(5, 7, 5, .82);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  animation: choiceIn .22s ease-out;
+}
+@keyframes choiceIn { from { opacity: 0; } to { opacity: 1; } }
+
+.choice-box {
+  width: 100%;
+  max-width: 720px;
+  max-height: 100%;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: 14px;
+  padding: 20px 20px 22px;
+  box-shadow: 0 24px 60px -12px #000, 0 0 0 1px #000 inset;
+}
+.choice-box h2 {
+  margin: 0 0 6px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: .3px;
+}
+.choice-box .hint { margin: 0 0 16px; font-size: 12px; }
+
+/* 卡片：桌面三列，窄屏自动塌成一列 */
+#choiceCards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.choice-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 13px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-top-width: 3px;
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font: inherit;
+  transition: transform .12s ease, border-color .12s ease, background .12s ease;
+}
+.choice-card:hover,
+.choice-card:focus-visible {
+  transform: translateY(-2px);
+  background: #202820;
+  outline: none;
+}
+/* 三类卡各自一个顶边色，一眼能区分方向 */
+.choice-card.strain  { border-top-color: var(--good); }
+.choice-card.map     { border-top-color: var(--water); }
+.choice-card.genes   { border-top-color: var(--nutrient); }
+
+.choice-card .cc-kind {
+  font-size: 10.5px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.choice-card.strain .cc-kind  { color: var(--good); }
+.choice-card.map .cc-kind     { color: var(--water); }
+.choice-card.genes .cc-kind   { color: var(--nutrient); }
+
+.choice-card .cc-name { font-size: 14px; font-weight: 600; line-height: 1.35; }
+.choice-card .cc-desc { font-size: 11.5px; line-height: 1.55; color: var(--muted); }
+/* 「代价」那行要显眼 —— 三选一的核心就是看到底亏什么 */
+.choice-card .cc-cost {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--bad);
+  margin-top: auto;            /* 顶到底部，几张卡对齐 */
+  padding-top: 6px;
+}
+
+/* 窄屏：卡片改单列，且整体上移一点（手机上地图占着上半屏） */
+@media (max-width: 900px) {
+  #choiceOverlay { align-items: flex-start; padding: 14px 12px; }
+  .choice-box { max-width: 100%; padding: 16px 14px 18px; }
+  #choiceCards { grid-template-columns: 1fr; gap: 8px; }
+  .choice-card { padding: 11px 12px 10px; }
+  .choice-card .cc-cost { margin-top: 2px; }
+}
+
+/* 更窄：卡片改两列，按钮别再被挤成一条线 */
 @media (max-width: 430px) {
   .abilities { grid-template-columns: 1fr 1fr; }
   .item button { min-width: 68px; }

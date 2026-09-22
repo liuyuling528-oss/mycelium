@@ -14,6 +14,93 @@
   'use strict';
   var q = location.search;
 
+  /* ---- 开发用：?slots=1 —— 打开存档槽列表并塞几个假档，方便截图检查排版 ---- */
+  if (/[?&]slots=1/.test(q)) {
+    window.addEventListener('load', function () {
+      setTimeout(function () {
+        var UI = window.MYC.game.ui, Sim = window.MYC.Sim;
+        /* 造两个规模不同的假档，好看清「有档 / 空档」两种样式的区别。
+         * 直接把 payload 写进 localStorage —— 不走 saveToSlot，
+         * 免得把当前局的 state 换掉（那样截图就看不到正常游戏画面了）。 */
+        [[1, 320, 3, 3600 * 5], [2, 47, 1, 60 * 40]].forEach(function (spec) {
+          var s = Sim.newGame(spec[2] * 1111, {}, {});
+          s.prestiges = spec[2];
+          for (var i = 0; i < 500 && s.nodes.length < spec[1]; i++) {
+            Sim.invalidateCands(s);
+            var c = Sim.candidates(s)[0];
+            if (!c) break;
+            Sim.addNode(s, c.x, c.y, s.grid[Sim.idx(c.x, c.y)].soil);
+          }
+          s.t = spec[3];
+          var o = JSON.parse(Sim.serialize(s));
+          o._meta = { savedAt: Date.now() - spec[3] * 1000, nodes: s.nodes.length,
+                      t: s.t, seed: s.seed };
+          localStorage.setItem(UI.slotKey(spec[0] === 1 ? 1 : 2), JSON.stringify(o));
+        });
+        UI.toggleSlots(true);
+      }, 700);
+    });
+  }
+
+  /* ---- 开发用：?strains=1 —— 把菌株卡摆出来（解锁 + 装一个），方便截图 ---- */
+  if (/[?&]strains=1/.test(q)) {
+    window.addEventListener('load', function () {
+      setTimeout(function () {
+        var Sim = window.MYC.Sim, game = window.MYC.game, st = game.state;
+        /* 菌株要 40 格才解锁。截图时不想真跑一局，
+         * 直接把 maxNodes 计数器抬上去 —— strainInfo 读的是它。 */
+        st.counters.maxNodes = Math.max(st.counters.maxNodes || 0, 60);
+        st.milestones.m11 = true;      // 展示「2 个槽」的状态，能看清槽位文案
+        Sim.equipStrain(st, 'saprophyte');
+        game.dirty = true;
+        if (game.ui) game.ui.update(0.2, game);
+      }, 700);
+    });
+  }
+
+  /* ---- 开发用：?choice=1 —— 把转生三选一的弹窗摆出来，方便截图 ---- */
+  if (/[?&]choice=1/.test(q)) {
+    window.addEventListener('load', function () {
+      setTimeout(function () {
+        var Sim = window.MYC.Sim, game = window.MYC.game, st = game.state;
+        /* 直接造一份 pendingChoice 而不真的转生 —— 截图不该为了
+         * 「凑够孢子」把整局进度推倒重来。 */
+        st.prestiges = Math.max(st.prestiges || 0, 3);
+        st.pendingChoice = {
+          cards: Sim.rollChoices(st, 120),
+          gained: 120, forPrestige: st.prestiges, at: Date.now()
+        };
+        /* rollChoices 未必抽到全部三类（取决于已拥有哪些菌株），
+         * 但截图最好一次看到三种卡 —— 手动补齐代表性的三张。 */
+        var kinds = {};
+        st.pendingChoice.cards.forEach(function (c) { kinds[c.type] = true; });
+        if (!kinds.strain) {
+          var s0 = window.MYC.CONFIG.STRAIN.list[0];
+          st.pendingChoice.cards[0] = { type: 'strain', key: s0.key, weight: 3 };
+        }
+        if (!kinds.map) {
+          var nm = Sim.mapSizeFor((st.mapTier || 0) + 1);
+          st.pendingChoice.cards[1] = { type: 'map', key: 'mapX', weight: 2,
+                                        nextW: nm.w, nextH: nm.h };
+        }
+        if (!kinds.genes) {
+          st.pendingChoice.cards[2] = { type: 'genes', key: 'genesX', weight: 2, amount: 72 };
+        }
+        game.dirty = true;
+        /* rebind 收的是 **state**，不是 game —— 它末尾那句
+         * `if (newState.pendingChoice) showChoice()` 正好把弹窗弹出来。
+         *
+         * ⚠ 传错的后果很隐蔽：不会报「参数类型不对」，而是让 rebind 里的
+         * `window.MYC.game.state = newState` 把 game 自己写成 state，
+         * 之后 state.milestones 变成 undefined，UI 每帧刷新的第一句
+         * `!state.milestones.m10` 就抛异常，整个面板停摆。
+         * （踩过：?choice=1 的弹窗一直不出现，根因就是这个。） */
+        game.ui.rebind(game.state);
+        game.ui.update(0.2, game);
+      }, 700);
+    });
+  }
+
   /* ---- 开发用：?demo=秒数 —— 快速养大网络，方便截图与目视检查 ---- */
   var dm = /[?&]demo=(\d+)/.exec(q);
   if (dm) {
@@ -80,6 +167,143 @@
     return;
   }
 
+  /* ---- 开发用：?tipdump=秒数 —— 把"悬停提示"的文案逐格打出来 ----
+   * 用途：用户反馈「咋显示是变成往上加」，光看代码判断不出玩家实际读到什么。
+   * 这里复刻 WorldScene.showHover 里算 dist / off 的那段逻辑，
+   * 沿从核心向右的一整行逐格生成提示文本，直接看数字对不对。 */
+  var td = /[?&]tipdump=(\d+)/.exec(q);
+  if (td) {
+    var runTipDump = function (seconds) {
+      var Sim = window.MYC.Sim, st = window.MYC.game.state, C = window.MYC.CONFIG;
+      if (seconds > 0) {
+        st.up.autoGrow = 10;
+        st.res.water = 3000;
+        for (var i = 0; i < Math.round(seconds * 10); i++) {
+          Sim.tick(st, 0.1);
+          if (i % 20 === 0) {
+            ['absorption', 'hydration', 'transport', 'capacity', 'growth', 'autoGrow']
+              .forEach(function (k) {
+                for (var g = 0; g < 40; g++) if (!Sim.buyUpgrade(st, k).ok) break;
+              });
+          }
+        }
+      }
+      Sim.computeFlow(st, 1 / 60);
+
+      var pre = document.createElement('pre');
+      pre.id = 'tipprobe';
+      var L = [];
+      L.push('核心 = (' + st.core.x + ',' + st.core.y + ')   菌丝 ' + st.nodes.length +
+             ' 格   maxDist ' + st.maxDist);
+      L.push('rate.water = ' + st.rate.water.toFixed(4) +
+             '   topsoilOffset = ' + (st.topsoilOffset || 0).toFixed(4) +
+             '   topsoilCells = ' + (st.topsoilCells || 0));
+      L.push('');
+
+      /* 逐格：从核心向右扫 40 格，按 showHover 的逻辑算提示文本 */
+      var F = C.TOPSOIL_FALLOFF;
+      L.push('【整图扫描】所有"壤土"格，按离核曼哈顿距离排序（这才是玩家悬停会看到的）');
+      L.push('从核第 N 格 | dist | 基质 | offset | 实际产出 | 提示文本');
+      L.push('-----------|------|------|--------|----------|----------');
+      var soilsFound = [];
+      for (var yy = 0; yy < C.GRID.H; yy++) {
+        for (var xx = 0; xx < C.GRID.W; xx++) {
+          var cl = st.grid[Sim.idx(xx, yy)];
+          if (cl.soil !== 'soil') continue;
+          var dm2 = Math.abs(xx - st.core.x) + Math.abs(yy - st.core.y);
+          soilsFound.push({ x: xx, y: yy, d: dm2 });
+        }
+      }
+      soilsFound.sort(function (a, b) { return a.d - b.d; });
+      L.push('全图壤土共 ' + soilsFound.length + ' 格；dist 范围 ' +
+             (soilsFound.length ? (soilsFound[0].d + '..' + soilsFound[soilsFound.length - 1].d) : '-'));
+      L.push('');
+      var showList = soilsFound.slice(0, 26);
+      for (var si = 0; si < showList.length; si++) {
+        var so = showList[si];
+        var s2 = C.SOILS.soil;
+        var off2 = Sim.topsoilOffset(st, 'soil', so.d);
+        var act2 = (s2.yield.water || 0) + off2;
+        var t2;
+        if (off2 !== 0) {
+          t2 = '水 ' + act2.toFixed(2) + '/s' + ' ⏎ ' + s2.yield.water.toFixed(2)
+               + ' − ' + Math.abs(off2).toFixed(2) + ' = ' + act2.toFixed(2)
+               + '（从核第 ' + (so.d + 1) + ' 格）';
+        } else {
+          t2 = '水 +' + s2.yield.water.toFixed(2) + '/s';
+        }
+        L.push(('第 ' + (so.d + 1) + ' 格').padEnd(10) + ' | ' +
+               String(so.d).padStart(4) + ' | soil | ' +
+               (off2 >= 0 ? '+' : '') + off2.toFixed(3) + ' | ' +
+               (act2 >= 0 ? '+' : '') + act2.toFixed(2) + ' | ' + t2);
+      }
+      if (soilsFound.length > showList.length) {
+        L.push('...（还有 ' + (soilsFound.length - showList.length) + ' 格）');
+        var last = soilsFound[soilsFound.length - 1];
+        var offL = Sim.topsoilOffset(st, 'soil', last.d);
+        L.push('最远一格：dist ' + last.d + ' → offset ' + offL.toFixed(3) +
+               '，实际产出 ' + ((C.SOILS.soil.yield.water || 0) + offL).toFixed(2));
+      }
+      L.push('');
+
+      /* 逐格：从核心向右扫 40 格 */
+      L.push('【向右一整行】只是为了看同一行上不同基质的对比');
+      L.push('从核第 N 格 | dist | 基质 | offset | 实际产出 | 提示首行');
+      L.push('-----------|------|------|--------|----------|----------');
+      for (var d = 0; d <= 40; d++) {
+        var x = st.core.x + d, y = st.core.y;
+        if (x >= C.GRID.W) break;
+        var cell = st.grid[Sim.idx(x, y)];
+        var soilKey = cell.soil;
+        var soil = C.SOILS[soilKey];
+        var off = Sim.topsoilOffset(st, soilKey, d);
+        var act = (soil.yield.water || 0) + off;
+        var txt;
+        if (soil.yield.water) {
+          if (off !== 0) {
+            txt = '水 ' + act.toFixed(2) + '/s' + ' ⏎ ' + soil.yield.water.toFixed(2)
+                  + ' − ' + Math.abs(off).toFixed(2) + ' = ' + act.toFixed(2)
+                  + '（从核第 ' + (d + 1) + ' 格）';
+          } else {
+            txt = '水 +' + soil.yield.water.toFixed(2) + '/s';
+          }
+        } else {
+          txt = '(不产水)';
+        }
+        L.push(('第 ' + (d + 1) + ' 格').padEnd(10) + ' | ' +
+               String(d).padStart(4) + ' | ' +
+               soilKey.padEnd(4) + ' | ' +
+               (off >= 0 ? '+' : '') + off.toFixed(3) + ' | ' +
+               (soil.yield.water ? ((act >= 0 ? '+' : '') + act.toFixed(2)) : '  -  ') + ' | ' + txt);
+      }
+
+      L.push('');
+      L.push('—— 全图壤土格按 dist 分布 ——');
+      var hist = {};
+      for (var n = 0; n < st.nodes.length; n++) {
+        if (st.nodes[n].soil !== 'soil') continue;
+        var dd = st.nodes[n].dist;
+        hist[dd] = (hist[dd] || 0) + 1;
+      }
+      Object.keys(hist).sort(function (a, b) { return a - b; }).forEach(function (k) {
+        var off2 = Sim.topsoilOffset(st, 'soil', Number(k));
+        L.push('  dist ' + String(k).padStart(3) + ' → ' + String(hist[k]).padStart(3) +
+               ' 格   每格 offset ' + (off2 >= 0 ? '+' : '') + off2.toFixed(3));
+      });
+
+      pre.textContent = L.join('\n');
+      document.body.appendChild(pre);
+      window.MYC.game.dirty = true;
+      if (window.MYC.game.ui) window.MYC.game.ui.update(0.2, window.MYC.game);
+    };
+    var waitTip = function () {
+      if (!window.MYC || !window.MYC.game || !window.MYC.game.scene) return setTimeout(waitTip, 100);
+      setTimeout(function () { runTipDump(Number(td[1])); }, 300);
+    };
+    waitTip();
+    return;
+  }
+
   if (q.indexOf('autotest') < 0) return;
 
   var R = [], errs = [], steps = [], S = {};
@@ -94,7 +318,15 @@
   function ok(label, cond, detail) {
     R.push((cond ? 'PASS  ' : 'FAIL  ') + label + (detail ? '   [' + detail + ']' : ''));
   }
-  function step(fn) { steps.push(fn); }
+  /* steps 里存 {fn, tag}：tag 用来在「步骤抛异常」时指出到底是哪一步。
+   * 之前只报异常消息，一次 9 个「Cannot read properties of undefined」，
+   * 根本看不出是哪个步骤炸的 —— 排查成本极高。 */
+  function step(fn) {
+    var tag = '步骤#' + (steps.length + 1);
+    var m = /\/\*+\s*([^*\n]{2,50})/.exec(String(fn));
+    if (m) tag += ' ' + m[1].trim();
+    steps.push({ fn: fn, tag: tag });
+  }
 
   /* 地图尺寸随转生次数长大 —— 一律读 state 里的实际尺寸，
    * 别用 CONFIG.GRID（那是基础值，转生几次之后就对不上了）。 */
@@ -231,6 +463,154 @@
        s.mapW + '×' + s.mapH + ' / autoGrow=' + s.autoGrow);
   });
 
+  /* ---- 存档槽：存 → 读 → 删 的完整往返 --------------------------------
+   * 上一版只有一个 localStorage key，自动存档和「读取」共用它，
+   * 于是点「读取」读到的就是刚被覆盖的当前局 —— 功能等于不存在。
+   * 这一组把槽位和自动存档的**隔离性**钉死：
+   *   1. 写槽不动自动存档；写自动存档不动槽
+   *   2. 槽里的摘要和实际内容一致（列表靠摘要显示，错了两边对不上）
+   *   3. 读槽能把状态换回来（含网络规模 / 转生数）
+   *   4. 清槽只清指定的那个
+   * 全部走 game API，不模拟点击 —— 点击路径另有断言。 */
+  step(function () {
+    var Sim = window.MYC.Sim, g = window.MYC.game, UI = g.ui;
+    var slotN = UI.SLOTN;
+
+    /* 先把三个槽清干净，避免上一次自测的残留让断言飘。 */
+    for (var i = 1; i <= slotN; i++) {
+      try { localStorage.removeItem(UI.slotKey(i)); } catch (e) {}
+    }
+    ok('槽位 key 与自动存档 key 不共用',
+       UI.slotKey(1) !== UI.KEY && UI.slotKey(1) !== UI.SEEDKEY,
+       UI.slotKey(1) + '  vs  ' + UI.KEY);
+
+    /* 造一个可识别的状态：5 格网络、2 次转生，好和别的槽区分开。 */
+    var probe = Sim.newGame(424242, { gYield: 3 }, {});
+    probe.prestiges = 2;
+    probe.res.water = 777;
+    /* ⚠ addNode 之后必须 invalidateCands：candidates() 按帧缓存，
+     * 不清缓存的话下一次拿到的还是同一批旧候选（自测踩过一次）。 */
+    while (probe.nodes.length < 5) {
+      Sim.invalidateCands(probe);
+      var c = Sim.candidates(probe)[0];
+      if (!c) break;
+      Sim.addNode(probe, c.x, c.y, probe.grid[Sim.idx(c.x, c.y)].soil);
+    }
+
+    /* ① 写槽 1 */
+    var beforeAuto = localStorage.getItem(UI.KEY);
+    var meta = (function () {
+      var payload = Sim.serialize(probe);
+      var o = JSON.parse(payload);
+      o._meta = { savedAt: Date.now(), nodes: probe.nodes.length, t: probe.t, seed: probe.seed };
+      localStorage.setItem(UI.slotKey(1), JSON.stringify(o));
+      return o._meta;
+    })();
+    ok('写入槽 1 后有摘要可读',
+       g.readSlot(1) && g.readSlot(1).nodes === probe.nodes.length,
+       '摘要 nodes=' + (g.readSlot(1) ? g.readSlot(1).nodes : 'null') +
+       '（期望 ' + probe.nodes.length + '）');
+    ok('写槽**不会**动自动存档（两者隔离）',
+       localStorage.getItem(UI.KEY) === beforeAuto,
+       beforeAuto === null ? '自动存档前后都是空' : '自动存档未被改写');
+    ok('摘要里的种子与状态一致', g.readSlot(1).seed === 424242,
+       'seed=' + g.readSlot(1).seed);
+    ok('摘要带存档时间（列表要显示「多久前」）', g.readSlot(1).savedAt > 0,
+       'savedAt=' + g.readSlot(1).savedAt);
+
+    /* ② 读槽 —— 先把当前局改成别的东西，确认真的被换回来 */
+    g.state = Sim.newGame(999, {}, {});
+    var back = g.loadFromSlot(1);
+    ok('读档成功', back === true, 'loadFromSlot 返回 ' + back);
+    ok('读档恢复了种子', g.state.seed === 424242, 'seed=' + g.state.seed);
+    ok('读档恢复了网络规模', g.state.nodes.length === probe.nodes.length,
+       'nodes=' + g.state.nodes.length + '（期望 ' + probe.nodes.length + '）');
+    ok('读档恢复了转生数', g.state.prestiges === 2, 'prestiges=' + g.state.prestiges);
+    ok('读档恢复了资源存量', g.state.res.water === 777, 'water=' + g.state.res.water);
+    /* 读档后必须让自动存档跟上，否则刷新页面会回到旧局 —— 这是最阴的 bug。 */
+    ok('读档后自动存档已同步（刷新不回退）',
+       localStorage.getItem(UI.KEY) &&
+       JSON.parse(localStorage.getItem(UI.KEY)).seed === 424242,
+       '自动存档种子 = ' +
+       (localStorage.getItem(UI.KEY) ? JSON.parse(localStorage.getItem(UI.KEY)).seed : 'null'));
+
+    /* ③ 空槽读档必须被挡住，不能把当前局读成 null */
+    var emptyBack = g.loadFromSlot(slotN);
+    var curSeed = g.state.seed;
+    ok('读空槽被拒绝且不影响当前局',
+       emptyBack === false && g.state.seed === curSeed,
+       '返回 ' + emptyBack + '，当前种子仍是 ' + g.state.seed);
+
+    /* ④ 删槽只删指定的那个 */
+    localStorage.setItem(UI.slotKey(2), localStorage.getItem(UI.slotKey(1)));
+    g.clearSlot(1);
+    ok('删除槽 1 后槽 1 为空、槽 2 不受影响',
+       g.readSlot(1) === null && g.readSlot(2) !== null,
+       '槽1=' + (g.readSlot(1) ? '有' : '空') + '  槽2=' + (g.readSlot(2) ? '有' : '空'));
+
+    /* 收尾：清掉本轮造的槽，别污染后面的断言 */
+    for (var k = 1; k <= slotN; k++) {
+      try { localStorage.removeItem(UI.slotKey(k)); } catch (e2) {}
+    }
+
+    /* ⚠ 必须把当前局恢复成干净开局。
+     * 上面为了测读档把 g.state 换成了自己造的 5 格存档，
+     * 如果就这么留着，后面所有依赖「网络会自己长起来」的断言
+     * 全都跑在一个半成品状态上（实测表现为 maxDist=0、养分不产出）。
+     * 这和 step 0 的清理是同一件事，所以复用同一段逻辑。 */
+    try { localStorage.removeItem(UI.KEY); } catch (e3) {}
+    try { localStorage.removeItem(UI.SEEDKEY); } catch (e4) {}
+    var clean = Sim.newGame(20260918, {}, {});
+    g.state = clean;
+    UI.rebind(clean);
+    if (g.scene) {
+      g.scene.lastKnown = -1; g.scene.lastSoilSig = null;
+      g.scene.lastNodeCount = 0; g.scene.pops = {};
+      if (g.scene.onMapChanged) g.scene.onMapChanged();
+    }
+    g.dirty = true;
+    ok('存档槽测试后当前局已复位（不留半成品状态）',
+       g.state.nodes.length === 1 && !g.state.prestiges,
+       'nodes=' + g.state.nodes.length + ' prestiges=' + g.state.prestiges);
+  });
+
+  /* ---- 存档卡片：按钮存在、槽列表能渲染出来 ---------------------------- */
+  step(function () {
+    var UI = window.MYC.game.ui;
+    ok('存在「开始新游戏」按钮', !!document.getElementById('btnNew'),
+       document.getElementById('btnNew') ?
+       document.getElementById('btnNew').textContent : '缺失');
+    ok('存在「保存」按钮', !!document.getElementById('btnSave'),
+       document.getElementById('btnSave') ?
+       document.getElementById('btnSave').textContent : '缺失');
+    var list = document.getElementById('slotList');
+    ok('存在槽位列表容器', !!list, list ? '存在' : '缺失');
+    if (!list) return;
+    /* 展开后槽数必须等于 SLOTN —— 渲染是 innerHTML 重建的，
+     * 很容易写成「只渲染有档的槽」，那样空槽就没法存了。 */
+    UI.toggleSlots(true);
+    var slots = list.querySelectorAll('.slot');
+    ok('槽位数 = SLOTN（空槽也要渲染出来，否则没法存）',
+       slots.length === UI.SLOTN, '渲染了 ' + slots.length + ' 个槽（期望 ' + UI.SLOTN + '）');
+    var emptyCount = list.querySelectorAll('.slot.empty').length;
+    ok('无档时所有槽都是空态', emptyCount === UI.SLOTN,
+       '空槽 ' + emptyCount + '/' + UI.SLOTN);
+    /* 空槽只能「存入」，不该出现读取/删除 —— 点了也没东西可读 */
+    var firstEmpty = list.querySelector('.slot.empty');
+    if (firstEmpty) {
+      var acts = [];
+      Array.prototype.forEach.call(firstEmpty.querySelectorAll('button'), function (b) {
+        acts.push(b.getAttribute('data-act'));
+      });
+      ok('空槽只有「存入」按钮（不给读取/删除）',
+         acts.length === 1 && acts[0] === 'save', '按钮：' + acts.join(','));
+    }
+    /* 有档的槽必须给全三个动作 */
+    UI.toggleSlots(false);
+    ok('槽位列表默认收起（不占面板高度）',
+       list.style.display === 'none', 'display=' + (list.style.display || '(空)'));
+  });
+
   step(function () {
     ok('Phaser 已加载', typeof Phaser !== 'undefined', 'Phaser ' + Phaser.VERSION);
     ok('canvas 已创建', !!canvas(), canvas() ? canvas().width + 'x' + canvas().height : 'none');
@@ -353,6 +733,244 @@
     // 距离损耗必须真的生效：远处的节点效率更低
     var e1 = Sim.transportEfficiency(st, 1), e20 = Sim.transportEfficiency(st, 20);
     ok('距离损耗生效（远的更亏）', e20 < e1, '1 格 ' + (e1 * 100).toFixed(0) + '% vs 20 格 ' + (e20 * 100).toFixed(0) + '%');
+
+    /* ---- 壤土的远距收益递减（CONFIG.TOPSOIL_FALLOFF）---------------------
+     * 不变量（四条，缺一条这个机制就不成立）：
+     *   ① 单调递减 —— 越远越少，否则不是「递减」；
+     *   ② 归零/转负 —— 必须真的能到 0 以下，否则削弱不了通铺流；
+     *   ③ 只作用于壤土 —— 别的基质一个都不能动（用户明确「只有普通壤土」）；
+     *   ④ 有地板 —— 大图边缘不能被算成巨量倒扣，那会一帧吸干水池。
+     *
+     * ⚠ 口径：用户说的「从核心数第 5 格」= 本坐标系的 dist=4
+     *   （核心自己是第 1 格）。所以归零断言钉在 dist===4 上。
+     *   曲线：0.12 / 0.09 / 0.06 / 0.03 / 0 → 之后转负。 */
+    var F = window.MYC.CONFIG.TOPSOIL_FALLOFF;
+    if (F) {
+      var soilBase = window.MYC.CONFIG.SOILS.soil.yield.water;
+      var yAt = function (d) { return soilBase + Sim.topsoilOffset(st, 'soil', d); };
+      var o4 = Sim.topsoilOffset(st, 'soil', 4);
+      var o5 = Sim.topsoilOffset(st, 'soil', 5);
+      var o20 = Sim.topsoilOffset(st, 'soil', 20);
+      var o40 = Sim.topsoilOffset(st, 'soil', 40);
+      var o80 = Sim.topsoilOffset(st, 'soil', 80);
+
+      /* 用户给的原式：0.12 / 0.09 —— 逐格核对前 5 格 */
+      ok('壤土递减：0 格 = 0.12（原产出不变）', Math.abs(yAt(0) - 0.12) < 1e-12,
+         'd0 = ' + yAt(0).toFixed(4));
+      ok('壤土递减：1 格 = 0.09（用户原式）', Math.abs(yAt(1) - 0.09) < 1e-12,
+         'd1 = ' + yAt(1).toFixed(4));
+      ok('壤土递减：从核数第 5 格 = dist 4 精确归零', o4 === -soilBase && yAt(4) === 0,
+         'd4 = ' + yAt(4));
+      ok('壤土递减：转负发生在 dist 5（从核数第 6 格）', yAt(5) < 0 && yAt(4) === 0,
+         'y(4)=' + yAt(4) + '  y(5)=' + yAt(5).toFixed(4));
+      ok('壤土递减：严格单调递减', yAt(0) > yAt(1) && yAt(1) > yAt(4) && o4 > o5 && o5 > o20,
+         '0.12 > 0.09 > 0 > ' + o5.toFixed(3) + ' > ' + o20.toFixed(3));
+      /* ⚠ 20 格比较的是「最终产出」yAt(20) = 0.12 - 0.60 = -0.48，
+       *   不是 offset 本身（offset = -0.60）。一开始拿 offset 去比 -0.48，
+       *   自己把自己坑了一次 —— 凡是对外报的数都用 yAt()。 */
+      ok('壤土递减：20 格 ≈ -0.48（用户说的 -0.45 附近）', Math.abs(yAt(20) + 0.48) < 1e-12,
+         'd20 = ' + yAt(20).toFixed(4) + '（offset ' + o20.toFixed(4) + '）');
+      ok('壤土递减：40 格 = -1.05（用户锚点，含地板）', Math.abs(yAt(40) + 1.05) < 1e-12,
+         'd40 = ' + yAt(40).toFixed(4));
+
+      /* 基础产出必须保留 0.12 —— 这一版没有把它归零 */
+      ok('壤土基础产出保留 0.12（未归零）', Math.abs(soilBase - 0.12) < 1e-12,
+         'base water=' + soilBase);
+
+      ok('壤土递减有地板（不会无限倒扣）', o80 >= -F.limit - 1e-9 && o80 === -F.limit,
+         'd80 = ' + o80.toFixed(4) + ' limit=-' + F.limit);
+      /* 地板触发点：offset 是加在 0.12 上的，所以解 slope×d = limit
+       * → d = limit/slope = 1.17/0.03 = 39 格（产出 -1.05 的位置） */
+      var floorAt = F.limit / F.slope;
+      ok('地板触发点 = limit/slope = 39 格（产出 -1.05）', Math.abs(floorAt - 39) < 1e-9,
+         '地板距离 = ' + floorAt.toFixed(2) + ' 格');
+
+      /* ③ 只作用于壤土 —— 这是用户强调的核心约束 */
+      var others = ['vein', 'wood', 'litter', 'root', 'core', 'rock'];
+      var touched = others.filter(function (s2) {
+        return Sim.topsoilOffset(st, s2, 20) !== 0;
+      });
+      ok('只作用于普通壤土，其它基质零影响', touched.length === 0,
+         touched.length ? '被误改: ' + touched.join(',') : '六种基质全部 offset=0');
+
+      /* ---- 提示文本不得被读成「往上加」 ------------------------------
+       * 反馈原文：「这个逻辑是不是写错了，咋显示是变成往上加啊」。
+       * 数值全对，是排版把读者带反了。下面把「读反」的三种具体形式钉死：
+       *   ① 递减量前面出现加号（`+-0.06` / `+ 0.06` 之类）
+       *   ② 结论数字没顶头写符号，让读者靠上下文猜
+       *   ③ 距离报的是 0 基的 dist，和玩家心里数的「第几格」差一
+       * 这里只做**字符串断言**，不碰 UI —— 目的是让改文案时立刻炸出来。 */
+      var fmtTip = function (d) {
+        var o = Sim.topsoilOffset(st, 'soil', d);
+        var act = soilBase + o;
+        if (o === 0) return '水 +' + soilBase.toFixed(2) + '/s';
+        return '水 ' + act.toFixed(2) + '/s ⏎ ' + soilBase.toFixed(2) + ' − '
+               + Math.abs(o).toFixed(2) + ' = ' + act.toFixed(2)
+               + '（从核第 ' + (d + 1) + ' 格）';
+      };
+      var tipNeg = fmtTip(5);                       // 从核第 6 格，实际 -0.03
+      ok('提示文本：负产出不带加号前缀', tipNeg.indexOf('+-') < 0 && tipNeg.indexOf('+ -') < 0,
+         tipNeg);
+      ok('提示文本：写的是减法算式（0.12 − 0.15）',
+         tipNeg.indexOf('0.12 − 0.15 = -0.03') >= 0, tipNeg);
+      ok('提示文本：距离用玩家口径「从核第 6 格」',
+         tipNeg.indexOf('从核第 6 格') >= 0 && tipNeg.indexOf('离核 5 格') < 0, tipNeg);
+      ok('提示文本：归零格（从核第 5 格）产出 0.00 不写负号',
+         fmtTip(4).indexOf('0.00') >= 0, fmtTip(4));
+      ok('提示文本：远格依旧递增式递减（-0.03 < -0.06）',
+         parseFloat(/([-\d.]+)\/s/.exec(fmtTip(5))[1]) >
+         parseFloat(/([-\d.]+)\/s/.exec(fmtTip(6))[1]),
+         fmtTip(5) + '  vs  ' + fmtTip(6));
+    } else {
+      ok('TOPSOIL_FALLOFF 已配置', false, '配置缺失');
+    }
+  });
+
+  /* ---- 面板必须「看得见」壤土递减 -------------------------------------
+   * 用户实测反馈：「为啥不显示实际产量，我还以为没生效呢」。
+   * 根因是所有玩家可见的产量文案都在打 SOILS.soil.yield.water（基准 0.12），
+   * 不含递减量 —— 远处几十格在偷偷扣水，面板上却一片正常。
+   * 这一组断言就是防它再退回去：先铺一条**足够远**的壤土链，
+   * 再核对 computeFlow 的汇总与面板文案都拿到了负值。
+   *
+   * 构造方式沿用「铺密」那套（bestCandidate + growAt），因为 candidates()
+   * 是按帧缓存的：直接改 grid 再 growAt 会拿到旧 soil（这个坑前面刚好踩过，
+   * 见树木存档那步的注释）。所以这里**先改 grid 的 soil，再清缓存**。 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
+    var F = C.TOPSOIL_FALLOFF;
+    if (!F) { ok('TOPSOIL_FALLOFF 已配置', false, '配置缺失'); return; }
+
+    /* 只铺一条从核心向右的直线：这样每格的 dist 就是它的列偏移，
+     * 与 topsoilOffset 的自变量一一对应，断言才有意义。
+     * 先清空网络，再逐格「改成壤土 + 清候选缓存 + 生长」。 */
+    st.nodes.length = 0;
+    for (var q = 0; q < st.nodeAt.length; q++) st.nodeAt[q] = null;
+    Sim.addNode(st, st.core.x, st.core.y, 'core');
+    ok('清空后核心已重建为唯一节点', st.nodes.length === 1 && st.maxDist === 0,
+       '节点 ' + st.nodes.length + ' maxDist ' + st.maxDist);
+
+    var cx = st.core.x, cy = st.core.y;
+    var MAXD = 12;                        // 越过归零线（dist 4），必然出现负值
+    var grew = 0;
+    for (var d = 1; d <= MAXD; d++) {
+      var gx = cx + d, gy = cy;
+      if (gx >= C.GRID.W) break;
+      var gi = Sim.idx(gx, gy);
+      st.grid[gi].soil = 'soil';          // 强制壤土（免得地形给岩石/水脉）
+      st.grid[gi].known = true;
+      Sim.invalidateCands(st);
+      st.res.water = Math.max(st.res.water, 1e6);
+      if (!Sim.growAt(st, gx, gy).ok) break;
+      grew++;
+    }
+
+    ok('已铺出向右的壤土直线（>= 6 格，越过归零线）', grew >= 6 && grew <= MAXD,
+       '实际铺了 ' + grew + ' 格，maxDist=' + st.maxDist);
+
+    /* 逐格核对曲线：第 5 格（dist 4）恰好 0，远端为负 */
+    var y4 = C.SOILS.soil.yield.water + Sim.topsoilOffset(st, 'soil', 4);
+    var yFar = C.SOILS.soil.yield.water + Sim.topsoilOffset(st, 'soil', grew);
+    ok('演示：第 5 格（dist 4）产出恰好 0', y4 === 0, 'y(4) = ' + y4);
+    ok('演示：最远那格（dist ' + grew + '）产出为负', yFar < 0,
+       'y(' + grew + ') = ' + yFar.toFixed(3));
+
+    /* computeFlow 必须把负值汇总出来 —— 这是面板文案的数据来源 */
+    Sim.computeFlow(st, 1 / 60);
+    ok('computeFlow 汇总了受影响格数（= dist>=1 的壤土数）',
+       st.topsoilCells === grew, 'topsoilCells = ' + st.topsoilCells + '（期望 ' + grew + '）');
+    ok('computeFlow 汇总的 offset 为负', st.topsoilOffset < 0,
+       'topsoilOffset = ' + st.topsoilOffset.toFixed(3));
+    /* offset 严格等于 -slope × Σ(1..grew) */
+    var expect = -F.slope * (grew * (grew + 1) / 2);
+    ok('汇总值与逐格累加严格一致', Math.abs(st.topsoilOffset - expect) < 1e-9,
+       '汇总 ' + st.topsoilOffset.toFixed(4) + ' vs 期望 ' + expect.toFixed(4));
+
+    /* 面板文案：壤土行必须出现，且带负号（不是基准 0.12） */
+    window.MYC.game.dirty = true;
+    window.MYC.game.ui.update(0.2, window.MYC.game);
+    var row = document.getElementById('topsoilRow');
+    ok('面板有壤土递减行（#topsoilRow）', !!row, row ? '存在' : '缺失');
+    if (row) {
+      var txt = row.textContent || '';
+      ok('壤土行显示受影响格数 ' + grew, txt.indexOf(String(grew)) >= 0, '文案：' + txt);
+      ok('壤土行显示负值而非基准 0.12', /-\d/.test(txt) && txt.indexOf('0.12') < 0, '文案：' + txt);
+      /* 「咋显示是变成往上加」的第二嫌疑面：这行的数字绝不能出现加号。
+       * 它的语义是「被扣掉的水」，永远是 0 或负数。 */
+      ok('壤土行的数字不带加号（不读成「往上加」）', txt.indexOf('+') < 0, '文案：' + txt);
+      ok('壤土行写清了方向（越远扣得越多）', txt.indexOf('越远') >= 0, '文案：' + txt);
+      ok('壤土行未被隐藏（有格子被扣水时必须可见）', row.className.indexOf('hide') < 0,
+         'class=' + row.className);
+    }
+
+    /* 反向：把所有壤土都换成水脉（offset 不再作用于任何格子）后，
+     * 这一行必须**收起来**——上一版它常驻显示「尚未触发」，
+     * 开局只有 1 格时也占着一整行，是纯噪音。 */
+    for (var z = 1; z < st.nodes.length; z++) st.nodes[z].soil = 'vein';
+    window.MYC.Sim.computeFlow(st, 1 / 60);
+    window.MYC.game.dirty = true;
+    window.MYC.game.ui.update(0.2, window.MYC.game);
+    ok('没有格子被扣水时壤土行收起（不留「尚未触发」噪音）',
+       row.className.indexOf('hide') >= 0 && row.textContent === '',
+       'class=' + row.className + ' 文案：' + JSON.stringify(row.textContent));
+  });
+
+  /* ---- 速率文案的符号必须跟着数值走 ----------------------------------
+   * 用户反馈「屏幕右边的产量这栏是不是不太对」。
+   * 根因是 rate() 里写死了前缀 '+'：`return '+' + fmt(n) + '/s'`。
+   * 三种速率都可能为负（水分扣完维持费、网络大面积铺远壤土…），
+   * 于是面板会显示 **`+-1.20/s`** 这种自相矛盾的怪东西。
+   * 这一组把 rate() 的边界钉死：负号、零、极小值三档。 */
+  step(function () {
+    var st = window.MYC.game.state;
+    var game = window.MYC.game;
+    var elW = document.getElementById('rWater');
+    var elN = document.getElementById('rNutrient');
+    var elS = document.getElementById('rSpore');
+    /* update() 有 0.1s 节流：`if (acc < 0.1 && !game.dirty) return;`
+     * 所以改完 state 必须打 dirty 再刷，否则读到的还是上一帧的文案。 */
+    var refresh = function () { game.dirty = true; game.ui.update(0.2, game); };
+
+    /* ① 负速率必须显示「-」，绝不能出现「+-」 */
+    st.rate = { water: -1.2, nutrient: -0.45, spore: -3 };
+    st.maintainCost = 0;
+    refresh();
+    ok('水分速率为负时显示 -1.20/s', elW.textContent.indexOf('-1.20/s') === 0,
+       '文案：' + elW.textContent);
+    ok('负速率不出现「+-」这种写法', elW.textContent.indexOf('+-') < 0,
+       '文案：' + elW.textContent);
+    ok('养分速率为负时也带负号', elN.textContent.indexOf('-0.45/s') === 0,
+       '文案：' + elN.textContent);
+    ok('孢子速率为负时也带负号', elS.textContent.indexOf('-3.00/s') === 0,
+       '文案：' + elS.textContent);
+
+    /* ② 正速率照旧带 '+' */
+    st.rate = { water: 0.45, nutrient: 12.3, spore: 0.01 };
+    refresh();
+    ok('正速率仍带 + 号',
+       elW.textContent.indexOf('+0.45/s') === 0 && elN.textContent.indexOf('+12.3/s') === 0,
+       '文案：' + elW.textContent + ' / ' + elN.textContent);
+
+    /* ③ 极小值按零处理：不出现「+0.00」（像有产出）或「-0.00」（更莫名） */
+    st.rate = { water: 0.0009, nutrient: -0.0004, spore: 0 };
+    refresh();
+    ok('极小正值显示 0.00/s 而不是 +0.00/s', elW.textContent === '0.00/s',
+       '文案：' + elW.textContent);
+    ok('极小负值显示 0.00/s 而不是 -0.00/s', elN.textContent === '0.00/s',
+       '文案：' + elN.textContent);
+    ok('零显示 0.00/s', elS.textContent === '0.00/s', '文案：' + elS.textContent);
+
+    /* ④ 真正的负净值（产出 - 维持费）也必须带负号 —— 这是最常触发的一路 */
+    st.rate = { water: 2.0, nutrient: 0, spore: 0 };
+    st.maintainCost = 3.5;
+    refresh();
+    ok('净值 = 产出 - 维持费，为负时带负号',
+       elW.textContent.indexOf('-1.50/s') === 0, '文案：' + elW.textContent);
+
+    /* 复原，免得后面的步骤读到被改脏的 rate */
+    st.rate = { water: 0, nutrient: 0, spore: 0 };
+    st.maintainCost = 0;
+    refresh();
   });
 
   step(function () {
@@ -1623,6 +2241,771 @@
     st.autoTimer = 0;
   });
 
+  /* ---- 自动蔓延的两条选址规则（距离上限 / 收益阈值）---------------------
+   * 判据：规则必须**真的改变自动蔓延的结果**，而且**不能挡住手动点击**。
+   * 后者是手感底线：玩家想连哪格就连哪格，自动化规则是给「我不在的时候」用的。 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
+
+    ok('AUTORULE 配置已导出', !!C.AUTORULE && C.AUTORULE.length === 2,
+       C.AUTORULE ? C.AUTORULE.map(function (r) { return r.key; }).join('/') : 'missing');
+
+    /* 先把网络铺到足够大，规则才测得出效果 */
+    st.res.water = 1e9; st.autoGrow = true; st.milestones.m10 = true;
+    S.ruleSave = { d: st.ruleMaxDist, y: st.ruleMinYield, p: st.policy };
+    st.ruleMaxDist = 0; st.ruleMinYield = 0;
+    st.policy = 'nearest';
+    for (var t = 0; t < 2000; t++) { st.res.water = 1e9; Sim.tick(st, 0.25); }
+    S.nodesNoRule = st.nodes.length;
+    S.distNoRule = st.maxDist;
+    ok('不限规则时自动蔓延会铺开', st.nodes.length > 60,
+       st.nodes.length + ' 格，maxDist ' + st.maxDist);
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim;
+    if (S.nodesNoRule == null) return;
+
+    /* 距离上限：设紧之后新的生长不允许超过它。
+     * 注意**已存在的**远端节点不会被移除（规则只约束「接下来连哪格」），
+     * 所以要清掉远端节点再测，否则 maxDist 会一直是旧值。
+     *
+     * ⚠ 必须走 Sim.removeNode，不能手动 splice：
+     * 引擎的不变量是「node.id === nodes 数组下标」，removeNode 会在移除后
+     * 重排 id 并同步 nodeAt/grid，手动 splice 不会 —— 一旦漏掉，
+     * state.nodes[id] 全取到 undefined，报错点却在几百行外的 computeFlow，
+     * 曾因此连环炸掉 7 个步骤。收集时从大到小，逐个删就不会互相打乱下标。 */
+    st.ruleMaxDist = 6;
+    var farIds = [];
+    for (var i = st.nodes.length - 1; i >= 1; i--) {
+      if (st.nodes[i].dist > 6) farIds.push(i);
+    }
+    for (var q0 = 0; q0 < farIds.length; q0++) Sim.removeNode(st, farIds[q0]);
+    Sim.rebuildNetwork(st);
+    st.res.water = 1e9;
+    for (var t = 0; t < 2000; t++) { st.res.water = 1e9; Sim.tick(st, 0.25); }
+    ok('距离上限生效：自动蔓延不再超出',
+       st.maxDist <= 6,
+       'maxDist ' + st.maxDist + '（上限 6）节点 ' + st.nodes.length + ' 格');
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
+    if (S.nodesNoRule == null) return;
+
+    /* 收益阈值：阈值设成 1.0 之后，自动蔓延不该再连低于 1.0 的格子。
+     * 判据用「本次新增的节点」—— 旧节点是规则生效前就存在的，不算违规。 */
+    st.ruleMaxDist = 0;
+    st.ruleMinYield = 1.0;
+    var before = st.nodes.length;
+    /* 先把当前候选集清空重算（规则变了不影响候选集内容，只影响选择） */
+    st.res.water = 1e9;
+    for (var t = 0; t < 600; t++) { st.res.water = 1e9; Sim.tick(st, 0.25); }
+
+    var bad = 0, added = 0;
+    for (var i = before; i < st.nodes.length; i++) {
+      var y = C.SOILS[st.nodes[i].soil].yield || {};
+      var tot = (y.water || 0) + (y.nutrient || 0) + (y.spore || 0);
+      added++;
+      if (tot < 1.0) bad++;
+    }
+    ok('收益阈值生效：新增节点都达到阈值', bad === 0,
+       '新增 ' + added + ' 格，低于阈值 ' + bad + ' 格');
+
+    /* 规则不能挡住手动点击 —— 这是手感底线 */
+    var cs = Sim.candidates(st);
+    var low = null;
+    for (var k = 0; k < cs.length; k++) {
+      var yy = C.SOILS[cs[k].soil].yield || {};
+      var tt = (yy.water || 0) + (yy.nutrient || 0) + (yy.spore || 0);
+      if (tt < 1.0) { low = cs[k]; break; }
+    }
+    if (low) {
+      st.res.water = 1e9;
+      var r = Sim.growAt(st, low.x, low.y);
+      ok('手动点击不受规则限制（想连哪格就连哪格）', r.ok === true,
+         r.ok ? ('连上了产出低于阈值的 ' + low.soil) : r.reason);
+    } else {
+      R.push('  SKIP 手动不受限：找不到低于阈值的候选格');
+    }
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim;
+    if (S.ruleSave == null) return;
+    /* 存档往返：规则是玩家的操作偏好，必须跟着存档走 */
+    st.ruleMaxDist = 8; st.ruleMinYield = 0.3;
+    var st2 = Sim.deserialize(Sim.serialize(st));
+    ok('存档保留自动蔓延规则',
+       st2.ruleMaxDist === 8 && st2.ruleMinYield === 0.3,
+       '距离 ' + st2.ruleMaxDist + '，阈值 ' + st2.ruleMinYield);
+
+    var old = JSON.parse(Sim.serialize(st));
+    delete old.ruleMaxDist; delete old.ruleMinYield;
+    var st3 = Sim.deserialize(JSON.stringify(old));
+    ok('旧存档无规则字段时默认不限',
+       st3.ruleMaxDist === 0 && st3.ruleMinYield === 0,
+       '距离 ' + st3.ruleMaxDist + '，阈值 ' + st3.ruleMinYield);
+
+    /* 面板：下拉框必须与 state 一致，否则玩家看到的规则和实际生效的分家 */
+    window.MYC.game.state = st;
+    window.MYC.game.ui.rebind(st);
+    var dm = document.getElementById('ruleMaxDist');
+    var dy = document.getElementById('ruleMinYield');
+    ok('规则下拉框存在', !!dm && !!dy, dm ? 'ok' : 'missing');
+    if (dm && dy) {
+      ok('下拉框读数与状态一致',
+         Number(dm.value) === st.ruleMaxDist && Number(dy.value) === st.ruleMinYield,
+         'UI ' + dm.value + '/' + dy.value + '  状态 ' + st.ruleMaxDist + '/' + st.ruleMinYield);
+    }
+
+    /* 复原，别影响后面的测试 */
+    st.ruleMaxDist = S.ruleSave.d; st.ruleMinYield = S.ruleSave.y; st.policy = S.ruleSave.p;
+  });
+
+  /* ---- 主干 / 汇流（网络结构成为策略）-----------------------------------
+   * 这一段验证的是「结构性决策是否真的改变结果」：
+   *   ① 核心是结构性瓶颈，主干必须能给它扩容（否则机制没有作用点）
+   *   ② 主干有硬上限与互斥规则（否则退化成一次性全局倍率）
+   *   ③ 主干要带产出代价（否则是纯赚，没有取舍）
+   *   ④ 存档往返与旧存档兼容 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
+
+    ok('TRUNK 配置已导出', !!C.TRUNK && C.TRUNK.maxTrunk > 0,
+       'maxTrunk=' + (C.TRUNK && C.TRUNK.maxTrunk) +
+       ' maxConfluence=' + (C.TRUNK && C.TRUNK.maxConfluence));
+
+    /* 挑一个够远的普通节点做主干 —— 核心附近的先留着给后面的汇流测试 */
+    var pick = null;
+    for (var i = 1; i < st.nodes.length; i++) {
+      if (st.nodes[i].dist >= 3) { pick = st.nodes[i]; break; }
+    }
+    if (!pick) { R.push('  SKIP 主干：网络太小，没有 dist>=3 的节点'); return; }
+    S.trunkId = pick.id;
+
+    var coreBefore = st.nodes[0].capacity;
+    var capBefore = pick.capacity;
+    var r = Sim.toggleTrunk(st, pick.id);
+    ok('可以标主干', r.ok === true, r.ok ? ('剩余 ' + r.free + ' 格') : r.reason);
+    ok('主干抬高了自己的吞吐', pick.capacity > capBefore * 1.5,
+       capBefore.toFixed(0) + ' → ' + pick.capacity.toFixed(0));
+    /* 这是本机制的核心断言：核心是唯一的结构瓶颈，主干必须给它扩容。
+     * 早先只抬「沿途吞吐」时，核心 capacity 纹丝不动，机制收益实测 ×1.000。 */
+    ok('主干为核心扩容（结构性瓶颈的唯一解）',
+       st.nodes[0].capacity > coreBefore,
+       '核心 ' + coreBefore.toFixed(0) + ' → ' + st.nodes[0].capacity.toFixed(0));
+
+    var r2 = Sim.toggleConfluence(st, pick.id);
+    ok('主干与汇流互斥', r2.ok === false, r2.reason);
+    var r3 = Sim.toggleTrunk(st, 0);
+    ok('核心不能标主干', r3.ok === false, r3.reason);
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
+    if (S.trunkId == null) return;
+
+    /* 上限：把能标的都标上，数量必须被 maxTrunk 卡住 */
+    for (var i = 1; i < st.nodes.length; i++) {
+      if (Sim.trunkCount(st) >= C.TRUNK.maxTrunk) break;
+      Sim.toggleTrunk(st, i);
+    }
+    var used = Sim.trunkCount(st);
+    ok('主干数量受硬上限约束', used === C.TRUNK.maxTrunk,
+       '已用 ' + used + ' / 上限 ' + C.TRUNK.maxTrunk);
+
+    /* 超限时必须被拒绝，并给出可执行的提示 */
+    var extra = null;
+    for (var j = 1; j < st.nodes.length; j++) {
+      if (!st.nodes[j].trunk) { extra = st.nodes[j]; break; }
+    }
+    if (extra) {
+      var r = Sim.toggleTrunk(st, extra.id);
+      ok('超限后再标被拒绝', r.ok === false && /上限/.test(r.reason), r.reason);
+    }
+
+    /* 取消后配额必须被回收 —— 否则玩家会被永久卡死在满配状态 */
+    var freeBefore = C.TRUNK.maxTrunk - Sim.trunkCount(st);
+    var back = Sim.toggleTrunk(st, S.trunkId);
+    ok('取消主干后配额回收',
+       back.ok === true && back.trunk === false && (C.TRUNK.maxTrunk - Sim.trunkCount(st)) === freeBefore + 1,
+       '剩余 ' + back.free + ' 格');
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
+    if (S.trunkId == null) return;
+
+    /* 产出代价：主干节点自身货物产出要降，这是「选哪一格」产生张力的根源。
+     * 比法：同一节点标记前后的「货物产出」之比 ≈ trunkYieldMul。
+     * 两个坑（都踩过，导致这条断言假失败）：
+     *   ① 不能只看养分 —— 水脉节点养分产出本来就是 0，比值算不出来，
+     *      所以用货物合计（养分+孢子）。水被排除是刻意的：水不受吞吐限制。
+     *   ② 必须先跑够帧数让货流收敛。只跑 4 帧时 prod 还只有 0.005 量级，
+     *      噪声比信号大，比值会完全不可信（实测得到 1.818 这种假值）。 */
+    var nd = st.nodes[S.trunkId];
+    st.res.water = 1e9; st.res.nutrient = 1e9;
+    var settle = function () {
+      for (var k = 0; k < 20; k++) { st.res.water = 1e9; st.res.nutrient = 1e9; Sim.tick(st, 0.25); }
+    };
+    var goods = function (n) { return (n.prod.nutrient || 0) + (n.prod.spore || 0); };
+
+    if (nd.trunk) Sim.toggleTrunk(st, nd.id);    // 确保从未标记状态开始
+    settle();
+    var before = goods(nd);
+    Sim.toggleTrunk(st, nd.id);
+    settle();
+    var after = goods(nd);
+    S.yieldRatio = before > 0 ? after / before : null;
+    ok('主干节点自身产出被下调（改造的代价）',
+       before > 0.01 && S.yieldRatio !== null && S.yieldRatio < 0.9,
+       before.toFixed(4) + ' → ' + after.toFixed(4) +
+       (S.yieldRatio !== null ? ('（×' + S.yieldRatio.toFixed(3) + '，配置 ×' + C.TRUNK.trunkYieldMul + '）') : ''));
+
+    Sim.toggleTrunk(st, nd.id);                  // 复原，别影响后面的测试
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
+
+    /* 汇流：找一个普通节点标上，紧贴它的邻居吞吐要吃到加成 */
+    var hub = null;
+    for (var i = 1; i < st.nodes.length; i++) {
+      var n = st.nodes[i];
+      if (n.trunk || n.confluence || n.id === 0) continue;
+      // 要求它至少有一个「非主干」邻居，才能验证邻接加成
+      var nb = [[n.x-1,n.y],[n.x+1,n.y],[n.x,n.y-1],[n.x,n.y+1]];
+      var feeder = null;
+      for (var k = 0; k < nb.length; k++) {
+        var fid = st.nodeAt[Sim.idx(nb[k][0], nb[k][1])];
+        if (fid == null) continue;
+        if (!st.nodes[fid].trunk && !st.nodes[fid].confluence) { feeder = st.nodes[fid]; break; }
+      }
+      if (feeder) { hub = n; S.feederId = feeder.id; break; }
+    }
+    if (!hub) { R.push('  SKIP 汇流：没找到带普通邻居的可标节点'); return; }
+
+    var hubCapBefore = hub.capacity;
+    var feederCapBefore = st.nodes[S.feederId].capacity;
+    var r = Sim.toggleConfluence(st, hub.id);
+    ok('可以标汇流', r.ok === true, r.ok ? ('剩余 ' + r.free + ' 格') : r.reason);
+    ok('汇流抬高了自己的吞吐', hub.capacity > hubCapBefore,
+       hubCapBefore.toFixed(0) + ' → ' + hub.capacity.toFixed(0));
+    ok('紧贴汇流的支流吞吐也提高',
+       st.nodes[S.feederId].capacity > feederCapBefore,
+       feederCapBefore.toFixed(0) + ' → ' + st.nodes[S.feederId].capacity.toFixed(0));
+    ok('adjacentConfluence 的判定与实际加成一致',
+       Sim.adjacentConfluence(st, st.nodes[S.feederId]) === true, '应为 true');
+    ok('feederCount 能数出贴着的支流',
+       Sim.feederCount(st, hub) >= 1, '贴邻支流 ' + Sim.feederCount(st, hub) + ' 根');
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim;
+    /* 存档往返：主干/汇流标记必须存活 —— 否则读档后玩家的结构决策全丢 */
+    var tBefore = Sim.trunkCount(st), cBefore = Sim.confluenceCount(st);
+    var coreBefore = st.nodes[0].capacity;
+    var json = Sim.serialize(st);
+    var st2 = Sim.deserialize(json);
+    ok('存档保留主干标记', Sim.trunkCount(st2) === tBefore,
+       '存档前 ' + tBefore + ' → 读档后 ' + Sim.trunkCount(st2));
+    ok('存档保留汇流标记', Sim.confluenceCount(st2) === cBefore,
+       '存档前 ' + cBefore + ' → 读档后 ' + Sim.confluenceCount(st2));
+    ok('读档后核心扩容仍然生效', st2.nodes[0].capacity === coreBefore,
+       coreBefore.toFixed(0) + ' → ' + st2.nodes[0].capacity.toFixed(0));
+
+    /* 旧存档兼容：把第 6/7 位切掉，模拟 v3 之前的存档 */
+    var old = JSON.parse(json);
+    old.nodes = old.nodes.map(function (n) { return n.slice(0, 5); });
+    var okOld = true, st3 = null;
+    try { st3 = Sim.deserialize(JSON.stringify(old)); } catch (e) { okOld = false; }
+    ok('旧存档（无主干字段）仍能载入', okOld && st3 && st3.nodes.length === st.nodes.length,
+       okOld ? ('载入 ' + (st3 ? st3.nodes.length : 0) + ' 格，主干 ' + Sim.trunkCount(st3) + ' 格') : '抛异常');
+  });
+
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
+    /* 面板：配额读数必须与真实计数一致（玩家唯一能信任的数字） */
+    var el = document.getElementById('trunkCount');
+    if (!el) { R.push('  SKIP 结构面板：找不到 #trunkCount'); return; }
+    /* update() 有 10Hz 节流（acc < 0.1 直接 return），所以必须给够 dt 或置 dirty，
+     * 否则面板根本不会重算 —— 用 0.001 秒调用会读到一个过期值。 */
+    window.MYC.game.dirty = true;
+    window.MYC.game.ui.update(0.2, window.MYC.game);
+    var txt = el.textContent || '';
+    ok('面板显示主干配额', txt.indexOf(String(C.TRUNK.maxTrunk)) >= 0, txt);
+    ok('面板读数与真实计数一致',
+       txt.indexOf(Sim.trunkCount(st) + '/' + C.TRUNK.maxTrunk) >= 0,
+       'UI「' + txt + '」实际 ' + Sim.trunkCount(st) + '/' + C.TRUNK.maxTrunk);
+    ok('面板显示汇流配额与真实计数一致',
+       txt.indexOf(Sim.confluenceCount(st) + '/' + C.TRUNK.maxConfluence) >= 0,
+       'UI「' + txt + '」实际 ' + Sim.confluenceCount(st) + '/' + C.TRUNK.maxConfluence);
+    var btn = document.getElementById('structTrunk');
+    ok('结构模式按钮存在', !!btn, btn ? btn.textContent : 'missing');
+    var btnDig = document.getElementById('structDig');
+    ok('拆除模式按钮存在', !!btnDig, btnDig ? btnDig.textContent : 'missing');
+  });
+
+  /* ---- 树木（生态节点）---------------------------------------------------
+   * 四组要守的性质：
+   *   ① 档位阈值（幼苗/成年/古树）与产出倍率必须单调 —— 成长才有意义
+   *   ② 古树要给周围加成，且**不吃自己的**（不叠加的一致性）
+   *   ③ 围拢必须真的压住成长，且能退化到底（唯一的负反馈，不能失效）
+   *   ④ 拆除节点后 id 必须重排（removeNode 是唯一缩短数组的操作）
+   */
+  step(function () {
+    var Sim = S.Sim, C = window.MYC.CONFIG, T = C.TREE;
+    ok('档位阈值先验', T.stageAt.length === 3 && T.stageAt[0] === 0,
+       JSON.stringify(T.stageAt));
+    ok('产出倍率随档位递增', T.yieldMul[0] < T.yieldMul[1] && T.yieldMul[1] < T.yieldMul[2],
+       JSON.stringify(T.yieldMul));
+    /* 阈值边界必须精确 —— 它在探针里被验证过，这里守回归 */
+    ok('成长度 0 → 幼苗', Sim.treeStageOf(0) === 0, String(Sim.treeStageOf(0)));
+    ok('成长度 59.9 → 仍是幼苗', Sim.treeStageOf(T.stageAt[1] - 0.1) === 0,
+       String(Sim.treeStageOf(T.stageAt[1] - 0.1)));
+    ok('成长度 60 → 成年', Sim.treeStageOf(T.stageAt[1]) === 1, String(Sim.treeStageOf(T.stageAt[1])));
+    ok('成长度 180 → 古树', Sim.treeStageOf(T.stageAt[2]) === 2, String(Sim.treeStageOf(T.stageAt[2])));
+    ok('成长度超大仍封顶在古树', Sim.treeStageOf(1e9) === 2, String(Sim.treeStageOf(1e9)));
+    ok('档位名与档位对齐', Sim.treeStageNameOf(0) === '幼苗' &&
+       Sim.treeStageNameOf(1) === '成年' && Sim.treeStageNameOf(2) === '古树',
+       Sim.treeStageNameOf(0) + '/' + Sim.treeStageNameOf(1) + '/' + Sim.treeStageNameOf(2));
+  });
+
+  /* 树的生命周期：种下 → 长大 → 古树 → 吃光环 → 被围死 → 拆除。
+   * 这一整段用真实网络（前几步铺好的）跑，不再造小人造局面。 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG, T = C.TREE;
+    /* 找一块「已探明但还没接入」的树根候选；
+     * 没有就现造一块：把某个候选格改成 root 再种（生成器不能保证位置）。 */
+    var cands = Sim.candidates(st);
+    var rc = null;
+    for (var i = 0; i < cands.length; i++) if (cands[i].soil === 'root') { rc = cands[i]; break; }
+    if (!rc) {
+      for (var j = 0; j < cands.length; j++) {
+        var gi = Sim.idx(cands[j].x, cands[j].y);
+        if (st.grid[gi].solid) continue;
+        st.grid[gi].soil = 'root';
+        cands = Sim.candidates(st);          // 候选表的 soil 字段已缓存，重取一次
+        rc = Sim.canGrowAt(st, cands[j].x, cands[j].y);
+        break;
+      }
+    }
+    if (!rc) { R.push('  SKIP 树木：网络边缘没有可种植的树根候选'); return; }
+    S.treeSpot = { x: rc.x, y: rc.y };
+
+    st.res.water = Math.max(st.res.water, 1e6);
+    var g = Sim.growAt(st, rc.x, rc.y);
+    ok('可以在树根格上种树', g.ok === true, g.ok ? ('花费 ' + g.cost) : g.reason);
+    S.treeId = st.nodeAt[Sim.idx(rc.x, rc.y)];
+    var tn = st.nodes[S.treeId];
+    ok('种下即为树', Sim.isTree(tn) === true, tn ? tn.soil : 'null');
+    ok('新种的树立即是幼苗档（不会误推档位浮动数字）', tn.treeStage === 0, String(tn.treeStage));
+    ok('非树节点的 treeStateOf 为 null', Sim.treeStateOf(st, st.nodes[0]) === null,
+       String(Sim.treeStateOf(st, st.nodes[0])));
+  });
+
+  /* 无干扰成长 → 古树。刻意先把树周围清空：
+   * 围拢压制是**故意**的，测成长就得排除它，否则测的是「玩家添乱时长不动」。 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG, T = C.TREE;
+    if (S.treeId == null) return;
+    var spot = S.treeSpot;
+
+    function treeHere() {
+      var id = st.nodeAt[Sim.idx(spot.x, spot.y)];
+      return id == null ? null : st.nodes[id];
+    }
+    /* 只留一条通路：拔掉 2 格环内除「dist 最小邻居」以外的节点。
+     *
+     * 踩过的坑：第一版把「dist 最小的邻居」当必经之路留下，但那个邻居
+     * 自己也可能是**从树这边才连上的**（树→A→B，A 的 dist 比 B 小是
+     * 因为 BFS 从树走过去），于是拔着拔着就把整条路拔断了，
+     * 树的 dist 变成 -1（脱离网络），growTrees 直接跳过它 ——
+     * 表现是「树永远不长大」，看起来像成长逻辑坏了，实际是测试自己把树拔断了。
+     * 现在每拔一轮都检查树的 dist，一旦 <0 就立刻停手。 */
+    function treeDist() {
+      var id = st.nodeAt[Sim.idx(spot.x, spot.y)];
+      return id == null ? -99 : st.nodes[id].dist;
+    }
+    function thin(rounds) {
+      var removed = 0;
+      for (var r = 0; r < rounds; r++) {
+        var t = treeHere();
+        if (!t || t.dist < 0) break;
+        /* 候选 = 2 格环内的普通节点。逐个试拔：拔完树的 dist 还 >= 0 才留下这次操作，
+         * 否则立刻把刚才那一格长回去（用 growAt 恢复原土壤不够精确，
+         * 所以改成「先记下、确认安全再真拔」的两段式）。 */
+        var victim = null;
+        for (var dy2 = -T.ringRadius; dy2 <= T.ringRadius && victim === null; dy2++) {
+          for (var dx2 = -T.ringRadius; dx2 <= T.ringRadius && victim === null; dx2++) {
+            if (!dx2 && !dy2) continue;
+            if (Math.abs(dx2) + Math.abs(dy2) > T.ringRadius + 1) continue;
+            var px = t.x + dx2, py = t.y + dy2;
+            if (px < 0 || py < 0 || px >= st.mapW || py >= st.mapH) continue;
+            var id2 = st.nodeAt[Sim.idx(px, py)];
+            if (id2 == null) continue;
+            var nd2 = st.nodes[id2];
+            if (Sim.isTree(nd2) || nd2.dist === 0 || nd2.trunk || nd2.confluence) continue;
+            /* 保留「离核最近的那个邻居」—— 它是树接回核心的主路 */
+            var isGate = true;
+            for (var gy = -1; gy <= 1; gy++) for (var gx = -1; gx <= 1; gx++) {
+              if (!gx && !gy) continue;
+              var qx = t.x + gx, qy = t.y + gy;
+              if (qx < 0 || qy < 0 || qx >= st.mapW || qy >= st.mapH) continue;
+              var qid = st.nodeAt[Sim.idx(qx, qy)];
+              if (qid == null) continue;
+              var qn = st.nodes[qid];
+              if (Sim.isTree(qn)) continue;
+              if (qn !== nd2 && qn.dist < nd2.dist) { isGate = false; break; }
+            }
+            if (isGate) continue;
+            victim = nd2;
+          }
+        }
+        if (!victim) break;
+        var vx = victim.x, vy = victim.y;
+        var res = Sim.removeNode(st, victim.id);
+        if (!res.ok) break;
+        if (treeDist() < 0) {
+          /* 拔断了 —— 长回去。土壤类型不变（removeNode 不动 grid.soil），
+           * 所以重新 growAt 同一格能完整恢复。 */
+          st.res.water = Math.max(st.res.water, 1e6);
+          var back = Sim.growAt(st, vx, vy);
+          if (!back.ok) break;
+          break;                      // 这一格是必经之路，别再往下拔了
+        }
+        removed++;
+      }
+      return removed;
+    }
+    S.treeThinned = thin(60);
+    var t0 = treeHere();
+    if (!t0) { R.push('  SKIP 树木成长：清空过程中把树也弄丢了'); S.treeId = null; return; }
+    var ts0 = Sim.treeStateOf(st, t0);
+    ok('清空后树不再被压住', ts0.stalled === false,
+       'crowd=' + ts0.crowd + ' cap=' + ts0.softCap + ' rate=' + ts0.rate.toFixed(2));
+    /* 树必须在网络里才会成长（growTrees 会跳过 dist<0）。
+     * 这一步的 thin() 有可能把树唯一的通路也拔掉 —— 那就写成一条断言，
+     * 而不是让后面的成长断言静默失败（那样看起来像「树不长」）。 */
+    ok('清空后树仍接入网络', t0.dist >= 0, 'dist=' + t0.dist);
+
+    /* 纯等 200 秒（1 秒一步，别用 5 秒 —— 大步长会让档位跳变难以定位） */
+    var stages = [];
+    var last = t0.treeStage;
+    for (var s = 0; s < 200; s++) {
+      Sim.tick(st, 1);
+      var tc = treeHere();
+      if (!tc) break;
+      if (tc.treeStage !== last) { stages.push(tc.treeStage); last = tc.treeStage; }
+    }
+    var tf = treeHere();
+    ok('无干扰下能长到古树', tf && tf.treeStage === 2,
+       tf ? ('成长 ' + tf.tree.toFixed(1) + ' 档位 ' + tf.treeStage +
+             ' crowd=' + Sim.treeCrowd(st, tf)) : '树不见了');
+    ok('升档过程是逐级的（幼苗→成年→古树）',
+       stages.length === 2 && stages[0] === 1 && stages[1] === 2,
+       '经历档位 ' + JSON.stringify(stages));
+    var tsf = Sim.treeStateOf(st, tf);
+    ok('古树自身产出倍率 = 配置值',
+       Math.abs(tsf.yieldMul - T.yieldMul[2]) < 1e-9, String(tsf.yieldMul));
+    ok('古树标为已长成', tsf.maxed === true, 'progress=' + tsf.progress.toFixed(2));
+    S.treeRef = { x: tf.x, y: tf.y };      // 只记坐标：removeNode 会重排 id
+  });
+
+  /* 古树光环：给邻居加成、不给自己、不叠加 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG, T = C.TREE;
+    var t = S.treeRef;
+    if (!t) return;
+    /* 树的对象引用可能因为中间没动过而仍有效，稳妥起见按坐标取 */
+    var tid = st.nodeAt[Sim.idx(t.x, t.y)];
+    if (tid == null) { R.push('  SKIP 光环：树不见了'); return; }
+    var tree = st.nodes[tid];
+    var ts = Sim.treeStateOf(st, tree);
+    if (ts.stage < 2) { R.push('  SKIP 光环：树没长到古树（stage=' + ts.stage + '）'); return; }
+
+    ok('古树自己不吃自己的光环', Sim.underOldTreeAura(st, tree) === false,
+       'isTree=' + Sim.isTree(tree));
+
+    /* 找一个普通邻居。没有就在紧邻格补一个（相邻才受光环）。 */
+    var nb = null, dirs = [[1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]];
+    for (var i = 0; i < dirs.length && !nb; i++) {
+      var x = tree.x + dirs[i][0], y = tree.y + dirs[i][1];
+      if (x < 0 || y < 0 || x >= st.mapW || y >= st.mapH) continue;
+      var id = st.nodeAt[Sim.idx(x, y)];
+      if (id == null) continue;
+      if (Sim.isTree(st.nodes[id])) continue;
+      nb = st.nodes[id];
+    }
+    if (!nb) {
+      for (var j = 0; j < dirs.length && !nb; j++) {
+        var x2 = tree.x + dirs[j][0], y2 = tree.y + dirs[j][1];
+        if (x2 < 0 || y2 < 0 || x2 >= st.mapW || y2 >= st.mapH) continue;
+        var c2 = Sim.canGrowAt(st, x2, y2);
+        if (!c2) continue;
+        st.res.water = Math.max(st.res.water, 1e6);
+        if (Sim.growAt(st, x2, y2).ok) nb = st.nodes[st.nodeAt[Sim.idx(x2, y2)]];
+      }
+    }
+    if (!nb) { R.push('  SKIP 光环：古树周围找不到可用的普通菌丝'); return; }
+
+    ok('紧贴古树的菌丝受光环笼罩', Sim.underOldTreeAura(st, nb) === true,
+       '邻居 (' + nb.x + ',' + nb.y + ') soil=' + nb.soil);
+    /* 光环是范围性的：2 格内不吃、2 格外不吃。用一个界外格反向验证。
+     * （范围外的判定要挑一个真实不靠近任何古树的位置，所以用「距离」而不是硬坐标。） */
+    ok('光环倍率取自配置', T.auraYieldMul > 1, String(T.auraYieldMul));
+    ok('光环不叠加（配置口径）', T.auraStack === false, String(T.auraStack));
+    S.auraNode = { x: nb.x, y: nb.y };
+  });
+
+  /* 围拢压制：塞满树周围 → stalled → 退化到底 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG, T = C.TREE;
+    var t = S.treeRef;
+    if (!t) return;
+
+    /* 把整个网络铺密（这正是真实玩家的「铺满」行为），
+     * 然后在**铺密之后**挑一棵真的能被围到 stall 线以上的树当受试者。
+     *
+     * 这一步的构造方式改过三次，每次都是实测打回来的：
+     *  ① 只填树的 2 格环 → 环上的格子未必接得上网络（growAt 要求相邻），
+     *     而且上一步「无干扰成长」为了排除干扰**故意把树周围清空过**
+     *     （只剩 crowd=10），只填环最多到 13~18。
+     *  ② 改成「整网铺密」后仍失败：受试的那棵树被岩石/邻树卡住，
+     *     密铺 653 格也只到 crowd=18，而 stall 线是 19 —— 退不掉。
+     *     这不是数值 bug，是**地形**：实测有 ~9% 的树周围站不到 18 格。
+     *  ③ 现在：先铺密，再**按「谁被围得最狠」挑树**，保证受试者真的能越过 stall 线。
+     *     这才是「围满会退化」这句话的正确实验条件。 */
+    var densifyGuard = 0;
+    st.res.water = Math.max(st.res.water, 1e6);
+    while (densifyGuard++ < 20000) {
+      if (st.nodes.length > 1400) break;      // 安全阀
+      var bc = Sim.bestCandidate(st);
+      if (!bc) break;
+      st.res.water = Math.max(st.res.water, 1e6);
+      if (!Sim.growAt(st, bc.x, bc.y).ok) break;
+    }
+
+    /* 挑「现在 crowd 最大」的树当受试者 —— 它是这张图上最可能被围穿的。
+     * 换掉 S.treeRef 之后，下面所有断言都换成这棵树。 */
+    var bestTree = null, bestCrowd = -1;
+    for (var i = 1; i < st.nodes.length; i++) {
+      var nd = st.nodes[i];
+      if (!Sim.isTree(nd)) continue;
+      var c = Sim.treeCrowd(st, nd);
+      if (c > bestCrowd) { bestCrowd = c; bestTree = nd; }
+    }
+    if (!bestTree) { R.push('  SKIP 围拢：这局没有树'); return; }
+    var spot = { x: bestTree.x, y: bestTree.y };
+    S.treeRef = bestTree;
+
+    var filled = st.nodes.length;
+    var tree = st.nodes[st.nodeAt[Sim.idx(spot.x, spot.y)]];
+    if (!tree) { R.push('  SKIP 围拢：树不见了'); return; }
+    var ts = Sim.treeStateOf(st, tree);
+    ok('围拢后确实超标', ts.crowd > ts.softCap,
+       'crowd=' + ts.crowd + ' cap=' + ts.softCap + '（整图密铺，共 ' + filled + ' 格）');
+    ok('围拢后被标为压住', ts.stalled === true, 'rate=' + ts.rate.toFixed(2));
+    ok('围拢把成长率压低了', ts.rate < 1,
+       '围拢 rate=' + ts.rate.toFixed(3) + ' vs 不围 rate=1');
+
+    /* 关键不变量：stall 线必须**对绝大多数树都可达**。
+     *
+     * 这条断言重写过两次，两次都是因为「阈值定得漂亮但个体够不到」。
+     *
+     * 实测两份分布（都记在 config.js 的 TREE 注释里）：
+     *   ① 正常铺开（560 棵树）：p25=17 / p50=19 / max=20
+     *   ② 密铺到极限（140 棵树）：p25=17 / p50=19 / max=20
+     *      直方图 {..,16:4, 17:25, 18:12, 19:16, 20:69}
+     *      —— **约 9% 的树被岩石/邻树卡在 17 以下**，这是关键：
+     *      阈值必须 ≤ 这个下沿，否则那些树永远到不了 stall 线、永远不退化，
+     *      「围满会退」这条规则对它们整条失效（实测踩过：stall=19 时，
+     *      测试用的那棵树密铺到 653 格也只能到 crowd=18，退不掉）。
+     *
+     * 所以守三条：
+     *   ① 上界：stallAt ≤ ringMax（超了永远不触发，踩过 penalty=0.12 → 需 21.3）
+     *   ② 可达性：stallAt ≤ CROWD_REACH（密铺实测的 p25，即「被卡住的树」的上沿）
+     *   ③ 有坡度：softCap < stallAt（否则「减速」这一段消失，直接跳变） */
+    var ringMax = 0;
+    for (var ry = -T.ringRadius; ry <= T.ringRadius; ry++) {
+      for (var rx = -T.ringRadius; rx <= T.ringRadius; rx++) {
+        if (!rx && !ry) continue;
+        if (Math.abs(rx) + Math.abs(ry) > T.ringRadius + 1) continue;
+        ringMax++;
+      }
+    }
+    /* 密铺到极限时，被地形卡住的树的上沿（实测 p25 = 17）。
+     * 注意这里守的是「**绝大多数**树可达」，不是「每一棵」——
+     * 实测有 ~9% 的树周围被岩石/邻树占到只剩 17 格，它们达不到 18。
+     * 这是地形造成的，不是数值 bug；把它显式记下来，
+     * 而不是为了凑「100% 可达」把 stall 线压到让正常树也全部废掉。 */
+    var CROWD_REACH = 17;
+    var CROWD_IMMUNE_PCT = 10;    // 允许 ≤10% 的树因地形够不到 stall 线
+    var stallAt = T.crowdSoftCap + 1 / T.crowdPenalty;
+    ok('stall 线不高于邻域几何上限',
+       stallAt <= ringMax,
+       'stall 需要 crowd=' + stallAt.toFixed(1) + '，邻域最大 ' + ringMax);
+    ok('stall 线对绝大多数树可达（地形卡住的 ≤' + CROWD_IMMUNE_PCT + '% 除外）',
+       stallAt <= CROWD_REACH + 1,
+       'stall=' + stallAt.toFixed(1) + '，密铺实测被卡住的树上沿=' + CROWD_REACH +
+       ' —— 高太多的话，被卡住的树会整条免疫「围拢退化」');
+    ok('softCap 与 stall 线之间有坡度（否则只剩「满速/停住」两极）',
+       T.crowdSoftCap < stallAt,
+       'softCap=' + T.crowdSoftCap + ' vs stall=' + stallAt.toFixed(1));
+
+    /* 到这一步 crowd 已经越过 softCap（由上面的密铺保证），
+     * 所以不用再重复构造局面 —— 只把「可达性」这条不变量留下来。
+     *
+     * 什么叫可达：stall 线必须落在地图真能站到的密度里。
+     * 理论邻域 20 格，但真实地图上树周围常有岩石/别的树，站不满。
+     * 实测（见 config.js TREE 注释，140 棵树密铺）：p25=17 / p50=19 / max=20。
+     * 上面三条 softCap / stall 的区间断言就是在守这件事，这里不再重复。 */
+    var tree2 = st.nodes[st.nodeAt[Sim.idx(spot.x, spot.y)]];
+    if (!tree2) { R.push('  SKIP 围拢：树不见了'); return; }
+    var ts2 = Sim.treeStateOf(st, tree2);
+    ok('围拢到 stall 线以上（或顶到地图上限）',
+       ts2.crowd > stallAt || ts2.crowd >= ringMax - 1,
+       'crowd=' + ts2.crowd + '（stall 线 ' + stallAt.toFixed(1) +
+       '，邻域最大 ' + ringMax + '，整图 ' + filled + ' 格）');
+    /* 关键：只要越过 stall 线，成长率就必须为负 —— 这是「围满会退化」的核心。 */
+    ok('越过 stall 线后成长率为负', ts2.crowd <= stallAt || ts2.rate < 0,
+       'rate=' + ts2.rate.toFixed(3) + '（crowd=' + ts2.crowd +
+       '，stall 线 ' + stallAt.toFixed(1) + '）');
+
+    /* 从**古树**开始倒退，才能验证「退化到底」而不只是「没长上去」。
+     * 受试者是密铺后新挑的树，它自己未必长到过 180（它一直被压着），
+     * 所以这里显式把它推到古树档 —— 我们验的是「倒退逻辑」，
+     * 不是「它以前长到过多少」。 */
+    tree2.tree = T.stageAt[T.stageAt.length - 1];
+    tree2.treeStage = Sim.treeStageOf(tree2.tree);
+    var startGrowth = tree2.tree;
+    ok('倒退起点是古树档', tree2.treeStage === 2,
+       'growth=' + startGrowth.toFixed(1) + ' stage=' + tree2.treeStage);
+
+    /* 要跑多久？算出来，别猜。
+     * 退速 = max(-rate, decayPerSec)，这里 -rate = 0.25 = decayPerSec，
+     * 所以是 0.25/秒 —— 从 180 退到 0 需要 720 秒。
+     * 踩过：第一版写死 400 秒，跑到 80 就停了，断言失败说「没归零」，
+     * 看起来像倒退逻辑坏了，实际只是预算不够（差的正是那 320 秒）。
+     * 现在按配置反算，并在预算不足时明确报出来。 */
+    var backRate = Math.max(-ts2.rate, T.decayPerSec);
+    var needSec = Math.ceil(startGrowth / backRate) + 5;
+    var cap = 2000;                                 // 安全上限，防死循环
+    var budget = Math.min(needSec, cap);
+
+    var guard = 0;
+    while (guard++ < budget) {
+      Sim.tick(st, 1);
+      var tc = st.nodes[st.nodeAt[Sim.idx(spot.x, spot.y)]];
+      if (!tc) break;
+      if (tc.tree <= 0) break;
+    }
+    var tz = st.nodes[st.nodeAt[Sim.idx(spot.x, spot.y)]];
+    ok('围拢会把树一路压回幼苗（成长归零）', tz && tz.tree === 0,
+       tz ? ('成长 ' + startGrowth.toFixed(1) + ' → ' + tz.tree.toFixed(2) +
+             '（实退 ' + (startGrowth - tz.tree).toFixed(1) +
+             '，预算 ' + budget + 's / 需 ' + needSec + 's @ ' + backRate.toFixed(3) + '/s）')
+          : '树不见了');
+    ok('归零后档位回到幼苗', tz && tz.treeStage === 0, tz ? String(tz.treeStage) : 'n/a');
+    ok('成长度不会是负数', tz && tz.tree >= 0, tz ? String(tz.tree) : 'n/a');
+  });
+
+  /* 拆除节点：id 重排、反查表一致、核心不可拆 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim;
+    var okCore = Sim.removeNode(st, 0);
+    ok('核心不可拆除', okCore.ok === false, okCore.reason);
+
+    /* 找一个可拆的普通节点（避开树，后面转向生还要用；也避开主干/汇流） */
+    var target = null;
+    for (var i = 1; i < st.nodes.length; i++) {
+      var nd = st.nodes[i];
+      if (nd.trunk || nd.confluence) continue;
+      if (Sim.isTree(nd)) continue;
+      target = nd; break;
+    }
+    if (!target) { R.push('  SKIP 拆除：没有可拆的普通节点'); return; }
+    var before = st.nodes.length;
+    var tx = target.x, ty = target.y;
+    var r = Sim.removeNode(st, target.id);
+    ok('可以拆除普通节点', r.ok === true, r.ok ? ('拆了 (' + r.x + ',' + r.y + ')') : r.reason);
+    ok('拆除后节点数 -1', st.nodes.length === before - 1,
+       before + ' → ' + st.nodes.length);
+    ok('拆掉的格子反查表已清空', st.nodeAt[Sim.idx(tx, ty)] == null,
+       'nodeAt=' + st.nodeAt[Sim.idx(tx, ty)]);
+    ok('拆掉的格子 grid 引用已清空', st.grid[Sim.idx(tx, ty)].node == null,
+       'grid.node=' + st.grid[Sim.idx(tx, ty)].node);
+
+    /* id === 下标 是这个引擎的核心不变量，拆完必须整体重排 */
+    var bad = 0;
+    for (var j = 0; j < st.nodes.length; j++) {
+      var n = st.nodes[j];
+      if (n.id !== j) bad++;
+      if (st.nodeAt[Sim.idx(n.x, n.y)] !== j) bad++;
+      if (st.grid[Sim.idx(n.x, n.y)].node !== j) bad++;
+    }
+    ok('拆除后 id 与两张反查表全部重排一致', bad === 0, '不一致 ' + bad + ' 处');
+    ok('拆除后网络仍是连通的（核心 dist=0 且无孤立节点）',
+       (function () {
+         for (var k = 0; k < st.nodes.length; k++) if (st.nodes[k].dist < 0) return false;
+         return st.nodes[0].dist === 0;
+       })(), '孤立节点数 ' + st.nodes.filter(function (n) { return n.dist < 0; }).length);
+  });
+
+  /* 树木的存档往返与面板读数 */
+  step(function () {
+    var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
+    /* 直接拿树来做存档测试 —— 前面几步已经种出了树，不需要再挑候选格。
+     * 踩过：第一版自己挑候选格并把 soil 改成 'root'，
+     * 但 candidates() 的候选表是**按帧缓存**的（state._cands），
+     * 改了 grid 之后没清缓存，growAt 拿到的还是旧 soil，种出来是 vein ——
+     * 于是「读档后仍被识别为树」失败在 'vein' 上，看起来像序列化丢了字段，
+     * 实际是测试自己种错了。现在改为：只给已存在的树赋成长度。 */
+    var trees = [];
+    for (var i = 1; i < st.nodes.length; i++) if (Sim.isTree(st.nodes[i])) trees.push(st.nodes[i]);
+    if (!trees.length) { R.push('  SKIP 树木存档：当前没有树'); return; }
+    var t = trees[0];
+    var tx = t.x, ty = t.y;
+
+    /* 直接给成长度 —— 等 90 秒太慢，这里测的是序列化不是成长曲线 */
+    t.tree = 90; t.treeStage = Sim.treeStageOf(90);
+    ok('构造出的树在成年档', t.treeStage === 1, 'growth=90 stage=' + t.treeStage);
+
+    var json = Sim.serialize(st);
+    var st2 = Sim.deserialize(json);
+    var id2 = st2.nodeAt[Sim.idx(tx, ty)];
+    var t2 = id2 == null ? null : st2.nodes[id2];
+    ok('存档保留了树木成长度', t2 && Math.abs(t2.tree - 90) < 1e-6,
+       t2 ? String(t2.tree) : 'null');
+    ok('读档后 treeStage 由成长度重建一致',
+       t2 && t2.treeStage === Sim.treeStageOf(t2.tree),
+       t2 ? (t2.treeStage + ' vs ' + Sim.treeStageOf(t2.tree)) : 'null');
+    ok('读档后仍被识别为树', t2 && Sim.isTree(t2) === true, t2 ? t2.soil : 'null');
+    ok('读档后的树状态可查（含正确档名）',
+       !!(t2 && Sim.treeStateOf(st2, t2) && Sim.treeStateOf(st2, t2).stageName === '成年'),
+       t2 ? String(Sim.treeStateOf(st2, t2) && Sim.treeStateOf(st2, t2).stageName) : 'null');
+    /* 旧存档（第 8 位缺失）必须兼容 */
+    var raw = JSON.parse(json);
+    raw.nodes.forEach(function (n) { if (n.length > 7) n.length = 7; });
+    var okOld = true, st3 = null;
+    try { st3 = Sim.deserialize(JSON.stringify(raw)); } catch (e) { okOld = false; }
+    ok('旧存档（无树木字段）仍能载入', okOld && !!st3,
+       okOld ? ('载入 ' + (st3 ? st3.nodes.length : 0) + ' 格') : '抛异常');
+
+    /* 面板：树计数必须和真实计数一致 */
+    window.MYC.game.dirty = true;
+    window.MYC.game.ui.update(0.2, window.MYC.game);
+    var el = document.getElementById('treeCount');
+    ok('存在树木面板读数', !!el && (el.textContent || '').length > 0,
+       el ? el.textContent : 'missing');
+    var treeN = 0;
+    for (var k = 1; k < st.nodes.length; k++) if (Sim.isTree(st.nodes[k])) treeN++;
+    ok('面板树数量与真实计数一致',
+       !!el && (el.textContent || '').indexOf(String(treeN)) >= 0,
+       'UI「' + (el ? el.textContent : '') + '」实际 ' + treeN + ' 棵');
+  });
+
   /* ---- 转生换图 ----------------------------------------------------------
    * 必须放在最后：转生会把网络重置成核心一格，后面的测试都依赖大网络。 */
   step(function () {
@@ -1642,18 +3025,17 @@
 
   step(function () {
     var st = window.MYC.game.state, base = window.MYC.CONFIG.GRID;
+    var CC = window.MYC.CONFIG.PRESTIGE_CHOICE;
     if (!S.pr || !S.pr.ok) return;
-    /* 「地图变大」只在还没触到上限时成立。
-     * mapSizeFor 是 min(2, 1 + prestiges*0.12) —— 约 9 次转生后边长就到 2 倍封顶，
-     * 之后地图恒定 68×40。在同一个 localStorage 上重跑自测时，
-     * prestiges 已经攒到上限，这条断言必然失败 —— 那不是回归，是到达了设计封顶。
-     * 所以判据改成「变大 或 已封顶」，两者都算正确。 */
-    var capped = window.MYC.Sim.mapSizeFor(st.prestiges).w ===
-                 window.MYC.Sim.mapSizeFor(st.prestiges + 99).w;
-    ok('转生后地图变大（或已达尺寸上限）',
-       (st.mapW > S.p0.mapW || st.mapH > S.p0.mapH) || capped,
-       S.p0.mapW + '×' + S.p0.mapH + ' → ' + st.mapW + '×' + st.mapH +
-       (capped ? '  [已达上限]' : ''));
+    /* 「扩大地图」现在是转生三选一里的**一张卡**，不再是转生的自动奖励。
+     * 所以这里断言的是「还没选卡之前，地图必须保持原样」——
+     * 上一版这条写的是「转生后地图变大」，选卡制之后它已经不成立了。 */
+    ok('未选「扩大地图」卡前地图不变（地图不再是转生的自动奖励）',
+       st.mapW === S.p0.mapW && st.mapH === S.p0.mapH,
+       S.p0.mapW + '×' + S.p0.mapH + ' → ' + st.mapW + '×' + st.mapH);
+    ok('转生后弹出待选的三张卡',
+       !!st.pendingChoice && st.pendingChoice.cards.length === CC.offerCount,
+       st.pendingChoice ? st.pendingChoice.cards.length + ' 张' : 'null');
     ok('转生后换了种子（新地形）', st.seed !== S.p0.seed,
        'seed ' + S.p0.seed + ' → ' + st.seed);
     ok('新地图的探索记录已清空', st.explored.count < 60,
@@ -1662,10 +3044,14 @@
     ok('转生计数 +1', st.prestiges === S.p0.prestiges + 1,
        S.p0.prestiges + ' → ' + st.prestiges);
 
-    /* 尺寸阶梯：边长 = 基础 × min(2, 1 + 0.12 × 转生次数)，封顶防止经济失控 */
-    var s = Math.min(2, 1 + st.prestiges * 0.12);
-    ok('地图尺寸符合阶梯', st.mapW === Math.round(base.W * s) && st.mapH === Math.round(base.H * s),
-       '期望 ' + Math.round(base.W * s) + '×' + Math.round(base.H * s) +
+    /* 尺寸阶梯：边长 = 基础 × min(2, 1 + 0.12 × 地图档位)。
+     * 驱动量是 mapTier（选了「扩大地图」卡才涨），这条阶梯本身仍然要成立 ——
+     * 它是那张卡「点了真的有用」的依据。 */
+    var s = Math.min(2, 1 + (st.mapTier || 0) * CC.mapStepMul);
+    ok('地图尺寸符合 mapTier 阶梯',
+       st.mapW === Math.round(base.W * s) && st.mapH === Math.round(base.H * s),
+       'mapTier=' + (st.mapTier || 0) +
+       ' 期望 ' + Math.round(base.W * s) + '×' + Math.round(base.H * s) +
        '，实际 ' + st.mapW + '×' + st.mapH);
 
     var sc = window.MYC.game.scene;
@@ -1686,8 +3072,600 @@
     ok('新地图上能继续生长', !!(r && r.ok), r ? ('-' + r.cost + ' 水') : '没有可生长的格');
   });
 
-  /* 主循环断言放在最后：headless 下 rAF 的推进时机不确定，
-   * 用「整场测试期间至少跑过一帧」才是有意义且稳定的判据。 */
+  /* ------------------------------------------------------- 菌株 + 槽位
+   * 这是第 4 步功能的验收：菌株必须**真的改变产出**（不是装饰），
+   * 槽位必须**真的在拦**（不是摆设）。判据取自 headless_sim E 组的结论，
+   * 但这里是单测口径 —— 只验机制是否接线正确，不验平衡数值
+   * （平衡由 headless_sim 的 5 种子对照负责）。 */
+  step(function () {
+    var Sim = S.Sim, C = window.MYC.CONFIG;
+    var st = Sim.newGame(20260920, {}, {}, 0);
+    S.strain = { st: st };
+
+    ok('菌株表有 4 种', C.STRAIN.list.length === 4,
+       C.STRAIN.list.map(function (s) { return s.key; }).join(','));
+    ok('开局菌株未解锁（菌丝不足 40 格）', !Sim.strainsUnlocked(st),
+       '菌丝 ' + st.nodes.length + ' 格，要求 ' + C.STRAIN.unlockNodes);
+    ok('开局槽位 = ' + (C.START.strainSlots || 1), Sim.strainSlots(st) === (C.START.strainSlots || 1),
+       'slots=' + Sim.strainSlots(st));
+    ok('未解锁时装菌株会被拒绝', !Sim.equipStrain(st, 'rapid').ok,
+       Sim.equipStrain(st, 'rapid').reason);
+  });
+
+  step(function () {
+    var Sim = S.Sim;
+    var st = S.strain.st;
+    /* 铺够格数解锁菌株（用 addNode 精确控制，不受地形配额影响） */
+    var W = st.grid ? st.mapW : 0;
+    var made = 0;
+    for (var y = 1; y < st.mapH - 1 && made < 45; y++) {
+      for (var x = 1; x < st.mapW - 1 && made < 45; x++) {
+        if (x === st.core.x && y === st.core.y) continue;
+        if (st.grid[Sim.idx(x, y)].soil === 'rock') continue;
+        Sim.addNode(st, x, y, st.grid[Sim.idx(x, y)].soil);
+        made++;
+      }
+    }
+    Sim.rebuildNetwork(st);
+    S.strain.made = made;
+    ok('铺到 ' + made + ' 格后菌株解锁', Sim.strainsUnlocked(st), '菌丝 ' + st.nodes.length + ' 格');
+  });
+
+  step(function () {
+    var Sim = S.Sim, st = S.strain.st;
+    var r1 = Sim.equipStrain(st, 'rapid');
+    ok('解锁后能装上速生菌株', r1.ok && st.strains.indexOf('rapid') >= 0,
+       JSON.stringify(st.strains));
+    var r2 = Sim.equipStrain(st, 'conduit');
+    ok('只有 1 个槽时第二个菌株被拒绝', !r2.ok, r2.reason);
+    ok('被拒绝后装备列表没变', st.strains.length === 1, JSON.stringify(st.strains));
+  });
+
+  step(function () {
+    var Sim = S.Sim, st = S.strain.st;
+    /* 再点同一个 = 卸下（按钮是 toggle 语义） */
+    var r = Sim.equipStrain(st, 'rapid');
+    ok('再点一次会卸下（toggle 语义）', r.ok && st.strains.indexOf('rapid') < 0,
+       JSON.stringify(st.strains));
+    var r2 = Sim.unequipStrain(st, 'rapid');
+    ok('卸下没装备的菌株会报错', !r2.ok, r2.reason);
+  });
+
+  step(function () {
+    var Sim = S.Sim, st = S.strain.st;
+    /* 乘区是否真的落到了配置里的值上 */
+    Sim.equipStrain(st, 'rapid');
+    var m = Sim.strainMods(st);
+    var cfg = null;
+    window.MYC.CONFIG.STRAIN.list.forEach(function (s) { if (s.key === 'rapid') cfg = s; });
+    ok('速生菌株：生长成本乘区生效', Math.abs(m.growCostMul - cfg.growCostMul) < 1e-9,
+       m.growCostMul + ' vs ' + cfg.growCostMul);
+    ok('速生菌株：距离损耗乘区生效', Math.abs(m.distLossMul - cfg.distLossMul) < 1e-9,
+       m.distLossMul + ' vs ' + cfg.distLossMul);
+    ok('速生菌株：equipped 列表正确', m.equipped.join(',') === 'rapid', m.equipped.join(','));
+  });
+
+  step(function () {
+    var Sim = S.Sim, st = S.strain.st;
+    /* 关键断言：菌株**真的改变产出**（不是只改了个缓存字段）。
+     *
+     * 注意不能用速生菌株来验这条 —— 它的 mul 三项都是 1.0，
+     * 只改「生长成本 / 自动间隔 / 距离损耗」，**本来就不改瞬时产出**。
+     * 第一版就是这么写的，跑出 0.0100 vs 0.0100 的假失败。
+     *
+     * 也不能拿「随便挑 20 格改成 wood」来测：那些格子未必与核心连通，
+     * 不连通的节点产出不计入 rate（第二版就是这么失败的，
+     * 跑出 0.000 vs 0.000）。必须**沿着核心铺一条直线**，
+     * 保证每一个节点都在网络里。 */
+    var st2 = Sim.newGame(20260920, {}, {}, 0);
+    var cx = st2.core.x, cy = st2.core.y;
+    var line = 0;
+    for (var i = 1; i <= 10; i++) {
+      if (cx + i >= st2.mapW - 1) break;
+      Sim.addNode(st2, cx + i, cy, 'wood');
+      line++;
+    }
+    Sim.rebuildNetwork(st2);
+    S.strain.line = line;
+
+    st2.strains = ['saprophyte'];
+    Sim.invalidateStrain(st2);
+    for (var t = 0; t < 400; t++) Sim.tick(st2, 0.25);
+    var withSapro = st2.rate.nutrient;
+
+    st2.strains = [];
+    Sim.invalidateStrain(st2);
+    for (var t2 = 0; t2 < 60; t2++) Sim.tick(st2, 0.25);
+    var noStrain = st2.rate.nutrient;
+
+    S.strain.rates = { withSapro: withSapro, none: noStrain };
+    ok('装上/卸下菌株会改变产出速率（不是装饰）',
+       withSapro > noStrain * 1.2,
+       '核心旁 ' + line + ' 格腐木：腐生菌株 养分 ' + withSapro.toFixed(3) +
+       ' vs 无菌株 ' + noStrain.toFixed(3) +
+       '（理论 ×1.85，实测 ×' + (noStrain > 0 ? (withSapro / noStrain).toFixed(2) : '∞') + '）');
+  });
+
+  step(function () {
+    var Sim = S.Sim, st = S.strain.st;
+    /* m11 达成 → 槽位 +1 → 第二个菌株装得上。
+     * 这里**先显式清空再装**：上一步为了让产出对照干净已经清掉了菌株，
+     * 不清空就断言「能装 2 个」是不成立的（第一版就踩了这个）。 */
+    st.strains = [];
+    Sim.invalidateStrain(st);
+    var before = Sim.strainSlots(st);
+    st.milestones.m11 = true;
+    var after = Sim.strainSlots(st);
+    ok('完成 m11 后槽位 +1', after === before + 1, before + ' → ' + after);
+
+    Sim.equipStrain(st, 'rapid');
+    var r = Sim.equipStrain(st, 'conduit');
+    ok('槽位 +1 后第二个菌株装得上', r.ok && st.strains.length === 2,
+       JSON.stringify(st.strains));
+    /* 两个菌株的乘区应该相乘（共振），不是只取一个 */
+    var m = Sim.strainMods(st);
+    var rapid = null, conduit = null;
+    window.MYC.CONFIG.STRAIN.list.forEach(function (s) {
+      if (s.key === 'rapid') rapid = s;
+      if (s.key === 'conduit') conduit = s;
+    });
+    ok('双菌株的乘区相乘（共振）',
+       Math.abs(m.distLossMul - rapid.distLossMul * conduit.distLossMul) < 1e-9,
+       m.distLossMul.toFixed(4) + ' = ' + rapid.distLossMul + ' × ' + conduit.distLossMul);
+    ok('槽位已达上限 2', Sim.strainSlots(st) === 2, 'slots=' + Sim.strainSlots(st));
+  });
+
+  step(function () {
+    var Sim = S.Sim, st = S.strain.st;
+    /* 存档往返：菌株是 Build 选择，必须跟着存档走 */
+    st.strains = ['conduit', 'saprophyte'];
+    Sim.invalidateStrain(st);
+    var json = Sim.serialize(st);
+    var st2 = Sim.deserialize(json);
+    ok('存档往返后菌株保留', st2.strains.join(',') === 'conduit,saprophyte',
+       JSON.stringify(st2.strains));
+    ok('读档后乘区缓存已失效并重算',
+       Sim.strainMods(st2).equipped.join(',') === 'conduit,saprophyte',
+       JSON.stringify(Sim.strainMods(st2).equipped));
+    /* 旧存档（没有 strains 字段）要能读，且默认无菌株 */
+    var raw = JSON.parse(json);
+    delete raw.strains;
+    var st3 = Sim.deserialize(JSON.stringify(raw));
+    ok('旧存档（无 strains 字段）能读且默认无菌株', st3.strains.length === 0,
+       JSON.stringify(st3.strains));
+    /* 配置里不存在的 key 要被过滤掉，避免读到旧版本的残留 */
+    raw.strains = ['conduit', 'ghost_strain', 'rapid'];
+    var st4 = Sim.deserialize(JSON.stringify(raw));
+    ok('存档里不存在的菌株会被过滤',
+       st4.strains.join(',') === 'conduit,rapid', JSON.stringify(st4.strains));
+  });
+
+  step(function () {
+    var Sim = S.Sim, st = S.strain.st;
+    /* 转生必须保留菌株（它是 Build 选择，跟基因同级） */
+    st.strains = ['saprophyte'];
+    Sim.invalidateStrain(st);
+    st.res.spore = 1e9; st.total.spore = 1e9;
+    var r = Sim.doPrestige(st);
+    ok('转生后菌株保留（Build 选择跨转生）',
+       r.ok && st.strains.join(',') === 'saprophyte',
+       r.ok ? JSON.stringify(st.strains) : r.reason);
+    ok('转生后乘区与菌株一致',
+       Sim.strainMods(st).equipped.join(',') === 'saprophyte',
+       JSON.stringify(Sim.strainMods(st).equipped));
+  });
+
+  step(function () {
+    /* 面板：菌株卡的存在性 + 可见性必须与**真实 game.state** 一致。
+     * 不能用 S.strain.st（那是我为了隔离机制而另建的 state），
+     * 面板渲染的是 game.state —— 第一版混用了两个 state，
+     * 断言「未解锁时隐藏」直接失败（真实那局早就超过 40 格了）。 */
+    var el = document.getElementById('strainCard');
+    var list = document.getElementById('strains');
+    var slotEl = document.getElementById('strainSlots');
+    ok('面板里有菌株卡', !!el, el ? 'ok' : '缺失');
+    ok('面板里有菌株列表容器', !!list, list ? 'ok' : '缺失');
+    ok('面板里有槽位显示', !!slotEl, slotEl ? 'ok' : '缺失');
+
+    var Sim = S.Sim, gs = window.MYC.game.state;
+    var info = Sim.strainInfo(gs);
+    var hidden = el.classList.contains('hidden');
+    ok('菌株卡的可见性与解锁状态一致', hidden === !info.unlocked,
+       '菌丝 ' + gs.nodes.length + ' 格 / 需 ' + info.unlockedAt +
+       ' → unlocked=' + info.unlocked + '，hidden=' + hidden);
+    if (info.unlocked) {
+      ok('菌株列表已渲染出全部菌株',
+         list.children.length === window.MYC.CONFIG.STRAIN.list.length,
+         list.children.length + ' 行');
+      ok('槽位显示文案正确',
+         slotEl.textContent === '槽位 ' + info.equipped.length + '/' + info.slots,
+         slotEl.textContent);
+    }
+  });
+
+  /* ------------------------------------------------------- 离线收益（第 5 步）
+   * 验收判据来自 docs/规划评估.md 第 285~293 行：
+   *   ① 离线单位时间收益必须**明显低于**在线主动操作（否则最优解变成「关掉等」）；
+   *   ② 早期玩家（只有核心、没解锁自动蔓延）离线回来也必须有产出，不能是 0；
+   *   ③ 离线时长要封顶（不然放置一周 = 通关，经济失控）；
+   *   ④ 太短的离开（切个标签页）不该弹结算提示。
+   * 这组只测**折算逻辑本身**，跨口径的产量对比交给 headless_sim 的 F 组。 */
+  step(function () {
+    var Sim = S.Sim, C = window.MYC.CONFIG;
+    var st = Sim.newGame(2026, {}, {}, 0);
+    Sim.computeFlow(st, 0);
+
+    /* ④ 太短的离开不结算 */
+    ok('离开 30 秒不结算（< minSeconds）', Sim.settleOffline(st, 30, { dryRun: true }) === null,
+       '返回 ' + JSON.stringify(Sim.settleOffline(st, 30, { dryRun: true })));
+
+    /* ② 早期下限：只有 1 格核心也必须拿到东西。
+     * 这条很关键 —— 玩家第一次关掉页面再回来，绝不能看到「什么都没发生」。 */
+    var early = Sim.settleOffline(st, 8 * 3600, { dryRun: true });
+    ok('早期玩家离线 8h 有产出（核心渗水兜底）',
+       !!early && early.gained.water > 0,
+       early ? '水 ' + early.gained.water.toFixed(1) + ' 养分 ' + early.gained.nutrient.toFixed(1) +
+               ' 孢子 ' + early.gained.spore.toFixed(1) : 'null');
+
+    /* ③ 封顶：离线 100 小时也只按 capHours 结算 */
+    var long = Sim.settleOffline(st, 100 * 3600, { dryRun: true });
+    var capSec = C.OFFLINE.capHours * 3600;
+    ok('离线时长被封顶到 capHours', Math.abs(long.seconds - capSec) < 1,
+       '离开 100h，实际按 ' + (long.seconds / 3600).toFixed(1) + 'h 结算');
+    ok('封顶标志 capped 正确', long.capped === true, 'capped=' + long.capped);
+
+    /* ① 效率系数必须 < 1，这是「离线不如在线」这个设计承诺的最直接体现 */
+    ok('离线效率系数 < 1（离线天然不如在线）',
+       C.OFFLINE.offlineEff > 0 && C.OFFLINE.offlineEff < 1,
+       'offlineEff=' + C.OFFLINE.offlineEff);
+
+    /* 线性性：同样局面下，离线 8h 的收益应该是 4h 的两倍（按秒折算而非按次） */
+    var q4 = Sim.settleOffline(st, 4 * 3600, { dryRun: true });
+    var q8 = Sim.settleOffline(st, 8 * 3600, { dryRun: true });
+    ok('离线收益与时长成正比（4h × 2 = 8h）',
+       Math.abs(q8.gained.water - q4.gained.water * 2) < 1e-6,
+       '4h ' + q4.gained.water.toFixed(1) + ' → 8h ' + q8.gained.water.toFixed(1));
+
+    /* 自动蔓延**不**在离线期间发生 —— 否则挂机就成了扩张的最优解 */
+    ok('离线期间不会自动蔓延（不 tick 就没有新格子）',
+       C.OFFLINE.allowAutoGrow === false,
+       'allowAutoGrow=' + C.OFFLINE.allowAutoGrow);
+  });
+
+  /* 结算真的会进资源账，而且「结算一次」不会重复叠加。
+   * 这条防的是「刷新页面刷资源」这类漏洞。 */
+  step(function () {
+    var Sim = S.Sim;
+    var st = Sim.newGame(7, {}, {}, 0);
+    Sim.computeFlow(st, 0);
+    var before = st.res.water;
+    var r = Sim.settleOffline(st, 2 * 3600);            // 非 dryRun，真的结算
+    ok('离线结算会把资源计入账', st.res.water > before,
+       before.toFixed(1) + ' → ' + st.res.water.toFixed(1) + '（+' + r.gained.water.toFixed(1) + '）');
+    ok('结算后 state.offline 记录了本次离开',
+       !!st.offline && st.offline.seconds > 0,
+       st.offline ? '秒数 ' + st.offline.seconds : '缺失');
+
+    /* dryRun 是「只看不给」——用于 UI 预览和对照实验，绝不能改账 */
+    var a = st.res.water;
+    Sim.settleOffline(st, 3600, { dryRun: true });
+    ok('dryRun 不会改动 state（只算不入账）', Math.abs(st.res.water - a) < 1e-9,
+       a.toFixed(1) + ' 保持不变');
+  });
+
+  /* 存档时间戳：main.js 在 payload 顶层挂 `_meta.savedAt`，启动时用它算
+   * 「离开了多久」。这条链路任何一环断了，离线收益都会**静默失效**
+   * （没有任何报错，玩家只是永远拿不到离线收益），所以必须有断言盯着。 */
+  step(function () {
+    var Sim = S.Sim, g = window.MYC.game;
+    var st = Sim.newGame(11, {}, {}, 0);
+
+    /* 用 main.js 的 save() 走一遍真实写入路径 —— 才能测到真链路。
+     * 早前这条断言写成「serialize 应该带 _meta」，那是**测错了对象**：
+     * _meta 由 main.js 附加，serialize 只负责游戏状态本身。 */
+    var payload = Sim.serialize(st);
+    ok('serialize 的产物是合法 JSON', typeof payload === 'string' && !!JSON.parse(payload), 'ok');
+    var obj = JSON.parse(payload);
+    ok('serialize 本体不含 _meta（_meta 由 main.js 附加，职责分离）',
+       !obj._meta, obj._meta ? '意外带上了' : 'ok');
+
+    if (g && typeof g.save === 'function') {
+      g.save(true);
+      /* UI 挂在 game.ui 上（main.js 把 UI 模块的引用放在 game 对象里），
+       * 不去 window.MYC.UI 拿 —— 那里没有。 */
+      var KEY = (g.ui && g.ui.KEY) || 'mycelium_save_v1';
+      var raw = localStorage.getItem(KEY);
+      ok('save() 写出的存档存在', !!raw, raw ? raw.length + ' 字符' : '缺失');
+      if (raw) {
+        var saved = JSON.parse(raw);
+        ok('存档顶层带 _meta.savedAt', !!(saved._meta && saved._meta.savedAt),
+           JSON.stringify(saved._meta));
+        /* 由 savedAt 反推离开时长 —— 与 main.js 启动时的算法一致 */
+        var away = (Date.now() - saved._meta.savedAt) / 1000;
+        ok('由 savedAt 能算出离开时长（刚存完应接近 0）', away >= 0 && away < 60,
+           away.toFixed(2) + 's');
+        /* 读到这份存档后能结算 */
+        var snap = Sim.deserialize(raw);
+        var r = Sim.settleOffline(snap, 3 * 3600, { dryRun: true });
+        ok('读到带 _meta 的存档后能结算离线收益', !!r && r.gained.water >= 0,
+           r ? '水 ' + r.gained.water.toFixed(1) : 'null');
+      }
+    } else {
+      ok('game.save() 可用', false, '找不到 save()');
+    }
+
+    /* 旧档（没有 _meta）：读得进来，离线时长按 0 算，不该抛异常 */
+    var legacy = Sim.serialize(Sim.newGame(1, {}, {}, 0));
+    ok('旧档（无 _meta）按「没离开过」处理，不抛异常',
+       (function () { try { Sim.settleOffline(Sim.deserialize(legacy), 0, { dryRun: true }); return true; } catch (e) { return false; } })(),
+       'ok');
+  });
+
+  /* settleOffline 必须能安全处理坏输入，不能把主循环搞崩。
+   * 启动路径上抛异常 = 玩家打不开游戏，这是最严重的一类 bug。 */
+  step(function () {
+    var Sim = S.Sim;
+    var st = Sim.newGame(3, {}, {}, 0);
+    ok('awaySec 为 NaN 时不结算', Sim.settleOffline(st, NaN, { dryRun: true }) === null, 'null');
+    ok('awaySec 为负数时不结算', Sim.settleOffline(st, -100, { dryRun: true }) === null, 'null');
+    ok('awaySec 为 undefined 时不结算', Sim.settleOffline(st, undefined, { dryRun: true }) === null, 'null');
+    ok('坏输入不会污染 state.offline', !st.offline, JSON.stringify(st.offline));
+  });
+
+  /* --------------------------------------------------- 转生抉择（Roguelike）
+   * 「三选一」是个**阻塞式**交互，出错的方式比一般功能更难受：
+   * 卡没弹出 → 玩家卡住；卡能重复选 → 白拿两份；卡丢了 → 奖励蒸发。
+   * 所以这几类都要钉住。 */
+  var CC = window.MYC.CONFIG.PRESTIGE_CHOICE;
+
+  step(function () {
+    /* 地图档位驱动尺寸：这是「扩大地图」这张卡能成立的前提 */
+    var Sim = S.Sim;
+    var m0 = Sim.mapSizeFor(0), m3 = Sim.mapSizeFor(3);
+    ok('地图尺寸由 mapTier 决定（0 档 = 基础尺寸）',
+       m0.w === window.MYC.CONFIG.GRID.W && m0.h === window.MYC.CONFIG.GRID.H,
+       m0.w + 'x' + m0.h);
+    ok('mapTier 越大地图越大', m3.w > m0.w && m3.h > m0.h, m3.w + 'x' + m3.h);
+    ok('地图尺寸有上限（不能无限膨胀）',
+       Sim.mapSizeFor(999).w === Sim.mapSizeFor(CC.mapMaxTier).w,
+       '999 档 = ' + Sim.mapSizeFor(999).w + '，封顶档 = ' + Sim.mapSizeFor(CC.mapMaxTier).w);
+  });
+
+  step(function () {
+    /* 卡池形状：数量固定、类别有货就给席位 */
+    var Sim = S.Sim;
+    var s = Sim.newGame(4242, {}, {}, 0);
+    var cards = Sim.rollChoices(s, 50);
+    ok('三选一恰好给 offerCount 张', cards.length === CC.offerCount,
+       cards.length + ' 张：' + cards.map(function (c) { return c.type; }).join(','));
+    var types = {};
+    cards.forEach(function (c) { types[c.type] = true; });
+    ok('开局三类卡都有（菌株/地图/点数）',
+       types.strain && types.map && types.genes,
+       Object.keys(types).join(','));
+    ok('每张卡都有 key（点击要靠它定位）',
+       cards.every(function (c) { return !!c.key; }), '');
+    ok('卡片 key 不重复', new Set(cards.map(function (c) { return c.key; })).size === cards.length,
+       cards.map(function (c) { return c.key; }).join(','));
+  });
+
+  step(function () {
+    /* 已拥有的菌株不该再出现在卡池里（否则是废卡） */
+    var Sim = S.Sim;
+    var s = Sim.newGame(4242, {}, {}, 0);
+    s.strains = ['rapid'];
+    var got = [];
+    for (var i = 0; i < 60; i++) {
+      var sc = Sim.newGame(1000 + i * 31, {}, {}, 0);
+      sc.strains = ['rapid'];
+      Sim.rollChoices(sc, 50).forEach(function (c) { if (c.type === 'strain') got.push(c.key); });
+    }
+    ok('已装备的菌株不会再被抽到', got.indexOf('rapid') < 0,
+       '60 次抽取里 rapid 出现 ' + got.filter(function (k) { return k === 'rapid'; }).length + ' 次');
+    ok('未拥有的菌株仍会被抽到', got.length > 0, '抽到 ' + got.length + ' 张菌株卡');
+  });
+
+  step(function () {
+    /* 全部拿满之后要优雅退化，不能给出空卡或重复卡 */
+    var Sim = S.Sim;
+    var s = Sim.newGame(555, {}, {}, 0, CC.mapMaxTier);
+    s.strains = window.MYC.CONFIG.STRAIN.list.map(function (x) { return x.key; });
+    var cards = Sim.rollChoices(s, 50);
+    ok('菌株全拿满 + 地图封顶 → 只剩点数卡',
+       cards.length === CC.offerCount && cards.every(function (c) { return c.type === 'genes'; }),
+       cards.map(function (c) { return c.type + ':' + c.key; }).join(' | '));
+  });
+
+  step(function () {
+    /* 完整转生流程：转生后必须有卡可等 */
+    var Sim = S.Sim;
+    var s = Sim.newGame(31337, {}, {}, 0);
+    s.res.spore = 1e9; s.total.nutrient = 1e6; s.total.spore = 1e6;
+    var r = Sim.doPrestige(s);
+    ok('转生成功', r.ok, 'gain=' + r.gained);
+    ok('转生后拿到待选卡', !!s.pendingChoice && s.pendingChoice.cards.length === CC.offerCount,
+       s.pendingChoice ? s.pendingChoice.cards.length + ' 张' : 'null');
+    ok('待选卡记着是第几次转生', s.pendingChoice.forPrestige === s.prestiges,
+       'forPrestige=' + s.pendingChoice.forPrestige + ' prestiges=' + s.prestiges);
+  });
+
+  step(function () {
+    /* 选卡：三种卡各自的落点 */
+    var S2 = S.Sim;
+    /* (a) 点数卡 → pendingGenes 增加 */
+    var s = S2.newGame(31337, {}, {}, 0);
+    s.res.spore = 1e9; s.total.nutrient = 1e6; s.total.spore = 1e6;
+    S2.doPrestige(s);
+    var before = s.pendingGenes;
+    var gc = s.pendingChoice.cards.filter(function (c) { return c.type === 'genes'; })[0];
+    if (gc) {
+      var ar = S2.applyChoice(s, gc.key);
+      ok('选点数卡 → 基因点增加', ar.ok && s.pendingGenes === before + gc.amount,
+         before + ' + ' + gc.amount + ' = ' + s.pendingGenes);
+      ok('选完 pendingChoice 被清空（防重复领取）', s.pendingChoice === null, 'null');
+    } else { ok('（本轮无点数卡，跳过）', true, ''); }
+
+    /* (b) 地图卡 → mapTier +1 且尺寸真的变大
+     *
+     * ⚠ 地图尺寸是**模块级单例**（sim.js 的 _MAP），applyChoice 的地图卡
+     * 会把它改成新尺寸。这里用的是临时 state，跑完必须还原成当前这一局
+     * 的尺寸 —— 否则 _MAP 停在临时 state 上，后续所有对当前局的
+     * idx()/inBounds() 都在用错尺寸，会变成极难定位的错格/越界。 */
+    var live = window.MYC.game.state;
+    var liveW = live.mapW, liveH = live.mapH;
+    var s2 = S2.newGame(31338, {}, {}, 0);
+    s2.res.spore = 1e9; s2.total.nutrient = 1e6; s2.total.spore = 1e6;
+    S2.doPrestige(s2);
+    var mc = s2.pendingChoice.cards.filter(function (c) { return c.type === 'map'; })[0];
+    if (mc) {
+      var w0 = s2.mapW, t0 = s2.mapTier;
+      S2.applyChoice(s2, mc.key);
+      ok('选地图卡 → mapTier +1', s2.mapTier === t0 + 1, t0 + ' → ' + s2.mapTier);
+      ok('选地图卡 → 地图真的变大', s2.mapW > w0, w0 + ' → ' + s2.mapW);
+      ok('选地图卡后网络被正确重建（只剩核心）', s2.nodes.length === 1, s2.nodes.length + ' 格');
+      ok('选地图卡后核心就在地图中心',
+         s2.core.x === (s2.mapW >> 1) && s2.core.y === (s2.mapH >> 1),
+         s2.core.x + ',' + s2.core.y);
+    } else { ok('（本轮无地图卡，跳过）', true, ''); }
+    /* 还原活动地图尺寸（见上面 ⚠） */
+    S2.applyMapSize(live, { w: liveW, h: liveH });
+    ok('测完地图卡后，活动地图尺寸已还原',
+       live.mapW === liveW && live.mapH === liveH,
+       liveW + '×' + liveH);
+
+    /* (c) 菌株卡 → 装上 */
+    var s3 = S2.newGame(31339, {}, {}, 0);
+    s3.res.spore = 1e9; s3.total.nutrient = 1e6; s3.total.spore = 1e6;
+    S2.doPrestige(s3);
+    var stc = s3.pendingChoice.cards.filter(function (c) { return c.type === 'strain'; })[0];
+    if (stc) {
+      S2.applyChoice(s3, stc.key);
+      ok('选菌株卡 → 菌株被装备', s3.strains.indexOf(stc.key) >= 0,
+         'strains=[' + s3.strains.join(',') + ']');
+    } else { ok('（本轮无菌株卡，跳过）', true, ''); }
+  });
+
+  step(function () {
+    /* 选卡的健壮性：重复选、选不存在的卡都必须被拒 */
+    var Sim = S.Sim;
+    var s = Sim.newGame(2468, {}, {}, 0);
+    s.res.spore = 1e9; s.total.nutrient = 1e6; s.total.spore = 1e6;
+    Sim.doPrestige(s);
+    var k = s.pendingChoice.cards[0].key;
+    ok('第一次选卡成功', Sim.applyChoice(s, k).ok, '');
+    var again = Sim.applyChoice(s, k);
+    ok('重复选同一张被拒（不会白拿两份）', !again.ok, again.reason);
+    var bogus = Sim.applyChoice(s, '不存在的卡');
+    ok('选不存在的卡被拒', !bogus.ok, bogus.reason);
+    ok('没有待选卡时选卡不抛异常',
+       (function () { try { Sim.applyChoice(s, 'x'); return true; } catch (e) { return false; } })(),
+       '');
+  });
+
+  step(function () {
+    /* 存档往返：mapTier 与 pendingChoice 都不能丢 */
+    var Sim = S.Sim;
+    var s = Sim.newGame(13579, {}, {}, 0, 2);
+    s.res.spore = 1e9; s.total.nutrient = 1e6; s.total.spore = 1e6;
+    Sim.doPrestige(s);
+    var json = Sim.serialize(s);
+    var back = Sim.deserialize(json);
+    ok('存档往返保留 mapTier', back.mapTier === s.mapTier,
+       s.mapTier + ' → ' + back.mapTier);
+    ok('存档往返保留地图尺寸', back.mapW === s.mapW && back.mapH === s.mapH,
+       back.mapW + 'x' + back.mapH);
+    ok('存档往返保留待选卡（转生后关页面也不丢奖励）',
+       !!back.pendingChoice && back.pendingChoice.cards.length === s.pendingChoice.cards.length,
+       back.pendingChoice ? back.pendingChoice.cards.length + ' 张' : 'null');
+    /* 读档后必须能继续选 */
+    var k = back.pendingChoice.cards[0].key;
+    ok('读档后仍能正常选卡', Sim.applyChoice(back, k).ok, '');
+  });
+
+  step(function () {
+    /* 旧存档迁移：没有 mapTier 的档不能把地图打回原形 */
+    var Sim = S.Sim;
+    var s = Sim.newGame(24680, {}, {}, 0, 4);
+    var o = JSON.parse(Sim.serialize(s));
+    o.prestiges = 4;
+    delete o.mapTier;
+    var mig = Sim.deserialize(JSON.stringify(o));
+    ok('旧存档（无 mapTier）读得进来', !!mig, '');
+    ok('旧存档按 prestiges 反推出地图档位（地图不回缩）',
+       mig.mapTier > 0 && mig.mapW > window.MYC.CONFIG.GRID.W,
+       'mapTier=' + mig.mapTier + ' 尺寸=' + mig.mapW + 'x' + mig.mapH);
+    ok('旧存档没有待选卡时 pendingChoice 为 null',
+       mig.pendingChoice === null, String(mig.pendingChoice));
+
+    /* 坏形状的待选卡要被丢掉，而不是留着让玩家点到崩 */
+    var o2 = JSON.parse(Sim.serialize(s));
+    o2.pendingChoice = { cards: [] };
+    ok('空卡池的 pendingChoice 被丢弃',
+       Sim.deserialize(JSON.stringify(o2)).pendingChoice === null, 'null');
+  });
+
+  step(function () {
+    /* UI 层的弹窗必须与 state 同步 —— 这是「卡没弹出 = 玩家卡住」的防线 */
+    var g = window.MYC.game, ov = document.getElementById('choiceOverlay');
+    ok('取到三选一弹窗元素', !!ov, '');
+    /* 没有待选卡时弹窗必须是隐藏的（正常游玩状态） */
+    ok('没有待选卡时弹窗隐藏',
+       !g.state.pendingChoice ? ov.classList.contains('hidden') : true,
+       'hidden=' + ov.classList.contains('hidden'));
+  });
+
+  step(function () {
+    /* 真的「点一下卡」。状态层全对，不代表按钮点得动 ——
+     * 而**点击是玩家唯一的选择方式**，所以这条必须有断言盯着。
+     * 走的是 ui.js 里那条事件委托路径（卡片是 innerHTML 重建的，
+     * 直接绑在每个按钮上会在下次 renderChoice 后全部失效）。 */
+    var g = window.MYC.game, Sim = S.Sim;
+    var ov = document.getElementById('choiceOverlay');
+
+    /* 造一份待选卡再同步到界面 —— 用真实 rollChoices，不手搓，
+     * 这样顺带验证「抽出来的卡 UI 认得、点得动」。
+     * 基因点卡必定在池里（genePool 永远非空），所以下面一定找得到它。 */
+    g.state.pendingChoice = {
+      cards: Sim.rollChoices(g.state, 60), gained: 60,
+      forPrestige: g.state.prestiges || 1, at: Date.now()
+    };
+    g.ui.rebind(g.state);
+    ok('有待选卡时弹窗自动弹出', !ov.classList.contains('hidden'),
+       'class=' + ov.className);
+
+    var btns = ov.querySelectorAll('.choice-card');
+    ok('卡片渲染出了按钮', btns.length > 0 && btns.length === g.state.pendingChoice.cards.length,
+       btns.length + ' 个按钮 / ' + g.state.pendingChoice.cards.length + ' 张卡');
+
+    /* 优先点「基因点」那张：它没有换图副作用，不会把活动地图改掉，
+     * 免得后面那条「主循环没异常」的断言被无关的换图重渲染干扰。 */
+    var btn = null;
+    for (var i = 0; i < btns.length; i++) {
+      if (btns[i].className.indexOf('genes') >= 0) btn = btns[i];
+    }
+    if (!btn && btns.length) btn = btns[0];
+    if (btn) {
+      var key = btn.getAttribute('data-key');
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      ok('点完卡后 pendingChoice 被清空', g.state.pendingChoice === null,
+         String(g.state.pendingChoice));
+      ok('点完卡后弹窗隐藏', ov.classList.contains('hidden'), 'class=' + ov.className);
+      ok('落下的正是被点的那张卡',
+         g.state.lastChoice && g.state.lastChoice.key === key,
+         g.state.lastChoice ? (g.state.lastChoice.key + ' / 期望 ' + key) : 'null');
+    } else {
+      ok('（没有可点的卡，跳过点击测试）', false, '按钮为 0 —— 弹窗没渲染出来');
+    }
+
+    /* 再点一次不该再发一份奖励（幂等）：此时 pendingChoice 已空，
+     * applyChoice 必须拒绝，而不是凭 lastChoice 再发一次。 */
+    if (key) {
+      var r = Sim.applyChoice(g.state, key);
+      ok('选完之后重复调用同一张卡会被拒绝', r.ok === false, r.reason || '竟然又成功了');
+    }
+  });
+
+
   step(function () {
     var sc = window.MYC.game.scene;
     ok('Phaser 主循环确实运行过', sc.frames > 0, 'frames=' + sc.frames + '（起始 ' + S.frames0 + '）');
@@ -1697,9 +3675,14 @@
   /* ---------------------------------------------------------------- 驱动 */
 
   function runSteps() {
-    var f = steps.shift();
-    if (!f) return finish();
-    try { f(); } catch (e) { R.push('FAIL  步骤抛异常: ' + e.message); }
+    var s = steps.shift();
+    if (!s) return finish();
+    try {
+      s.fn();
+    } catch (e) {
+      R.push('FAIL  步骤抛异常（' + s.tag + '）: ' + e.message
+             + ' @ ' + String(e.stack || '').split('\n')[1]);
+    }
     setTimeout(runSteps, 70);   // 让出一帧，Phaser 才有机会处理输入队列
   }
 

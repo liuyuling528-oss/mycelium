@@ -29,8 +29,19 @@
     candNo:   0x4a5548,
     best:     0xffe9a8,
     core:     0xffd98a,
+    trunk:    0x7fe3d6,   // 主干/汇流：冷青，与强化的暖黄光环区分开
+    tree:     0x8fd48a,   // 树的成长环：草绿（成熟度高 → 更亮的金绿，见 treeColour）
+    aura:     0xc8f0a0,   // 古树光环：淡黄绿，刻意比 tree 更暖，一眼区分「被笼罩」
     rock:     0x2b2b31
   };
+
+  /* 树的颜色随档位走：幼苗暗绿 → 成年草绿 → 古树金绿。
+   * 颜色是玩家判断「这棵树养到哪了」最快的信息，比读数字快得多。 */
+  function treeColour(stage) {
+    if (stage >= 2) return 0xd9e86a;    // 古树：偏金
+    if (stage >= 1) return 0x8fd48a;    // 成年：草绿
+    return 0x4a7a52;                    // 幼苗：暗绿
+  }
 
   /* 世界尺寸（游戏坐标）—— **随转生次数变化**，所以是方法不是常量。
    * 转生会当场换一张更大的图，缓存的尺寸立刻就是错的。 */
@@ -162,6 +173,33 @@
       /* 手机上报「点了但没生效」多半是格子太小点偏了。
        * 触摸时给一点容差：精确格没东西可做，就找邻近一格。 */
       this.touchTolerance = this.sys.game.device.input.touch === true;
+
+      /* 结构模式：none / trunk / confluence / dig。
+       * 默认 none —— 点击的首要用途仍是「长格子 / 强化」，
+       * 结构标记是玩家主动进入的次要模式（见 tryAct 的注释）。
+       * dig（拆除）是树木系统的配套设施：树周围挤满时要能把格子撤掉，
+       * 否则「克制着别铺满」就只是一句空话 —— 玩家没法回头。 */
+      this.structMode = 'none';
+      var self = this;
+      window.MYC.setStructMode = function (mode) {
+        self.structMode = mode || 'none';
+        var el = document.getElementById('structHint');
+        if (!el) return;
+        if (self.structMode === 'none') {
+          el.textContent = '点击菌丝可强化。想指定结构就切到主干/汇流模式。';
+        } else if (self.structMode === 'trunk') {
+          var f = C.TRUNK.maxTrunk - Sim.trunkCount(window.MYC.game.state);
+          el.textContent = '主干模式：点菌丝 → 标为主干（吞吐 ×' + C.TRUNK.trunkCapMul +
+                           '，产出 ×' + C.TRUNK.trunkYieldMul + '）。还剩 ' + f + ' 格。';
+        } else if (self.structMode === 'confluence') {
+          var f2 = C.TRUNK.maxConfluence - Sim.confluenceCount(window.MYC.game.state);
+          el.textContent = '汇流模式：点菌丝 → 标为汇流（吞吐 ×' + C.TRUNK.confluenceCapMul +
+                           '，产出 ×' + C.TRUNK.confluenceYieldMul + '）。还剩 ' + f2 + ' 格。';
+        } else {
+          el.textContent = '拆除模式：点菌丝 → 把它从网络上撤掉（不退水）。' +
+                           '树周围太挤时用它腾地方。';
+        }
+      };
     }
 
     /* ------------------------------------------------------------ 视野自适应
@@ -486,14 +524,72 @@
         return;
       }
 
+      /* 离核距离：三种来源，优先级从准到糙 ——
+       *   1. 已经是节点 → nd.dist（BFS 最短路，与 computeFlow 用的**同一个**）
+       *   2. 还没长、但挨着网络 → cand.dist（candidates 里算出来的同一个值）
+       *   3. 网络还够不到 → 曼哈顿距离，仅用于「大概会怎样」的预览，
+       *      必须标注「预计」—— 它是上界，不是实际值（绕路会更远）。 */
+      var cand = Sim.canGrowAt(st, c.x, c.y);
+      var dist, distExact = true;
+      if (cell.node != null && st.nodes[cell.node] && st.nodes[cell.node].dist >= 0) {
+        dist = st.nodes[cell.node].dist;
+      } else if (cand) {
+        dist = cand.dist;
+      } else {
+        dist = Math.abs(c.x - st.core.x) + Math.abs(c.y - st.core.y);
+        distExact = false;
+      }
+
       var soil = C.SOILS[cell.soil];
+      var F = C.TOPSOIL_FALLOFF;
+      var off = Sim.topsoilOffset ? Sim.topsoilOffset(st, cell.soil, dist) : 0;
+
       var lines = [soil.name];
-      if (soil.yield.water) lines.push('水 +' + soil.yield.water.toFixed(2) + '/s');
+      /* ⚠ 不能直接打 s.yield.water —— 那是**基准值**，不含壤土递减。
+       * 玩家悬停一格远处壤土，如果只看到「水 +0.12/s」，
+       * 就会以为递减根本没生效（实测收到过这个反馈）。
+       * 所以把「该距离下的实际产出」算出来报给玩家，基准值一并给出让差值可读。
+       *
+       * 【口径修正：一律用玩家自己的「从核第几格」，并先说结论】
+       * 第三版反馈「咋显示是变成往上加」—— 不是算错，是**排版引导读者读反了**：
+       *   旧文案「水 0.06/s （基准 0.12　壤土递减 -0.06　离核 2 格）」
+       *   玩家从左往右扫，先看到结论 0.06、再看到括号里 0.12 和 -0.06，
+       *   两个数字并列 + 后面跟着「离核 2 格」（而他心里数的是第 3 格），
+       *   于是读成「这儿在往上加 / 位置对不上」。
+       * 两条硬规则：
+       *   1. **结论第一行、单独一行**，负值直接顶头写 `-0.03/s`，不带任何前缀加号；
+       *   2. **递减过程放第二行**，用「0.12 − 0.15 = -0.03」这种算式写法 ——
+       *      算式里的减号是不可约的，不存在读成加法的空间。 */
+      var tileNo = dist + 1;                       // 玩家口径：核心本身 = 第 1 格
+      if (soil.yield.water) {
+        if (off !== 0) {
+          var actW = soil.yield.water + off;
+          lines.push('水 ' + (distExact ? '' : '约 ') + actW.toFixed(2) + '/s');
+          lines.push('　' + soil.yield.water.toFixed(2) + ' − ' + Math.abs(off).toFixed(2)
+                     + ' = ' + actW.toFixed(2) + '　（从核第 ' + tileNo + ' 格，离核 ' + dist + ' 格）');
+        } else {
+          lines.push('水 +' + soil.yield.water.toFixed(2) + '/s');
+        }
+      }
       if (soil.yield.nutrient) lines.push('养分 +' + soil.yield.nutrient.toFixed(2) + '/s');
       if (soil.yield.spore) lines.push('孢子 +' + soil.yield.spore.toFixed(2) + '/s');
       if (soil.solid) lines.push('无法生长');
 
-      var cand = Sim.canGrowAt(st, c.x, c.y);
+      /* 「为什么」：只报数字玩家不知道自己被什么规则扣了，
+       * 归零距离必须写出来，否则负值看起来像 bug。
+       * ⚠ 距离一律换算成玩家的「从核第 N 格」（= dist + 1）——
+       *   代码里的 dist 是 0 基的，直接报出去会比他心里数的少一格（实测踩过）。 */
+      if (F && F.soils && F.soils.indexOf(cell.soil) >= 0) {
+        var zeroD = F.base / F.slope;             // 归零在 dist=zeroD，即从核第 zeroD+1 格
+        if (off < 0) {
+          lines.push('　越远扣得越多：从核第 ' + (zeroD + 1) + ' 格起不产水，往外每格再 -'
+                     + F.slope.toFixed(2));
+        } else if (dist > 0) {
+          lines.push('　越远产水越少：从核第 ' + (zeroD + 1) + ' 格起归零，再往外变负');
+        }
+        if (!distExact) lines.push('　（网络还没到，这里是直线距离估算）');
+      }
+
       if (cand) {
         lines.push('生长水耗 ' + cand.cost + '　离核 ' + cand.dist + ' 格');
         lines.push('运输效率 ' + (Sim.transportEfficiency(st, cand.dist) * 100).toFixed(0) + '%');
@@ -526,6 +622,42 @@
             lines.push('距免疫线还差 ' + (C.BLIGHT.immuneLevel - nd.level) + ' 级（练到 Lv' + C.BLIGHT.immuneLevel + ' 菌瘟就啃不动）');
           }
           if (nd.cargo > 0) lines.push('货物流量 ' + nd.cargo.toFixed(1) + '/s');
+          /* 结构角色：主干 / 汇流的吞吐倍率与产量代价都要写清楚，
+           * 否则玩家只会看到「标了主干产量反而掉了」而不知道换来了什么。 */
+          if (nd.trunk) {
+            lines.push('◆ 主干：吞吐 ×' + C.TRUNK.trunkCapMul +
+                       '，自身产出 ×' + C.TRUNK.trunkYieldMul);
+          } else if (nd.confluence) {
+            lines.push('◇ 汇流：吞吐 ×' + C.TRUNK.confluenceCapMul +
+                       '，自身产出 ×' + C.TRUNK.confluenceYieldMul);
+            var fc = Sim.feederCount(st, nd);
+            if (fc > 0) lines.push('　贴着的 ' + fc + ' 根支流吞吐 ×' + C.TRUNK.feederAdjMul);
+          } else if (Sim.adjacentConfluence && Sim.adjacentConfluence(st, nd)) {
+            lines.push('◇ 紧贴汇流节点：吞吐 ×' + C.TRUNK.feederAdjMul);
+          }
+          /* 树：档位 / 成长进度 / 周围密度 / 光环。
+           * 这四项缺一不可 —— 玩家要能看见「为什么它不长了」，
+           * 否则围拢压制就变成无法理解的惩罚（这是整个机制唯一的负反馈）。 */
+          var tinfo = Sim.treeStateOf(st, nd);
+          if (tinfo) {
+            lines.push('🌳 ' + tinfo.stageName +
+                       (tinfo.maxed ? '（已长成，无法再长）'
+                                    : '　进度 ' + (tinfo.progress * 100).toFixed(0) + '%'));
+            lines.push('　周围菌丝 ' + tinfo.crowd + ' 格（' + tinfo.softCap + ' 格以内不影响成长）');
+            if (tinfo.stalled) {
+              lines.push('　⚠ 被围拢压住：成长 ' + tinfo.rate.toFixed(2) + '/s（负值=倒退，拔掉几格能恢复）');
+            } else {
+              lines.push('　成长 ' + tinfo.rate.toFixed(2) + '/s');
+            }
+            if (tinfo.stage >= 2) {
+              lines.push('　★ 古树光环：2 格内其它菌丝产出 ×' + C.TREE.auraYieldMul + '（不叠加）');
+            } else {
+              lines.push('　长成古树后会给 2 格内的其它菌丝 ×' + C.TREE.auraYieldMul);
+            }
+          } else if (Sim.underOldTreeAura(st, nd)) {
+            lines.push('★ 被古树光环笼罩：产出 ×' + C.TREE.auraYieldMul);
+          }
+          lines.push('吞吐上限 ' + nd.capacity.toFixed(0) + '/s');
           /* 维持费：等级越高这项越大。写出来玩家才能算清
            * 「再多练一级」的真实代价 —— 不写的话降级会显得莫名其妙。 */
           var mc = Sim.maintainCostOf(st, nd);
@@ -619,6 +751,41 @@
         }
         if (nd.id === 0) {                   // 核心不可强化
           return { ok: false, msg: '核心是整张网络的根，不需要强化' };
+        }
+        /* 结构模式：点击 = 标记主干 / 汇流，而不是强化。
+         * 为什么要有模式：点击强化是高频操作，如果主干标记也抢点击，
+         * 玩家会不断误触（点一下想升级，结果把整条路线改了）。
+         * 结构标记是低频、需要思考的动作，单独给一个模式是合理的。 */
+        if (this.structMode && this.structMode !== 'none') {
+          /* 拆除模式：把这一格从网络上撤掉。
+           * 它是树木机制的配套 —— 树周围挤满时要能把格子撤掉，
+           * 否则「克制着别铺满」是一句没法执行的空话（玩家回不了头）。 */
+          if (this.structMode === 'dig') {
+            var rd = Sim.removeNode(st, nd.id);
+            if (rd.ok) {
+              game.dirty = true;
+              if (game.ui) game.ui.pushLog('拆除了一格' + C.SOILS[rd.soil].name + '（不退水）');
+              return { ok: true, msg: '' };
+            }
+            return { ok: false, msg: rd.reason };
+          }
+          var rs = (this.structMode === 'trunk')
+            ? Sim.toggleTrunk(st, nd.id)
+            : Sim.toggleConfluence(st, nd.id);
+          if (rs.ok) {
+            game.dirty = true;
+            var on = (this.structMode === 'trunk') ? rs.trunk : rs.confluence;
+            var label = (this.structMode === 'trunk') ? '主干' : '汇流';
+            var rf = (this.structMode === 'trunk') ? rs.free : rs.free;
+            if (game.ui) {
+              game.ui.pushLog(on
+                ? ('把 ' + C.SOILS[nd.soil].name + ' 标为' + label + '（还剩 ' + rf + ' 格）')
+                : ('取消' + label + '标记（还剩 ' + rf + ' 格）'));
+            }
+            if (on) game.pushFloater && game.pushFloater(st.nodes[nd.id].x, st.nodes[nd.id].y);
+            return { ok: true, msg: '' };
+          }
+          return { ok: false, msg: rs.reason };
         }
         var r = Sim.upgradeNode(st, nd.id);
         if (r.ok) {
@@ -788,7 +955,14 @@
             fontSize: '13px', fontStyle: 'bold', color: '#ffffff'
           }).setDepth(60).setOrigin(0.5);
         }
-        var col = f.kind === 'nutrient' ? '#e8b45e' : (f.kind === 'spore' ? '#d977c0' : '#5ec8e8');
+        /* 浮动文字配色。树木的档位提示用绿（长大）/ 灰（退化），
+         * 与资源色区分开 —— 它是「状态变化」不是「资源收入」。 */
+        var col;
+        if (f.kind === 'nutrient') col = '#e8b45e';
+        else if (f.kind === 'spore') col = '#d977c0';
+        else if (f.kind === 'good') col = '#97c459';
+        else if (f.kind === 'warn') col = '#b4b2a9';
+        else col = '#5ec8e8';
         t.setText(f.text).setColor(col)
          .setPosition(centerX(f.x), centerY(f.y))
          .setAlpha(1).setScale(1 / z).setVisible(true);
@@ -882,6 +1056,7 @@
 
       // 连线：每个节点连到它的下一跳，整体向核心收拢成一棵树。
       // 保持纤细 —— 菌丝是丝，不是管子；画粗了会糊成一片。
+      // 主干线路额外描一层粗线：它是「主动脉」，必须在缩略视角也一眼可辨。
       g.lineStyle(1.6, COL.edge, 0.34);
       for (var i = 1; i < st.nodes.length; i++) {
         var nd = st.nodes[i];
@@ -890,6 +1065,19 @@
         g.beginPath();
         g.moveTo(centerX(nd.x), centerY(nd.y));
         g.lineTo(centerX(p.x), centerY(p.y));
+        g.strokePath();
+      }
+
+      // 第二层：主干 / 汇流段加深加粗（画在节点圆之前，避免盖住节点）
+      for (var ti = 1; ti < st.nodes.length; ti++) {
+        var tn = st.nodes[ti];
+        if (tn.next < 0) continue;
+        if (!tn.trunk && !tn.confluence) continue;
+        var tp = st.nodes[tn.next];
+        g.lineStyle(tn.trunk ? 3.4 : 2.6, COL.trunk, tn.trunk ? 0.62 : 0.48);
+        g.beginPath();
+        g.moveTo(centerX(tn.x), centerY(tn.y));
+        g.lineTo(centerX(tp.x), centerY(tp.y));
         g.strokePath();
       }
 
@@ -917,6 +1105,53 @@
             var lv = Math.min(n.level, 10);
             g.lineStyle(1.4, COL.best, 0.26 + lv * 0.05);
             g.strokeCircle(x, y, r * (0.95 + lv * 0.055));
+          }
+          /* 结构角色：主干用实心大环 + 更亮的内点，汇流用虚线感的双环。
+           * 与强化的暖色光环分开（那是 --best 暖黄，结构用冷青），
+           * 两套视觉语言互不干扰。 */
+          if (n.trunk) {
+            var tp2 = 0.55 + 0.45 * Math.sin(time / 620);
+            g.lineStyle(2.2, COL.trunk, 0.45 + 0.35 * tp2);
+            g.strokeCircle(x, y, r * 1.35);
+            g.fillStyle(COL.trunk, 0.85).fillCircle(x, y, r * 0.26);
+          } else if (n.confluence) {
+            g.lineStyle(1.8, COL.trunk, 0.58);
+            g.strokeCircle(x, y, r * 1.20);
+            g.lineStyle(1.0, COL.trunk, 0.42);
+            g.strokeCircle(x, y, r * 0.78);
+          }
+          /* 树：三档用颜色 + 环数直接编码，古树再补一圈光环。
+           * 成长进度画成一段圆弧 —— 这是「养成」唯一的进度条，
+           * 没有它玩家只知道「还没长大」，不知道「还差多少」。 */
+          if (n.soil === 'root') {
+            var tst = (n.treeStage == null || n.treeStage < 0) ? Sim.treeStageOf(n.tree || 0) : n.treeStage;
+            var tc = treeColour(tst);
+            var rings = tst + 1;                       // 幼苗 1 环 / 成年 2 环 / 古树 3 环
+            for (var ri = 0; ri < rings; ri++) {
+              g.lineStyle(1.6 - ri * 0.25, tc, 0.75 - ri * 0.16);
+              g.strokeCircle(x, y, r * (1.15 + ri * 0.30));
+            }
+            g.fillStyle(tc, 0.9).fillCircle(x, y, r * 0.34);
+            if (tst < 2) {
+              /* 进度弧：从 12 点顺时针画 progress × 360° */
+              var tinfo2 = Sim.treeStateOf(st, n);
+              if (tinfo2 && tinfo2.progress > 0) {
+                g.lineStyle(2.4, tc, 0.85);
+                g.beginPath();
+                g.arc(x, y, r * 1.62, -Math.PI / 2,
+                      -Math.PI / 2 + Math.PI * 2 * Math.min(1, tinfo2.progress), false);
+                g.strokePath();
+              }
+            } else {
+              /* 古树：外圈常亮光环，范围就是 auraYieldMul 的作用半径 */
+              var ag = 0.45 + 0.25 * Math.sin(time / 900);
+              g.lineStyle(1.2, COL.aura, 0.30 + 0.20 * ag);
+              g.strokeCircle(x, y, GRID.CELL * (C.TREE.ringRadius + 0.9));
+            }
+          } else if (Sim.underOldTreeAura(st, n)) {
+            /* 被古树罩着的格子：加一圈淡光晕，让「哪几格在吃加成」可见 */
+            g.lineStyle(1.0, COL.aura, 0.34);
+            g.strokeCircle(x, y, r * 0.72);
           }
         }
       }

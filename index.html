@@ -18,6 +18,17 @@
     <button id="viewReset" class="hidden" title="回到自动取景（跟着网络走）">⟲ 自动取景</button>
   </div>
 
+  <!-- 转生抉择：散播孢子之后弹出来，三选一。
+       放在 #app 的直接子层（而不是面板里）—— 它是个**阻塞式**的选择，
+       必须盖住整个界面，否则玩家会一边看着弹窗一边继续点地图。 -->
+  <div id="choiceOverlay" class="hidden">
+    <div class="choice-box">
+      <h2>孢子落在了新的土壤上</h2>
+      <p class="hint" id="choiceHint"></p>
+      <div id="choiceCards"></div>
+    </div>
+  </div>
+
   <!-- 右侧面板：HTML/CSS，排版与滚动都比在 canvas 里画靠谱 -->
   <aside id="panel">
 
@@ -37,6 +48,7 @@
       <h2>资源</h2>
       <div class="res"><span class="dot c-water"></span><span class="label">水分</span>
         <span class="val" id="vWater">0</span><span class="rate" id="rWater">+0/s</span></div>
+      <div class="topsoil" id="topsoilRow">壤土递减 0 格　0/s</div>
       <div class="res"><span class="dot c-nutrient"></span><span class="label">养分</span>
         <span class="val" id="vNutrient">0</span><span class="rate" id="rNutrient">+0/s</span></div>
       <div class="res"><span class="dot c-spore"></span><span class="label">孢子</span>
@@ -58,8 +70,41 @@
         <input type="checkbox" id="autoGrow" checked>
         <span id="autoGrowLabel">自动蔓延<span class="hint" style="display:inline">（关掉则只靠你手动点）</span></span>
       </label>
+      <div class="row" id="autoRuleRow" style="margin-top:8px">
+        <select id="ruleMaxDist" title="自动蔓延的距离上限"></select>
+        <select id="ruleMinYield" title="自动蔓延的收益阈值"></select>
+      </div>
+      <p class="hint" id="ruleHint"></p>
       <p class="hint" id="policyHint"></p>
       <p class="hint" id="eventLine"></p>
+    </div>
+
+    <div class="card">
+      <h2>网络结构 <span class="hint" id="trunkCount"></span></h2>
+      <div class="row" id="structRow">
+        <button class="tiny" id="structNone" data-mode="none">普通</button>
+        <button class="tiny" id="structTrunk" data-mode="trunk">主干</button>
+        <button class="tiny" id="structConf" data-mode="confluence">汇流</button>
+        <button class="tiny" id="structDig" data-mode="dig">拆除</button>
+      </div>
+      <p class="hint" id="structHint"></p>
+      <p class="hint">
+        主干：把一格改造成主动脉，吞吐大幅提高但<b>自身产出下降</b>——
+        用来把远处富矿拉回来。全网络只有 <b id="trunkCap">5</b> 格，必须挑。
+        汇流：支流在此合流，贴着的支流吞吐也会提高。
+        拆除：树周围太挤时撤掉几格，给它腾地方长大。
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>树木 <span class="hint" id="treeCount"></span></h2>
+      <p class="hint" id="treeHint"></p>
+      <p class="hint">
+        树根长成树后会<b>随连接时长长大</b>：幼苗 → 成年 → 古树（产出 0.6× → 1.0× → 1.6×）。
+        <b>古树会给周围 2 格内的其它菌丝 +25% 产出</b>——这是它唯一值钱的地方。
+        但树周围<b>挤太多菌丝会压住成长</b>（超过 6 格就开始抵消，再多会倒退）：
+        想养出古树，就得克制着别把它的地盘铺满。
+      </p>
     </div>
 
     <div class="card">
@@ -92,6 +137,12 @@
       <div class="list" id="genes"></div>
     </div>
 
+    <div class="card hidden" id="strainCard">
+      <h2>菌株 <span id="strainSlots" style="float:right"></span></h2>
+      <div class="list" id="strains"></div>
+      <p class="hint" id="strainHint"></p>
+    </div>
+
     <div class="card">
       <h2>记录</h2>
       <div id="log"></div>
@@ -100,12 +151,14 @@
     <div class="card">
       <h2>存档</h2>
       <div class="row">
+        <button id="btnNew" class="tiny">开始新游戏</button>
         <button id="btnSave" class="tiny">保存</button>
-        <button id="btnLoad" class="tiny">读取</button>
-        <button id="btnNew" class="tiny">重开一局</button>
         <span class="hint" id="seedTxt" style="margin:0 0 0 auto"></span>
       </div>
-      <p class="hint">进度自动存在浏览器本地。换种子会生成一张全新的地图。</p>
+      <!-- 三个存档槽。点「读取」展开槽位列表；有档的槽能读、能删，空的槽直接写。
+           「自动存档」不是一个槽，它是当前局 —— 每次保存/关页面都会覆盖它。 -->
+      <div id="slotList" class="slots"></div>
+      <p class="hint" id="saveHint">进度自动存在浏览器本地。三个槽位可以随时存档/读档。</p>
     </div>
 
   </aside>
