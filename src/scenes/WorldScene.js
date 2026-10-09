@@ -174,19 +174,20 @@
        * 触摸时给一点容差：精确格没东西可做，就找邻近一格。 */
       this.touchTolerance = this.sys.game.device.input.touch === true;
 
-      /* 结构模式：none / trunk / confluence / dig。
+      /* 结构模式：none / trunk / confluence / colonyXxx / dig。
        * 默认 none —— 点击的首要用途仍是「长格子 / 强化」，
        * 结构标记是玩家主动进入的次要模式（见 tryAct 的注释）。
        * dig（拆除）是树木系统的配套设施：树周围挤满时要能把格子撤掉，
        * 否则「克制着别铺满」就只是一句空话 —— 玩家没法回头。 */
       this.structMode = 'none';
       var self = this;
+      var COLONY_LABEL = { colonyWater: '泉脉菌落', colonyNutrient: '腐殖菌落', colonySpore: '孢子菌落' };
       window.MYC.setStructMode = function (mode) {
         self.structMode = mode || 'none';
         var el = document.getElementById('structHint');
         if (!el) return;
         if (self.structMode === 'none') {
-          el.textContent = '点击菌丝可强化。想指定结构就切到主干/汇流模式。';
+          el.textContent = '点击菌丝可强化。想指定结构就切到主干/汇流/菌落模式。';
         } else if (self.structMode === 'trunk') {
           var f = C.TRUNK.maxTrunk - Sim.trunkCount(window.MYC.game.state);
           el.textContent = '主干模式：点菌丝 → 标为主干（吞吐 ×' + C.TRUNK.trunkCapMul +
@@ -195,9 +196,18 @@
           var f2 = C.TRUNK.maxConfluence - Sim.confluenceCount(window.MYC.game.state);
           el.textContent = '汇流模式：点菌丝 → 标为汇流（吞吐 ×' + C.TRUNK.confluenceCapMul +
                            '，产出 ×' + C.TRUNK.confluenceYieldMul + '）。还剩 ' + f2 + ' 格。';
+        } else if (COLONY_LABEL[self.structMode]) {
+          var kind = self.structMode.slice(6).toLowerCase();
+          var stt = window.MYC.game.state;
+          var f3 = C.COLONY.maxColonies - Sim.colonyCount(stt);
+          el.textContent = COLONY_LABEL[self.structMode] + '：点菌丝 → 花养分建造（周围 ' +
+                           C.COLONY.radius + ' 格内的菌丝' +
+                           ({ water: '水', nutrient: '养分', spore: '孢子' }[kind]) +
+                           '产出 ×' + C.COLONY.yieldMul + '，菌落自己不吃）。还剩 ' + f3 +
+                           ' 个，下一个 ' + Sim.colonyCost(stt) + ' 养分。盖在两片矿中间最划算。';
         } else {
           el.textContent = '拆除模式：点菌丝 → 把它从网络上撤掉（不退水）。' +
-                           '树周围太挤时用它腾地方。';
+                           '树周围太挤时用它腾地方；点在菌落上只拆菌落、保留菌丝。';
         }
       };
     }
@@ -595,7 +605,8 @@
         lines.push('运输效率 ' + (Sim.transportEfficiency(st, cand.dist) * 100).toFixed(0) + '%');
         var bf = Sim.buffAt(st, c.x, c.y);
         if (bf) {
-          lines.push('★ 落在' + (bf.water > 1 ? '降雨带' : '孢子季') + '内，产出 ×' + C.EVENTS.buffMul);
+          var zoneName = bf.water > 1 ? '降雨带' : (bf.nutrient > 1 ? '腐殖潮' : '孢子季');
+          lines.push('★ 落在' + zoneName + '内，产出 ×' + C.EVENTS.buffMul);
         }
       } else if (cell.node != null) {
         var nd = st.nodes[cell.node];
@@ -634,6 +645,22 @@
             if (fc > 0) lines.push('　贴着的 ' + fc + ' 根支流吞吐 ×' + C.TRUNK.feederAdjMul);
           } else if (Sim.adjacentConfluence && Sim.adjacentConfluence(st, nd)) {
             lines.push('◇ 紧贴汇流节点：吞吐 ×' + C.TRUNK.feederAdjMul);
+          }
+          /* 菌落：自己是哪个菌落 / 吃到了谁的菌落。两类信息都要有 ——
+           * 前者说明「这格盖了什么」，后者解释「这格为什么变贵了」，
+           * 缺了后者玩家会把加成误认为是自己的强化在起作用。 */
+          if (nd.colony) {
+            lines.push('● ' + ({ water: '泉脉', nutrient: '腐殖', spore: '孢子' }[nd.colony]) +
+                       '菌落：周围 ' + C.COLONY.radius + ' 格的' +
+                       ({ water: '水', nutrient: '养分', spore: '孢子' }[nd.colony]) +
+                       '产出 ×' + C.COLONY.yieldMul + '（菌落自己不吃）');
+          } else {
+            var cm = Sim.colonyMulFor(st, nd);
+            var cmParts = [];
+            if (cm.water > 1) cmParts.push('水');
+            if (cm.nutrient > 1) cmParts.push('养分');
+            if (cm.spore > 1) cmParts.push('孢子');
+            if (cmParts.length) lines.push('● 在菌落范围内：' + cmParts.join('/') + '产出 ×' + C.COLONY.yieldMul);
           }
           /* 树：档位 / 成长进度 / 周围密度 / 光环。
            * 这四项缺一不可 —— 玩家要能看见「为什么它不长了」，
@@ -752,15 +779,26 @@
         if (nd.id === 0) {                   // 核心不可强化
           return { ok: false, msg: '核心是整张网络的根，不需要强化' };
         }
-        /* 结构模式：点击 = 标记主干 / 汇流，而不是强化。
-         * 为什么要有模式：点击强化是高频操作，如果主干标记也抢点击，
+        /* 结构模式：点击 = 标记主干 / 汇流 / 建菌落，而不是强化。
+         * 为什么要有模式：点击强化是高频操作，如果结构标记也抢点击，
          * 玩家会不断误触（点一下想升级，结果把整条路线改了）。
          * 结构标记是低频、需要思考的动作，单独给一个模式是合理的。 */
         if (this.structMode && this.structMode !== 'none') {
           /* 拆除模式：把这一格从网络上撤掉。
            * 它是树木机制的配套 —— 树周围挤满时要能把格子撤掉，
-           * 否则「克制着别铺满」是一句没法执行的空话（玩家回不了头）。 */
+           * 否则「克制着别铺满」是一句没法执行的空话（玩家回不了头）。
+           * 点在菌落上则**只拆菌落、保留菌丝**：菌丝是水铺出来的资产，
+           * 拆错一格的损失远大于拆错一个菌落（配额腾出、养分不退）。 */
           if (this.structMode === 'dig') {
+            if (nd.colony) {
+              var rc0 = Sim.demolishColony(st, nd.id);
+              if (rc0.ok) {
+                game.dirty = true;
+                if (game.ui) game.ui.pushLog('拆掉了菌落（配额腾出，养分不退）');
+                return { ok: true, msg: '' };
+              }
+              return { ok: false, msg: rc0.reason };
+            }
             var rd = Sim.removeNode(st, nd.id);
             if (rd.ok) {
               game.dirty = true;
@@ -768,6 +806,18 @@
               return { ok: true, msg: '' };
             }
             return { ok: false, msg: rd.reason };
+          }
+          /* 菌落模式（colonyWater / colonyNutrient / colonySpore）：
+           * 点菌丝 → 花养分建造。失败原因（未解锁/配额满/养分不足）
+           * 由 sim 返回并直接弹给玩家，不在这里复制一份判定。 */
+          if (this.structMode.indexOf('colony') === 0) {
+            var rb = Sim.buildColony(st, nd.id, this.structMode.slice(6).toLowerCase());
+            if (rb.ok) {
+              game.dirty = true;
+              if (game.ui) game.ui.pushLog('建成了菌落（-' + rb.cost + ' 养分，还剩 ' + rb.free + ' 个配额）');
+              return { ok: true, msg: '' };
+            }
+            return { ok: false, msg: rb.reason };
           }
           var rs = (this.structMode === 'trunk')
             ? Sim.toggleTrunk(st, nd.id)
@@ -883,7 +933,7 @@
       if (game.ui) game.ui.update(dt, game);
     }
 
-    /* 事件增益区：降雨带（蓝）/ 孢子季（紫）。
+    /* 事件增益区：降雨带（蓝）/ 腐殖潮（橙）/ 孢子季（紫）。
      * 半透明大圆 + 呼吸边，快结束时加一圈闪烁提示，让你知道该抓紧了。 */
     drawBuff(st, time) {
       var g = this.buffGfx;
@@ -892,7 +942,9 @@
       for (var i = 0; i < st.events.length; i++) {
         var e = st.events[i];
         if (e.kind === 'gnat' || e.kind === 'blight') continue;
-        var col = (e.kind === 'rain') ? COL.water : COL.spore;
+        /* 颜色 = 该区放大的资源色，玩家不用背事件名 */
+        var col = (e.kind === 'rain') ? COL.water
+                : (e.kind === 'flush') ? COL.nutrient : COL.spore;
         var x = centerX(e.x), y = centerY(e.y), r = e.r * GRID.CELL;
         g.fillStyle(col, 0.09 + 0.05 * pulse);
         g.fillCircle(x, y, r);
@@ -1081,6 +1133,20 @@
         g.strokePath();
       }
 
+      /* 菌落光环：淡填充 + 细边，画在节点之前 ——
+       * 玩家必须一眼看出「这个菌落盖住了谁、还差哪片没盖到」，
+       * 否则「盖在两片矿中间」的布局决策根本没有视觉依据。
+       * 颜色 = 菌落放大的资源色（与增益区同一套编码）。 */
+      var colonyR = C.COLONY.radius * GRID.CELL;
+      for (var ki = 1; ki < st.nodes.length; ki++) {
+        var kn = st.nodes[ki];
+        if (!kn.colony) continue;
+        var kc = COL[kn.colony] || COL.nutrient;
+        var kx = centerX(kn.x), ky = centerY(kn.y);
+        g.fillStyle(kc, 0.055).fillCircle(kx, ky, colonyR);
+        g.lineStyle(1, kc, 0.30).strokeCircle(kx, ky, colonyR);
+      }
+
       var R = GRID.CELL * 0.30;
       for (var j = 0; j < st.nodes.length; j++) {
         var n = st.nodes[j];
@@ -1119,6 +1185,15 @@
             g.strokeCircle(x, y, r * 1.20);
             g.lineStyle(1.0, COL.trunk, 0.42);
             g.strokeCircle(x, y, r * 0.78);
+          }
+          /* 菌落本体：资源色实心点 + 双环，呼吸感与主干一致 ——
+           * 它和主干一样是「玩家亲手做的结构投资」，得有存在感。 */
+          if (n.colony) {
+            var cc = COL[n.colony] || COL.nutrient;
+            var cb = 0.55 + 0.45 * Math.sin(time / 620 + 1.3);
+            g.lineStyle(2.2, cc, 0.55 + 0.35 * cb);
+            g.strokeCircle(x, y, r * 1.30);
+            g.fillStyle(cc, 0.95).fillCircle(x, y, r * 0.30);
           }
           /* 树：三档用颜色 + 环数直接编码，古树再补一圈光环。
            * 成长进度画成一段圆弧 —— 这是「养成」唯一的进度条，

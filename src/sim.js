@@ -120,6 +120,10 @@ var Sim = (function () {
       milestones: {},              // 已完成的里程碑 id
       mods: { water: 1, nutrient: 1, spore: 1 },
       counters: { gnatsRemoved: 0, maxNodeLevel: 0, maxNodes: 0, connectedSoils: {} },
+      /* 本局已建菌落数 —— 只用来算「下一个菌落的价格」（指数涨）。
+       * 菌落本身记在节点上（nd.colony），转生重建网络时随节点一起消失，
+       * 这个计数器也要跟着归零。 */
+      coloniesBuilt: 0,
       floaters: []                 // 浮动数字，供渲染层消费
     };
     CONFIG.UPGRADES.forEach(function (u) { state.up[u.key] = 0; });
@@ -814,12 +818,42 @@ var Sim = (function () {
    * 也是手动操作能比自动更快的原因（自动只能按同一套评分走，玩家可以越过它）。
    *
    * autoOnly=true 时应用玩家的自动蔓延规则（见 passAutoRule）。 */
-  function bestCandidate(state, policy, autoOnly) {
+  /* 这一格是否落在某棵「已经挤到软上限」的树圈里。
+   *
+   * 【树圈保留地 —— 整局激励结构的另一半修正】
+   * 没有这条时，「照顾树」守不住空位：拆掉的超编菌丝几秒后就被
+   * 自动蔓延填回来，玩家只能无限拆（headless 实测：养树流 361 格
+   * vs 围满流 644 格，差距全是拆出来的，照顾树变成还不完的债）。
+   * 现在长满一圈的树会「化感抑制」周围的生长判定 —— 自动蔓延
+   * 不再往它的圈里挤，空位守得住，护到古树就一劳永逸。
+   *
+   * 【只约束生长判定，不动玩家】拆除（dig）随时可用：不想让树占
+   * 保留地，把树拆掉就行 —— 圈立刻重新开放。这与 AUTORULE 的
+   * 「手动不受限」是两条不同的规则：那条保护玩家的操作自由，
+   * 这条是世界的生态规则（真实菌根网络里 trees 的化感作用）。 */
+  function inCappedTreeRing(state, x, y) {
+    var T = CONFIG.TREE;
+    for (var i = 1; i < state.nodes.length; i++) {
+      var t = state.nodes[i];
+      if (!isTree(t)) continue;
+      if (treeCrowd(state, t) < T.crowdSoftCap) continue;   // 没挤满：圈还开着
+      var dx = Math.abs(t.x - x), dy = Math.abs(t.y - y);
+      if (dx + dy > T.ringRadius + 1) continue;             // 与 treeCrowd 同一圈形
+      return true;
+    }
+    return false;
+  }
+
+  function bestCandidate(state, policy, autoOnly, respectTrees) {
     var cs = candidates(state);
     var pol = policy || state.policy;
     var best = null, bestScore = -Infinity;
     for (var i = 0; i < cs.length; i++) {
       if (autoOnly && !passAutoRule(state, cs[i])) continue;
+      /* 树圈保留地：自动蔓延一律遵守；「会照顾树的」手动选择也遵守
+       * （respectTrees —— 真实玩家在护树期不会亲手把圈填满）。
+       * 默认的手动路径不受限，围满流（⑩）靠这条通道表达。 */
+      if ((autoOnly || respectTrees) && inCappedTreeRing(state, cs[i].x, cs[i].y)) continue;
       var s = scoreCandidate(state, cs[i], pol);
       if (s > bestScore) { bestScore = s; best = cs[i]; }
     }
@@ -926,6 +960,20 @@ var Sim = (function () {
       if (!isTree(nd)) continue;
       if (nd.dist < 0) continue;                      // 未接入网络（异常态）
 
+      /* 古树不倒退：长成古树（最后一档）后就**永远停在那一档**，
+       * 之后再怎么围挤也不会退回成年。
+       *
+       * 【为什么必须这样 —— 这是对整局激励结构的修正，不是手感调整】
+       * 没有这条的时候，「照顾树」是一个**永远还不完的债**：
+       * 自动蔓延几分钟就会把树圈重新填满，玩家每 5 秒就得拆一次超编菌丝
+       * （headless 实测：养树流 361 格 vs 围满流 644 格 —— 差距全是拆出来
+       * 的），而古树光环 1.25× 的回报追不上这个结构性损失，
+       * 结果「围满」严格优于「照顾」，激励方向整个是反的。
+       * 改成「古树根深蒂固、不会倒退」之后，养树变成**一次性投资**：
+       * 头几分钟克制着把树护到古树，之后网络随便铺、光环永远在 ——
+       * 跑步机消失，取舍保留（幼苗/成年照样会被围死，D 组机制不变）。 */
+      if (nd.treeStage >= T.stageAt.length - 1) continue;
+
       var crowd = treeCrowd(state, nd);
       var over = Math.max(0, crowd - T.crowdSoftCap);
       /* rate = 每秒成长点变化。
@@ -1016,6 +1064,16 @@ var Sim = (function () {
      * 仍是白白的函数调用开销。它是「装备变化时重算」的只读快照，
      * 循环内不会再变，所以提出来是安全的。 */
     var sm = strainMods(state);
+    /* 菌落清单：每帧收集一次（≤3 个，代价可忽略），循环内只做距离判定。
+     * 不维护缓存的原因：菌落的增删点（buildColony/demolishColly/addNode/
+     * removeNode/deserialize）有五处，缓存漏掉任何一处就是「光环不生效」
+     * 的静默 bug —— 每帧重新收 3 个元素比维护五处失效点便宜得多。 */
+    var colonies = [];
+    for (i = 0; i < state.nodes.length; i++) {
+      if (state.nodes[i].colony) colonies.push(state.nodes[i]);
+    }
+    var colonyR2 = CONFIG.COLONY.radius * CONFIG.COLONY.radius;
+    var colonyMul = CONFIG.COLONY.yieldMul;
     /* 壤土递减的全网合计（只看原始加减量，不含等级/树/光环乘区）。
      * 面板要用它显示「壤土一共拖了多少水」—— 玩家在近核处看到
      * 产量正常、却感觉不到远处那几十格在偷偷扣水，所以必须有一个
@@ -1065,6 +1123,13 @@ var Sim = (function () {
       if (nd.soil === 'root') {
         var tm = treeYieldMulOf(nd) * sm.treeBondMul;
         _raw.water *= tm; _raw.nutrient *= tm; _raw.spore *= tm;
+        /* 古树落叶腐殖：古树每秒固定产一点养分（TREE.ancientNutrient）。
+         * 放在档位乘区之后 —— 它是「长成之后才开始」的基础产出，
+         * 不该被树自己的档位倍率再放大一次；后面的等级/光环/菌株乘区
+         * 照常作用于它（练树缘、围古树仍然划算）。 */
+        if (nd.treeStage >= CONFIG.TREE.stageAt.length - 1) {
+          _raw.nutrient += CONFIG.TREE.ancientNutrient;
+        }
       }
       /* 古树光环：周围 2 格内的**其它**菌丝吃加成。
        * 这是本系统里唯一「靠布局而非数值」的产出来源 ——
@@ -1105,6 +1170,24 @@ var Sim = (function () {
 
       // 被害虫占据的节点停产 —— 这就是「必须回应」的压力来源
       if (nd.disabled) { _raw.water = 0; _raw.nutrient = 0; _raw.spore = 0; }
+
+      /* 菌落光环：覆盖范围内的**其它**菌丝，对应资源 ×yieldMul。
+       * 规则（与 colonyMulFor 保持一致，两边一起改）：
+       *   · 菌落自己不吃自己的光环（逼玩家「盖在两片矿之间」而不是矿心上）；
+       *   · 同一资源只乘一次 —— 两个水菌落重叠不叠加（防止堆同类变唯一最优解）。
+       * 判定顺序放在 disabled 之后：停产的格吃不吃光环都一样，先归零更省。 */
+      if (colonies.length) {
+        var gotW = false, gotN = false, gotS = false;
+        for (var ci = 0; ci < colonies.length; ci++) {
+          var cl = colonies[ci];
+          if (cl === nd) continue;
+          var cdx = cl.x - nd.x, cdy = cl.y - nd.y;
+          if (cdx * cdx + cdy * cdy > colonyR2) continue;
+          if (cl.colony === 'water') { if (!gotW) { _raw.water *= colonyMul; gotW = true; } }
+          else if (cl.colony === 'nutrient') { if (!gotN) { _raw.nutrient *= colonyMul; gotN = true; } }
+          else { if (!gotS) { _raw.spore *= colonyMul; gotS = true; } }
+        }
+      }
 
       var eff = transportEfficiency(state, Math.max(0, nd.dist));
       prod.water = _raw.water * eff;
@@ -1332,6 +1415,68 @@ var Sim = (function () {
       if (state.nodes[fid].confluence) return true;
     }
     return false;
+  }
+
+  /* ------------------------------------------------------------ 菌落
+   * 规则见 CONFIG.COLONY。要点：数量硬上限（3）+ 只影响周围一片 +
+   * 菌落自己不吃自己的光环。它回答的问题是「这一片的产出值得砸钱抬一抬吗，
+   * 抬哪一种资源」—— 与主干（抬核心吞吐）、强化（抬单格）互补的第三种投资。 */
+  var COLONY_KINDS = { water: 1, nutrient: 1, spore: 1 };
+
+  function colonyCount(state) {
+    var n = 0;
+    for (var i = 0; i < state.nodes.length; i++) if (state.nodes[i].colony) n++;
+    return n;
+  }
+
+  /* 下一个菌落的价格：按本局已建数量指数涨。转生清零（菌落是本局结构） */
+  function colonyCost(state) {
+    return Math.round(CONFIG.COLONY.baseCost *
+      Math.pow(CONFIG.COLONY.costGrowth, state.coloniesBuilt || 0));
+  }
+
+  function buildColony(state, nodeId, kind) {
+    var nd = state.nodes[nodeId];
+    if (!nd) return { ok: false, reason: '这里没有菌丝' };
+    if (!COLONY_KINDS[kind]) return { ok: false, reason: '没有这种菌落' };
+    if (!state.milestones.m12) return { ok: false, reason: '菌落尚未解锁（里程碑「菌落」：菌丝达到 120 格）' };
+    if (nodeId === 0) return { ok: false, reason: '核心不能建菌落' };
+    if (nd.colony) return { ok: false, reason: '这里已经有菌落了' };
+    if (colonyCount(state) >= CONFIG.COLONY.maxColonies)
+      return { ok: false, reason: '菌落数已达上限（' + CONFIG.COLONY.maxColonies + ' 个）—— 拆掉一个才能再建' };
+    var cost = colonyCost(state);
+    if (state.res.nutrient < cost) return { ok: false, reason: '养分不足，需要 ' + cost };
+    state.res.nutrient -= cost;
+    nd.colony = kind;
+    state.coloniesBuilt = (state.coloniesBuilt || 0) + 1;
+    pushFloater(state, nd.x, nd.y, '菌落!', 'good');
+    return { ok: true, cost: cost, free: CONFIG.COLONY.maxColonies - colonyCount(state) };
+  }
+
+  /* 拆除：不退养分（免费撤销会让「先乱建再回退」没有代价），
+   * 但腾出配额 —— 选错位置能回头，这点必须给。 */
+  function demolishColony(state, nodeId) {
+    var nd = state.nodes[nodeId];
+    if (!nd || !nd.colony) return { ok: false, reason: '这里没有菌落' };
+    nd.colony = null;
+    return { ok: true };
+  }
+
+  /* 这一格吃到几个菌落光环（按资源各一次）。给 UI 显示用；
+   * computeFlow 里有同逻辑的热路径版本（内联展开，见下）。
+   * 两处必须一致 —— 改判定（半径/排除自身/不叠加）时两边一起改。 */
+  function colonyMulFor(state, nd) {
+    var out = { water: 1, nutrient: 1, spore: 1 };
+    if (!nd) return out;
+    var R2 = CONFIG.COLONY.radius * CONFIG.COLONY.radius;
+    for (var i = 0; i < state.nodes.length; i++) {
+      var c = state.nodes[i];
+      if (!c.colony || c === nd) continue;
+      var dx = c.x - nd.x, dy = c.y - nd.y;
+      if (dx * dx + dy * dy > R2) continue;
+      out[c.colony] = CONFIG.COLONY.yieldMul;
+    }
+    return out;
   }
 
   /* 结算维持费。逻辑：
@@ -1623,8 +1768,12 @@ var Sim = (function () {
       var dx = e.x - x, dy = e.y - y;
       if (dx * dx + dy * dy <= e.r * e.r) {
         var m = CONFIG.EVENTS.buffMul;
+        /* 三种增益区各管一种资源（见 spawnEvent）：
+         *   rain  = 降雨带（水） / bloom = 孢子季（孢子） / flush = 腐殖潮（养分） */
         return (e.kind === 'rain')
           ? { water: m, nutrient: 1, spore: 1 }
+          : (e.kind === 'flush')
+          ? { water: 1, nutrient: m, spore: 1 }
           : { water: 1, nutrient: 1, spore: m };
       }
     }
@@ -1727,13 +1876,17 @@ var Sim = (function () {
     }
 
     if (!ev) {
-      // 增益区：落在网络外侧的空地上，鼓励「往外扩张去吃掉它」
+      // 增益区：落在网络外侧的空地上，鼓励「往外扩张去吃掉它」。
+      // 三种增益区各对应一种资源（降雨=水 / 孢子季=孢子 / 腐殖潮=养分），
+      // 均匀抽 —— 之前的「rain/bloom 二选一」漏了养分，玩家追着事件跑
+      // 却永远追不到升级货币，事件层与经济层是脱节的。
       var anchor = state.nodes[Math.floor(stateRng(state) * state.nodes.length)] || state.nodes[0];
       var ang = stateRng(state) * Math.PI * 2, rad = 3 + stateRng(state) * 5;
       var x = Math.max(0, Math.min(GRID.W - 1, Math.round(anchor.x + Math.cos(ang) * rad)));
       var y = Math.max(0, Math.min(GRID.H - 1, Math.round(anchor.y + Math.sin(ang) * rad)));
+      var kinds = ['rain', 'bloom', 'flush'];
       ev = {
-        kind: stateRng(state) < 0.5 ? 'rain' : 'bloom',
+        kind: kinds[Math.floor(stateRng(state) * kinds.length)],
         x: x, y: y, r: cfg.buffRadius,
         ttl: cfg.buffDur, dur: cfg.buffDur
       };
@@ -1984,6 +2137,12 @@ var Sim = (function () {
          * 同样读 counters.maxNodes（跨转生保留），转生不清进度。 */
         ok = (state.prestiges || 0) >= 1 && (state.counters.maxNodes || 0) >= 400;
       }
+      else if (m.id === 'm12') {
+        /* 「菌落」：网络达到 120 格。里程碑**解锁后永久保留**（与技能同理），
+         * 之后的局开局就能建 —— 菌落本身是本局结构（随网络重置），
+         * 但「会用菌落」这个能力是永久成就层，不该每局重新爬一遍门槛。 */
+        ok = state.nodes.length >= 120;
+      }
       if (!ok) continue;
 
       state.milestones[m.id] = true;
@@ -2017,6 +2176,11 @@ var Sim = (function () {
          * 任何依赖槽位数的缓存（如 UI 的按钮禁用态）都要重算。 */
         invalidateStrain(state);
         pushFloater(state, state.core.x, state.core.y, '菌株槽位 +1', 'spore');
+        break;
+      case 'm12':
+        /* 菌落解锁。buildColony 直接读 milestones.m12，这里只需提示。
+         * 与主干/汇流不同：菌落有建造与拆除动作，属于「投资」而非「标记」。 */
+        pushFloater(state, state.core.x, state.core.y, '菌落解锁!', 'good');
         break;
     }
   }
@@ -2110,6 +2274,10 @@ var Sim = (function () {
     state.events = [];
     state.nextEventAt = CONFIG.EVENTS.firstAt;
     state.floaters = [];
+    /* 菌落是**本局结构**（盖在网络上的投资），随网络一起重置：
+     * 节点清空时 nd.colony 自然消失，这里把成本计数器也归零，
+     * 下一局第 1 个菌落仍然是 baseCost。 */
+    state.coloniesBuilt = 0;
 
     // 重建网络：只留核心。必须先清空 state.nodes，否则 makeNode 会拿到旧长度当 id。
     for (var i = 0; i < state.grid.length; i++) state.grid[i].node = null;
@@ -2373,10 +2541,15 @@ var Sim = (function () {
       strains: state.strains || [],
       nodes: state.nodes.map(function (n) {
         /* 第 8 位是树木成长度。只有 root 会用到；为省体积，
-         * 非树或零成长的节点写 0 —— 读档时用 !! 守卫即可兼容旧档。 */
+         * 非树或零成长的节点写 0 —— 读档时用 !! 守卫即可兼容旧档。
+         * 第 9 位是菌落类型（'water'/'nutrient'/'spore'，无则 0）。 */
         return [n.x, n.y, n.soil, n.level, n.pinned ? 1 : 0, n.trunk ? 1 : 0,
-                n.confluence ? 1 : 0, (n.soil === 'root' ? (n.tree || 0) : 0)];
-      })
+                n.confluence ? 1 : 0, (n.soil === 'root' ? (n.tree || 0) : 0),
+                n.colony || 0];
+      }),
+      /* 本局已建菌落数：决定下一个菌落的价格。丢了的话价格会退回
+       * baseCost —— 轻则白便宜，重则被用来刷价差，所以必须存。 */
+      coloniesBuilt: state.coloniesBuilt || 0
     });
   }
 
@@ -2428,6 +2601,9 @@ var Sim = (function () {
       nd.pinned = !!n[4];        // 旧存档没有第 5 位 → 默认未锁定
       nd.trunk = !!n[5];         // 旧存档没有第 6 位 → 默认非主干
       nd.confluence = !!n[6];    // 旧存档没有第 7 位 → 默认非汇流
+      /* 菌落类型：旧存档没有第 9 位 → 无菌落。
+       * 校验类型合法 —— 配置改过之后的存档不能带进未知的 kind。 */
+      nd.colony = (n[8] && COLONY_KINDS[n[8]]) ? n[8] : null;
       /* 树木成长度：旧存档没有第 8 位 → 当作「刚种下」。
        * treeStage 由成长度推出来，不存档 —— 它是缓存，存了反而可能不一致。 */
       if (nd.soil === 'root') {
@@ -2446,6 +2622,11 @@ var Sim = (function () {
       if (n.soil !== 'core') state.counters.connectedSoils[n.soil] = 1;
     });
     if (state.nodes.length > state.counters.maxNodes) state.counters.maxNodes = state.nodes.length;
+    /* 已建菌落数：存档里有就用存档的；老存档没有则从节点补算（通常为 0），
+     * 取 max 是防止「存档数与节点实际数不一致」时价格被低估。 */
+    var colonyFromNodes = 0;
+    for (var ci = 0; ci < state.nodes.length; ci++) if (state.nodes[ci].colony) colonyFromNodes++;
+    state.coloniesBuilt = Math.max(d.coloniesBuilt || 0, colonyFromNodes);
     rebuildNetwork(state);
     reveal(state);
     return state;
@@ -2495,12 +2676,16 @@ var Sim = (function () {
      * growAt 会拿着旧 soil 种错基质（见 autotest 里树木那步的注释）。 */
     addNode: addNode, computeFlow: computeFlow, invalidateCands: invalidateCands,
     bestCandidate: bestCandidate, autoIntervalOf: autoIntervalOf,
-    passAutoRule: passAutoRule,
+    passAutoRule: passAutoRule, inCappedTreeRing: inCappedTreeRing,
     // 内容层
     nodeUpgradeCost: nodeUpgradeCost, upgradeNode: upgradeNode,
     abilityReady: abilityReady, useAbility: useAbility, abilityCfg: abilityCfg,
     spawnEvent: spawnEvent, removeGnat: removeGnat, buffAt: buffAt,
     countGnats: countGnats, checkMilestones: checkMilestones,
+    // 菌落
+    colonyCount: colonyCount, colonyCost: colonyCost,
+    buildColony: buildColony, demolishColony: demolishColony,
+    colonyMulFor: colonyMulFor,
     // 菌瘟（后期挑战）
     countBlights: countBlights, removeBlight: removeBlight,
     spawnBlight: spawnBlight, spreadBlights: spreadBlights, putBlight: putBlight,

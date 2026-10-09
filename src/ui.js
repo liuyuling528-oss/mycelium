@@ -63,6 +63,7 @@ var UI = (function () {
      'strainCard', 'strains', 'strainSlots', 'strainHint',
      'abilities', 'eventLine', 'milestones', 'msCount',
      'trunkCount', 'structRow', 'structHint', 'trunkCap',
+     'structColW', 'structColN', 'structColS',
      'treeCount', 'treeHint', 'topsoilRow',
      'btnSave', 'btnNew', 'slotList', 'saveHint', 'toast',
      'choiceOverlay', 'choiceCards', 'choiceHint'].forEach(function (id) { el[id] = document.getElementById(id); });
@@ -629,16 +630,27 @@ var UI = (function () {
     if (el.trunkCount) {
       var tUsed = window.MYC.Sim.trunkCount(state);
       var cUsed = window.MYC.Sim.confluenceCount(state);
+      var colUsed = window.MYC.Sim.colonyCount(state);
       el.trunkCount.textContent = '主干 ' + tUsed + '/' + C.TRUNK.maxTrunk +
-                                 '　汇流 ' + cUsed + '/' + C.TRUNK.maxConfluence;
+                                 '　汇流 ' + cUsed + '/' + C.TRUNK.maxConfluence +
+                                 (state.milestones.m12
+                                   ? '　菌落 ' + colUsed + '/' + C.COLONY.maxColonies
+                                   : '');
       /* 提示里的「还剩 N 格」要跟着配额走，否则用掉一格后提示还说着旧数字。
        * 只在计数变化时重算 —— 跟 autoGrow 用同一套 memo 思路。 */
-      var sig = tUsed + ',' + cUsed;
+      var sig = tUsed + ',' + cUsed + ',' + colUsed;
       if (sig !== lastStructSig) {
         lastStructSig = sig;
         if (window.MYC.setStructMode) window.MYC.setStructMode(currentStructMode());
       }
     }
+
+    /* 菌落按钮：m12 解锁前整个藏掉 —— 一个点不了的按钮比没有按钮更让人困惑。
+     * 解锁后常驻（菌落是永久解锁的能力，每局都要用）。 */
+    var colShow = !!state.milestones.m12 ? '' : 'none';
+    ['structColW', 'structColN', 'structColS'].forEach(function (id) {
+      if (el[id] && el[id].style.display !== colShow) el[id].style.display = colShow;
+    });
 
     /* 树木：显示「几棵树、长到哪一档、几棵被压住」。
      * 用 memo 只在变化时重写 —— 每 0.1s 重写 innerHTML 会打断文本选择，

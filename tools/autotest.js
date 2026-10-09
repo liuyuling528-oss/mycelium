@@ -2897,14 +2897,20 @@
        'rate=' + ts2.rate.toFixed(3) + '（crowd=' + ts2.crowd +
        '，stall 线 ' + stallAt.toFixed(1) + '）');
 
-    /* 从**古树**开始倒退，才能验证「退化到底」而不只是「没长上去」。
+    /* 从**成年段**开始倒退，才能验证「退化到底」而不只是「没长上去」。
      * 受试者是密铺后新挑的树，它自己未必长到过 180（它一直被压着），
-     * 所以这里显式把它推到古树档 —— 我们验的是「倒退逻辑」，
-     * 不是「它以前长到过多少」。 */
-    tree2.tree = T.stageAt[T.stageAt.length - 1];
+     * 所以这里显式把成长点推到成年段 —— 我们验的是「倒退逻辑」，
+     * 不是「它以前长到过多少」。
+     *
+     * 【2026-10-09 语义修正】古树**不倒退**（sim.growTrees 的整局激励修正：
+     * 没有这条时「照顾树」守不住空位，养树流被拆菌丝的跑步机拖死）。
+     * 所以倒退测试的起点从古树（180）改成成年段（100）——
+     * 幼苗/成年照样会被围死退光，古树则是「根深蒂固」的终点站。
+     * 古树不退这条不变量在下面单独守。 */
+    tree2.tree = 100;
     tree2.treeStage = Sim.treeStageOf(tree2.tree);
     var startGrowth = tree2.tree;
-    ok('倒退起点是古树档', tree2.treeStage === 2,
+    ok('倒退起点是成年档', tree2.treeStage === 1,
        'growth=' + startGrowth.toFixed(1) + ' stage=' + tree2.treeStage);
 
     /* 要跑多久？算出来，别猜。
@@ -2926,13 +2932,27 @@
       if (tc.tree <= 0) break;
     }
     var tz = st.nodes[st.nodeAt[Sim.idx(spot.x, spot.y)]];
-    ok('围拢会把树一路压回幼苗（成长归零）', tz && tz.tree === 0,
+    ok('围拢会把非古树的树压回幼苗（成长归零）', tz && tz.tree === 0,
        tz ? ('成长 ' + startGrowth.toFixed(1) + ' → ' + tz.tree.toFixed(2) +
              '（实退 ' + (startGrowth - tz.tree).toFixed(1) +
              '，预算 ' + budget + 's / 需 ' + needSec + 's @ ' + backRate.toFixed(3) + '/s）')
           : '树不见了');
     ok('归零后档位回到幼苗', tz && tz.treeStage === 0, tz ? String(tz.treeStage) : 'n/a');
     ok('成长度不会是负数', tz && tz.tree >= 0, tz ? String(tz.tree) : 'n/a');
+
+    /* 古树不倒退（2026-10-09 的新不变量）：把树推回古树档再围 30 秒，
+     * 成长点必须一动不动。它是「护树到古树就一劳永逸」的承诺 ——
+     * 断言守着它，之后谁改 growTrees 都不会悄悄把跑步机请回来。 */
+    var ta = st.nodes[st.nodeAt[Sim.idx(spot.x, spot.y)]];
+    if (ta) {
+      ta.tree = T.stageAt[T.stageAt.length - 1];
+      ta.treeStage = Sim.treeStageOf(ta.tree);
+      for (var ag = 0; ag < 30; ag++) Sim.tick(st, 1);
+      var ta2 = st.nodes[st.nodeAt[Sim.idx(spot.x, spot.y)]];
+      ok('古树被围也不倒退（根深蒂固）',
+         ta2 && ta2.tree === T.stageAt[T.stageAt.length - 1] && ta2.treeStage === 2,
+         ta2 ? ('growth=' + ta2.tree.toFixed(1) + ' stage=' + ta2.treeStage) : '树不见了');
+    }
   });
 
   /* 拆除节点：id 重排、反查表一致、核心不可拆 */
@@ -3687,6 +3707,149 @@
       var r = Sim.applyChoice(g.state, key);
       ok('选完之后重复调用同一张卡会被拒绝', r.ok === false, r.reason || '竟然又成功了');
     }
+  });
+
+
+  /* ================================================================ 菌落
+   * 建造链路：解锁门 → 建造 → 光环生效（覆盖邻居、不吃自己、同资源不叠加）
+   * → 配额上限 → 拆除 → 存档往返 → UI 按钮随 m12 显隐。
+   * 解锁的「真实达成路径」（网络 120 格）由 headless_sim 的菌落策略组覆盖，
+   * 这里直接操纵里程碑标志，专测建造与结算本身。
+   * 建造断言全部跑在**临时 state** 上 —— 别污染活动局，
+   * 否则后面「主循环无异常」之类的断言会被无关的菌落干扰。 */
+  step(function () { /* 菌落：解锁门与建造 */
+    var g = window.MYC.game, SimL = window.MYC.Sim, CL = window.MYC.CONFIG;
+    var st = g.state;
+    var r0 = SimL.buildColony(st, 1, 'water');
+    ok('未解锁时建菌落被拒绝', r0.ok === false, r0.reason || '竟然成功了');
+    st.milestones.m12 = true;
+
+    var tmp = SimL.newGame(20260917, {}, {});
+    tmp.milestones.m12 = true;
+    tmp.res.nutrient = 100000;
+    /* 新局只有 1 格核心 —— 先手动铺一排腐木，才有「非核心菌丝」可建 */
+    for (var wi = 1; wi <= 5; wi++) {
+      SimL.addNode(tmp, tmp.core.x + wi, tmp.core.y, 'wood');
+    }
+    SimL.rebuildNetwork(tmp);
+    var target = null;
+    for (var i = 1; i < tmp.nodes.length; i++) {
+      if (!tmp.nodes[i].colony) { target = i; break; }
+    }
+    ok('临时局里有可建菌落的菌丝', target != null, 'nodes=' + tmp.nodes.length);
+    if (target == null) { SimL.applyMapSize(st, { w: st.mapW, h: st.mapH }); return; }
+    var cost0 = SimL.colonyCost(tmp);
+    var nBefore = SimL.colonyCount(tmp);
+    var r1 = SimL.buildColony(tmp, target, 'nutrient');
+    ok('建菌落成功', r1.ok === true, r1.reason || '');
+    ok('建菌落扣了养分', tmp.res.nutrient <= 100000 - cost0,
+       'res=' + Math.round(tmp.res.nutrient) + ' cost=' + cost0);
+    ok('菌落计数 +1', SimL.colonyCount(tmp) === nBefore + 1);
+    /* 光环：邻居吃加成、自己不吃 */
+    ok('菌落自己不吃自己的光环',
+       SimL.colonyMulFor(tmp, tmp.nodes[target]).nutrient === 1,
+       'mul=' + SimL.colonyMulFor(tmp, tmp.nodes[target]).nutrient);
+    var gotBuff = null;
+    for (var j = 1; j < tmp.nodes.length; j++) {
+      if (j === target) continue;
+      if (SimL.colonyMulFor(tmp, tmp.nodes[j]).nutrient > 1) { gotBuff = j; break; }
+    }
+    ok('半径内的邻居吃到养分加成', gotBuff != null, 'first=' + gotBuff);
+    /* 同资源不叠加：第二个养分菌落盖进同一片，覆盖格仍 ×1.40 */
+    if (gotBuff != null && SimL.buildColony(tmp, gotBuff, 'nutrient').ok) {
+      var R2 = CL.COLONY.radius * CL.COLONY.radius;
+      var both = null;
+      for (var k = 1; k < tmp.nodes.length; k++) {
+        if (k === target || k === gotBuff) continue;
+        if (SimL.colonyMulFor(tmp, tmp.nodes[k]).nutrient > 1) {
+          var dx1 = tmp.nodes[target].x - tmp.nodes[k].x;
+          var dy1 = tmp.nodes[target].y - tmp.nodes[k].y;
+          if (dx1 * dx1 + dy1 * dy1 <= R2) { both = k; break; }
+        }
+      }
+      if (both != null) {
+        ok('同类菌落重叠不叠加（×1.40 而非 ×1.96）',
+           SimL.colonyMulFor(tmp, tmp.nodes[both]).nutrient === CL.COLONY.yieldMul,
+           'mul=' + SimL.colonyMulFor(tmp, tmp.nodes[both]).nutrient);
+      }
+      SimL.demolishColony(tmp, gotBuff);
+    }
+    /* 配额上限 */
+    var guard = 0;
+    while (SimL.colonyCount(tmp) < CL.COLONY.maxColonies && guard++ < 10) {
+      var spot = null;
+      for (var q = 1; q < tmp.nodes.length; q++) {
+        if (!tmp.nodes[q].colony) { spot = q; break; }
+      }
+      if (spot == null) break;
+      SimL.buildColony(tmp, spot, 'water');
+    }
+    ok('菌落数封顶', SimL.colonyCount(tmp) === CL.COLONY.maxColonies,
+       'count=' + SimL.colonyCount(tmp));
+    var openSlot = null;
+    for (var q2 = 1; q2 < tmp.nodes.length; q2++) {
+      if (!tmp.nodes[q2].colony) { openSlot = q2; break; }
+    }
+    if (openSlot != null) {
+      var r4 = SimL.buildColony(tmp, openSlot, 'spore');
+      ok('超配额被拒绝', r4.ok === false, r4.reason || '');
+    }
+    /* 拆除：腾配额，不退养分 */
+    var resBefore = tmp.res.nutrient;
+    var r5 = SimL.demolishColony(tmp, target);
+    ok('拆除菌落成功且不退养分', r5.ok === true && tmp.res.nutrient === resBefore);
+    ok('拆除后配额腾出', SimL.colonyCount(tmp) === CL.COLONY.maxColonies - 1);
+    /* 存档往返 */
+    var tmp2 = SimL.deserialize(SimL.serialize(tmp));
+    ok('菌落经存档往返保留', SimL.colonyCount(tmp2) === SimL.colonyCount(tmp),
+       SimL.colonyCount(tmp2) + ' vs ' + SimL.colonyCount(tmp));
+    ok('已建计数经存档往返保留', tmp2.coloniesBuilt === tmp.coloniesBuilt);
+    /* 还原活动地图尺寸（deserialize/newGame 会动模块级单例 _MAP） */
+    SimL.applyMapSize(st, { w: st.mapW, h: st.mapH });
+  });
+
+  /* 菌落 UI：m12 解锁后按钮出现；提示文案随模式切换。 */
+  step(function () { /* 菌落：UI 显隐与模式提示 */
+    var g = window.MYC.game, SimL2 = window.MYC.Sim;
+    var st = g.state;
+    st.milestones.m12 = true;
+    var bW = document.getElementById('structColW');
+    ok('菌落按钮存在', !!bW);
+    var self2 = this;
+    /* ui.update 每 0.1s 跑一次；等一拍再断言显隐 */
+    setTimeout(function () {
+      ok('解锁后菌落按钮可见', bW && bW.style.display !== 'none', 'display=' + (bW && bW.style.display));
+      if (window.MYC.setStructMode) {
+        window.MYC.setStructMode('colonyWater');
+        var hint = document.getElementById('structHint');
+        ok('菌落模式提示文案出现', hint && hint.textContent.indexOf('菌落') >= 0,
+           hint ? hint.textContent.slice(0, 40) : 'null');
+        window.MYC.setStructMode('none');
+      }
+    }, 200);
+  });
+
+  /* 腐殖潮：第三种增益区（养分版）。增益区事件在核心 1 格网络下只会抽
+   * rain/bloom/flush 三种 —— 连抽多次必须出现 flush，buffAt 对应养分。 */
+  step(function () { /* 腐殖潮：三种增益区齐全 */
+    var g3 = window.MYC.game, Sim3 = window.MYC.Sim, C3 = window.MYC.CONFIG;
+    var st = g3.state;
+    var kinds = {};
+    var tmp = Sim3.newGame(20260917, {}, {});
+    for (var i = 0; i < 60; i++) {
+      var ev = Sim3.spawnEvent(tmp);
+      if (ev && ev.kind !== 'gnat' && ev.kind !== 'blight') kinds[ev.kind] = (kinds[ev.kind] || 0) + 1;
+    }
+    ok('增益区事件三种齐全（rain/bloom/flush）',
+       kinds.rain > 0 && kinds.bloom > 0 && kinds.flush > 0,
+       JSON.stringify(kinds));
+    /* buffAt 的资源映射：flush 必须放大养分 */
+    st.events.push({ kind: 'flush', x: st.core.x + 1, y: st.core.y, r: 3, ttl: 10, dur: 10 });
+    var bf = Sim3.buffAt(st, st.core.x + 1, st.core.y);
+    ok('腐殖潮放大养分', !!bf && bf.nutrient === C3.EVENTS.buffMul && bf.water === 1,
+       bf ? JSON.stringify(bf) : 'null');
+    st.events.pop();
+    Sim3.applyMapSize(g3.state, { w: st.mapW, h: st.mapH });
   });
 
 

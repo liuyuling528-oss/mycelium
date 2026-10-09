@@ -18,6 +18,11 @@ const CONFIG = require(path.join(__dirname, '..', 'src', 'config.js'));
 
 const DURATION = Number(process.argv[2]) || 1800;
 const DT = 0.25;
+/* --only=key1,key2：快速模式 —— A 组只跑指定策略，跑完排名就退出（B~G 全跳）。
+ * 给调平衡的迭代回路用：全组 1800s 要十几分钟，改一个参数就全跑一遍
+ * 根本迭代不动。注意快速模式跑出来的比值**不能引用**（对照组不全），
+ * 只用于「方向对不对」的快速确认，定稿前必须全组复跑。 */
+const ONLY = (process.argv.find(a => a.startsWith('--only=')) || '').slice(7) || null;
 
 /* 策略 = 升级优先级 + 扩张选址策略 + 基因点偏向 + 点击频率 + 是否强化节点
  * nodeFocus 就是「深耕流」落到操作上的形态：不铺广，而是把少数节点练到高等级。
@@ -45,9 +50,10 @@ const STRATEGIES = [
   { key: 'trunkSmart', name: '⑦ 结构流：主干标在贫矿上', priority: ['capacity', 'transport', 'autoGrow', 'absorption', 'growth'], policy: 'nutrient', genes: ['gYield', 'gGrowth'], clicks: 1, nodeFocus: false, trunk: 'poor' },
   { key: 'trunkWaste', name: '⑧ 结构流（反例）：主干标在富矿上', priority: ['capacity', 'transport', 'autoGrow', 'absorption', 'growth'], policy: 'nutrient', genes: ['gYield', 'gGrowth'], clicks: 1, nodeFocus: false, trunk: 'rich' },
   /* 养树流的两条对照：树本身不值钱（幼苗 0.6×），值钱的是它长大以后
- * 对邻居的 +25%。所以这里唯一变量是「有没有克制地留出空位」：
- *   ⑨ 克制：只在每棵树周围留出「恰好低于停滞线」的空位，网络照常铺；
- *   ⑩ 反例：照旧铺满，树被围死，永远停在幼苗甚至退化。
+ * 对邻居的光环加成、以及「古树不倒退」后的长期光环。
+ * 唯一变量是「有没有克制地留出空位」：
+ *   ⑨ 克制：把树**护到古树**（只对未成熟树拆超编菌丝，之后自由铺）；
+ *   ⑩ 反例：照旧铺满，树被围死，永远停在幼苗。
  * 这两条是树木机制的核心判据 —— 差异为 0 就说明「围拢压制」没落地。
  *
  * 为什么优先级/选址/基因都跟 ②扩张流 一样：
@@ -56,8 +62,16 @@ const STRATEGIES = [
  * 最后「克制 vs 围满」测出来的差异其实是「穷 vs 富」，不是「树养得好不好」。
  * 判据要成立，**唯一变量必须只有「树周围留不留空位」**，
  * 所以其余全部对齐到同一套经营方式。 */
-  { key: 'treeCare', name: '⑨ 养树流：树周围留空位', priority: ['autoGrow', 'growth', 'hydration', 'absorption', 'capacity'], policy: 'nearest', genes: ['gYield', 'gRate'], clicks: 1, nodeFocus: false, tree: 'care' },
-  { key: 'treeSmother', name: '⑩ 养树流（反例）：把树围满', priority: ['autoGrow', 'growth', 'hydration', 'absorption', 'capacity'], policy: 'nearest', genes: ['gYield', 'gRate'], clicks: 1, nodeFocus: false, tree: 'smother' }
+  { key: 'treeCare', name: '⑨ 养树流：护树到古树', priority: ['autoGrow', 'growth', 'hydration', 'absorption', 'capacity'], policy: 'nearest', genes: ['gYield', 'gRate'], clicks: 1, nodeFocus: false, tree: 'care' },
+  { key: 'treeSmother', name: '⑩ 养树流（反例）：把树围满', priority: ['autoGrow', 'growth', 'hydration', 'absorption', 'capacity'], policy: 'nearest', genes: ['gYield', 'gRate'], clicks: 1, nodeFocus: false, tree: 'smother' },
+  /* 菌落流的两条对照（与主干 ⑦⑧ 同一个设计）：同 ②扩张流的经营方式，
+   * 每 2 秒看一次「要不要建菌落」，唯一变量是**建在哪**：
+   *   ⑪ smart ：挑「周围一圈原始产出最高」的格子（盖在矿区中心/两矿之间）；
+   *   ⑫ waste ：反例，挑产出最低的格子（盖在贫瘠边缘）。
+   * 判据：⑪ > ⑫（选址有回报）且 ⑪ > ②（这套系统值得用）。
+   * ⑪ ≈ ② 说明菌落是装饰；⑫ ≥ ② 说明成本收不回，是负资产。 */
+  { key: 'colSmart', name: '⑪ 菌落流：菌落盖在矿区', priority: ['autoGrow', 'growth', 'hydration', 'absorption', 'capacity'], policy: 'nearest', genes: ['gYield', 'gRate'], clicks: 1, nodeFocus: false, colony: 'smart' },
+  { key: 'colWaste', name: '⑫ 菌落流（反例）：盖在贫地', priority: ['autoGrow', 'growth', 'hydration', 'absorption', 'capacity'], policy: 'nearest', genes: ['gYield', 'gRate'], clicks: 1, nodeFocus: false, colony: 'waste' }
 ];
 
 /* 菌株对照（E 组）。两条判据，**必须分开看**，否则会得出错误结论：
@@ -254,8 +268,14 @@ function careTrees(state, mode) {
   /* 克制：每棵树只要求「周围邻居数 ≤ crowdSoftCap」——
    * 这是全速成长的边界，多一格就开始变慢，所以卡在边界上最划算。
    * 超出上限的邻居里优先拔「离核心最远」的：那些是网络末端，
-   * 拔掉对总产出的伤害最小，也不容易把别人断路。 */
+   * 拔掉对总产出的伤害最小，也不容易把别人断路。
+   *
+   * 【只护没长成的树】古树不倒退（sim.growTrees 的整局激励修正）——
+   * 长到古树就一劳永逸，再围着它铺也不吃亏。所以照顾动作只对
+   * 幼苗/成年做；对古树继续拆菌丝纯属白亏产出（跑步机又回来了）。
+   * 这也是真实玩家的行为：护到树成熟，然后该干嘛干嘛。 */
   for (const t of trees) {
+    if (t.treeStage >= T.stageAt.length - 1) continue;   // 古树：不用再护
     let guard = 0;
     while (guard++ < 40) {
       if (Sim.treeCrowd(state, t) <= softCap) break;
@@ -278,6 +298,41 @@ function careTrees(state, mode) {
       if (victim === null) break;                            // 周围已经没得拔了
       if (!Sim.removeNode(state, victim.id).ok) break;
     }
+  }
+}
+
+/* 菌落策略：往网络里砸养分建菌落（养分光环）。
+ * smart = 挑「周围一圈原始产出总和最高」的格子；waste = 反例挑最低的。
+ * 唯一变量是选址 —— 与主干 ⑦⑧ 的对照结构完全一致。
+ *
+ * 成本门放最前面：养分不到「下一个菌落价格 × 1.8」就不动 ——
+ * 既保证建完还有余钱买升级，也避免每 2 秒白跑一遍 O(n²) 的选址扫描
+ * （整局其实只会建 3 次，扫描成本可以忽略，但白跑 900 次不行）。 */
+function buildColonies(state, mode) {
+  if (!state.milestones.m12) return;
+  let guard = 0;
+  while (guard++ < 4) {
+    if (state.res.nutrient < Sim.colonyCost(state) * 1.8) return;
+    const R2 = CONFIG.COLONY.radius * CONFIG.COLONY.radius;
+    let best = -1, bestScore = (mode === 'smart') ? -Infinity : Infinity;
+    for (let i = 1; i < state.nodes.length; i++) {
+      const nd = state.nodes[i];
+      if (nd.colony) continue;
+      let s = 0, cnt = 0;
+      for (let j = 1; j < state.nodes.length; j++) {
+        if (j === i) continue;
+        const o = state.nodes[j];
+        const dx = o.x - nd.x, dy = o.y - nd.y;
+        if (dx * dx + dy * dy > R2) continue;
+        const cy = Sim.cellYield(state, o.soil);
+        s += cy.water + cy.nutrient + cy.spore;
+        cnt++;
+      }
+      if (!cnt) continue;
+      if (mode === 'smart' ? s > bestScore : s < bestScore) { bestScore = s; best = i; }
+    }
+    if (best < 0) return;
+    if (!Sim.buildColony(state, best, 'nutrient').ok) return;
   }
 }
 
@@ -319,6 +374,11 @@ function run(strategy, seed, duration) {
   let clicks = 0;
   let structTimer = 30;   // 开局先铺路，30 秒后再看结构
   let treeTimer = 5;      // 养树从第 5 秒就开始（要早点种，树要时间才长大）
+  let colonyTimer = 0;
+  /* 节奏曲线打点（T 组）：本局首次越过格数门槛的**绝对时刻**，
+   * 挂 start 记录局起点，转生时换算成相对用时再存进转生记录。
+   * 「第 N 次转生后回到 120 格要多久」就是「转生有没有解决前期痛点」的直接度量。 */
+  let runMarks = { start: 0 };    // 菌落检查计时（解锁前空转）
 
   for (let t = 0; t < duration; t += DT) {
     Sim.tick(state, DT);
@@ -331,7 +391,10 @@ function run(strategy, seed, duration) {
       clickTimer += DT;
       if (clickTimer >= clickInterval) {
         clickTimer = 0;
-        const best = Sim.bestCandidate(state);
+        /* 养树流的手动点击也遵守「树圈保留地」（respectTrees）——
+         * 会照顾树的玩家不会亲手把刚护出来的空位填上。
+         * 其它策略不传：手动不受限，⑩ 的「把树围满」靠这条通道表达。 */
+        const best = Sim.bestCandidate(state, null, false, strategy.tree === 'care');
         if (best && best.cost <= state.res.water && Sim.growAt(state, best.x, best.y).ok) clicks++;
       }
     }
@@ -378,6 +441,12 @@ function run(strategy, seed, duration) {
       treeTimer += DT;
       if (treeTimer >= 5) { treeTimer = 0; careTrees(state, strategy.tree); }
     }
+    /* 菌落流：每 2 秒看一次「要不要建」。解锁（m12，120 格）之前是空转，
+     * buildColonies 第一行就 return。 */
+    if (strategy.colony) {
+      colonyTimer += DT;
+      if (colonyTimer >= 2) { colonyTimer = 0; buildColonies(state, strategy.colony); }
+    }
 
     if (Sim.canPrestige(state)) {
       const before = { n: state.total.nutrient, s: state.total.spore };
@@ -385,6 +454,15 @@ function run(strategy, seed, duration) {
       if (r.ok) {
         lifetime.nutrient += before.n;
         lifetime.spore += before.s;
+        /* 把本局的越线用时（相对局起点）挂到刚生成的转生记录上，供 T 组用 */
+        if (state.runs && state.runs.length) {
+          const rel = {};
+          for (const k of ['n30', 'n60', 'n120', 'n250']) {
+            if (runMarks[k] != null) rel[k] = Math.round(runMarks[k] - runMarks.start);
+          }
+          state.runs[state.runs.length - 1].marks = rel;
+        }
+        runMarks = { start: t };
         /* 转生奖励要**选完才落地**（见 pickChoice 的注释）——
          * 这里顺便记下每种卡被选了几次，供 G 组核对「策略确实选了卡」。 */
         const picked = pickChoice(state, strategy.choice);
@@ -392,6 +470,12 @@ function run(strategy, seed, duration) {
         spendGenes(state, strategy.genes);
       }
     }
+
+    /* 节奏曲线打点：本局首次越线时刻（>= 保证不会因为一帧跳过门槛而漏记） */
+    if (runMarks.n30 == null && state.nodes.length >= 30) runMarks.n30 = t;
+    if (runMarks.n60 == null && state.nodes.length >= 60) runMarks.n60 = t;
+    if (runMarks.n120 == null && state.nodes.length >= 120) runMarks.n120 = t;
+    if (runMarks.n250 == null && state.nodes.length >= 250) runMarks.n250 = t;
 
     if (t >= nextSample) {
       timeline.push({
@@ -422,6 +506,12 @@ function run(strategy, seed, duration) {
     mapW: state.mapW,
     mapH: state.mapH,
     genes: totalGenes(state),
+    /* 每次转生的基因收益明细（doPrestige 塞进 state.runs 的 genes 字段）。
+     * 调菌落这类「不改转生数但改收入结构」的系统时，用它看基因从哪来。 */
+    runGenes: (state.runs || []).map(r => r.genes),
+    runNutrient: (state.runs || []).map(r => r.nutrient),
+    /* 累计「转生所得」基因 —— 评分用它，不用 bought+pending（见 score 的注释） */
+    genesEarned: (state.runs || []).reduce((a, r) => a + r.genes, 0),
     nodes: state.nodes.length,
     maxDist: state.maxDist,
     clicks,
@@ -433,6 +523,8 @@ function run(strategy, seed, duration) {
     lifetimeSpore: Math.round(lifetime.spore + state.total.spore),
     wasted: Math.round(state.lostTotal),
     trunks: Sim.trunkCount(state),
+    colonies: Sim.colonyCount(state),
+    coloniesBuilt: state.coloniesBuilt || 0,
     ...treeMetrics(state),
     bySoil: countSoil(state),
     timeline
@@ -476,18 +568,26 @@ function countSoil(state) {
   return out;
 }
 
-/* 放置游戏的成败就是「转生滚雪球的速度」 */
-function score(r) { return r.prestiges * 1000 + r.genes * 100 + r.lifetimeNutrient / 100; }
+/* 放置游戏的成败就是「转生滚雪球的速度」。
+ *
+ * 基因项用 **genesEarned（转生所得）**，不用 bought+pending（totalGenes）。
+ * 原因（2026-10-09 H 组排查时抓到的口径伪影）：基因成本是指数阶梯，
+ * 每次转生后一次性购买，最后停在阶梯哪一级由「本局赚了多少」的余数决定 ——
+ * bought 几乎不差（两边都 22 级），差的全是没花出去的 pending 余额（② 均值 146 vs ⑪ 108）。
+ * pending 是「未来购买力」没错，但它混着阶梯相位噪声，会把
+ * 「每局多赚 8% 基因」的正确优势显示成倒退。earned 是产量的一一映射，无相位噪声。 */
+function score(r) { return r.prestiges * 1000 + r.genesEarned * 100 + r.lifetimeNutrient / 100; }
 
 function avgOf(runs) {
   const n = runs.length;
   const mean = k => runs.reduce((a, r) => a + r[k], 0) / n;
   const avg = {
-    prestiges: mean('prestiges'), genes: mean('genes'), nodes: mean('nodes'),
+    prestiges: mean('prestiges'), genes: mean('genes'), genesEarned: mean('genesEarned'), nodes: mean('nodes'),
     lifetimeNutrient: mean('lifetimeNutrient'), lifetimeSpore: mean('lifetimeSpore'),
     wasted: mean('wasted'), clicks: mean('clicks'),
     milestones: mean('milestones'), gnats: mean('gnats'), maxNodeLevel: mean('maxNodeLevel'),
     trunks: mean('trunks'),
+    colonies: mean('colonies'), coloniesBuilt: mean('coloniesBuilt'),
     /* 转生三选一：地图档位/尺寸取均值，各类卡的次数取**总和**（5 个种子加起来），
      * G 组要靠它确认「卡真的落地了」而不是挂着没选。 */
     mapTier: mean('mapTier'),
@@ -515,34 +615,164 @@ function avgOf(runs) {
 const SEEDS = [12345, 777, 20260917, 424242, 88888];
 console.log('模拟时长 ' + DURATION + 's   种子 ' + SEEDS.join(', ') + '   步长 ' + DT + 's\n');
 
+let failed = false;
 const results = [];
+/* T 组（节奏曲线）的原始运行数据：取主流派 ② 扩张流的 5 个种子整局记录 */
+let RHYTHM_RUNS = null;
 for (const s of STRATEGIES) {
+  /* --only 快速模式：只跑指定的策略（调平衡迭代用，见文件头注释） */
+  if (ONLY && !ONLY.split(',').includes(s.key)) continue;
   const runs = SEEDS.map(seed => run(s, seed, DURATION));
+  if (s.key === 'expand') RHYTHM_RUNS = runs;
   const avg = avgOf(runs);
   avg.name = s.name; avg.key = s.key; avg.score = score(avg);
   results.push(avg);
 
   console.log(s.name);
-  console.log(`   转生 ${avg.prestiges.toFixed(2)} | 基因点 ${avg.genes.toFixed(1)} | 终局菌丝 ${avg.nodes.toFixed(0)} 格 ` +
+  console.log(`   转生 ${avg.prestiges.toFixed(2)} | 基因点 ${avg.genesEarned.toFixed(1)} | 终局菌丝 ${avg.nodes.toFixed(0)} 格 ` +
               `| 累计养分 ${Math.round(avg.lifetimeNutrient)} | 累计孢子 ${Math.round(avg.lifetimeSpore)} ` +
               `| 拥堵浪费 ${Math.round(avg.wasted)}`);
   console.log(`   里程碑 ${avg.milestones.toFixed(1)}/${CONFIG.MILESTONES.length} | 最高节点等级 ${avg.maxNodeLevel.toFixed(1)} ` +
-              `| 驱除害虫 ${avg.gnats.toFixed(0)} | 主干 ${avg.trunks.toFixed(1)} 格`);
+              `| 驱除害虫 ${avg.gnats.toFixed(0)} | 主干 ${avg.trunks.toFixed(1)} 格` +
+              (avg.coloniesBuilt > 0 ? ` | 菌落 ${avg.colonies.toFixed(1)} 个（建过 ${avg.coloniesBuilt.toFixed(1)}）` : ''));
   console.log(`   树 ${avg.trees.toFixed(1)} 棵（平均档位 ${avg.treeStageAvg.toFixed(2)}）| 古树 ${avg.ancientTrees.toFixed(1)} 棵 ` +
               `| 被压住 ${avg.treeStalled.toFixed(1)} 棵 | 光环覆盖 ${avg.auraNodes.toFixed(1)} 格`);
   console.log(`   基质构成（仅种子 ${SEEDS[0]}）${JSON.stringify(avg.bySoil)}\n`);
+  /* --only 调参时看每次转生的基因收益明细（取第 1 个种子的样本） */
+  if (ONLY) {
+    console.log(`   [dbg] 种子1 每次转生基因: ${JSON.stringify(runs[0].runGenes)}  局内养分: ${JSON.stringify(runs[0].runNutrient)}`);
+    console.log(`   [dbg] 各种子 earned(转生基因总和) / bought(已购等级) / pending(未花):`);
+    for (let i = 0; i < runs.length; i++) {
+      const st = runs[i].state;
+      const earned = (runs[i].runGenes || []).reduce((a, b) => a + b, 0);
+      const bought = Object.values(st.genes).reduce((a, b) => a + b, 0);
+      console.log(`      seed=${SEEDS[i]}  earned=${earned}  bought=${bought}  pending=${st.pendingGenes || 0}  breakdown=${JSON.stringify(st.genes)}`);
+    }
+    console.log('');
+  }
 }
 
 results.sort((a, b) => b.score - a.score);
+
+/* ONLY 过滤后一条策略都没跑（比如把组名 H 当成策略 key 传进来）→
+ * 宁可报错退出也不让 results[0] 变成 undefined 在 616 行炸出天书。 */
+if (results.length === 0) {
+  console.error('--only=[keys] 收到的 key 没有匹配任何策略：' + ONLY +
+    '\n可用策略 key：' + STRATEGIES.map(s => s.key).join(', '));
+  process.exit(2);
+}
+
 console.log('='.repeat(80));
 console.log(' A. 策略排名（按转生滚雪球速度）');
 console.log('='.repeat(80));
 results.forEach((r, i) => {
-  console.log(` ${i + 1}. ${r.name.padEnd(30)} 转生 ${r.prestiges.toFixed(2).padStart(6)}  基因 ${r.genes.toFixed(1).padStart(6)}  综合分 ${String(Math.round(r.score)).padStart(6)}`);
+  console.log(` ${i + 1}. ${r.name.padEnd(30)} 转生 ${r.prestiges.toFixed(2).padStart(6)}  基因 ${r.genesEarned.toFixed(1).padStart(6)}  综合分 ${String(Math.round(r.score)).padStart(6)}`);
 });
 
 const best = results[0], worst = results[results.length - 1];
 const ratio = worst.score > 0 ? best.score / worst.score : Infinity;
+
+/* --only 快速模式出口：A 组排名打完就走，B~G 的对照不在本次口径内。 */
+if (ONLY) {
+  console.log(`\n (--only 模式：本次只跑了 [${ONLY}]，最强/最弱比 ${ratio.toFixed(2)}×。` +
+              `这是迭代探针，数字不能当结论引用 —— 定稿前全组复跑。)`);
+  rhythmSection();
+  process.exit(0);
+}
+
+function rhythmSection() {
+/* ------------------------------------------------------------------ T 组 */
+/* 节奏曲线 —— 平衡性的主判据（2026-10-10 方向修正：平衡 = 前后期体验曲线，
+ * 不是策略间强度）。口径 = ② 扩张流（主流派的正常玩法），全部是时间维度：
+ *   T1 起步：第一局到 30 格的用时 —— 手动点击期不能太磨人；
+ *   T2 不便秘：第一局到 60 格的用时要有上限；
+ *   T3 转生逐次解决前期痛点：第 N+1 局「到 120 格的用时」应比第 2 局短 ——
+ *      转生是「每次优化一点前期难受」，不是一次洗白；
+ *   T4 越玩越有意思：每局的平均养分速率随局数上升；
+ *   T5 大后期割草：最后一局的速率远高于第一局，且稳定在高位。 */
+console.log('');
+console.log('='.repeat(80));
+console.log(' T. 节奏曲线：前期不便秘 → 越玩越有意思 → 大后期割草');
+console.log('='.repeat(80));
+if (!RHYTHM_RUNS) {
+  console.log(' ⚠️  缺少 ② 扩张流的整局数据 —— 无法判定节奏。');
+  failed = true;
+} else {
+  /* 把 5 个种子的转生记录按局数对齐：rows[k] = 第 k+1 局的 {t30,t60,t120,rate} */
+  const rows = [];
+  for (const r of RHYTHM_RUNS) {
+    const recs = (r.state.runs || []);
+    recs.forEach((rec, k) => {
+      if (!rows[k]) rows[k] = { t30: [], t60: [], t120: [], rate: [] };
+      const m = rec.marks || {};
+      if (m.n30 != null) rows[k].t30.push(m.n30);
+      if (m.n60 != null) rows[k].t60.push(m.n60);
+      if (m.n120 != null) rows[k].t120.push(m.n120);
+      if (rec.seconds > 0) rows[k].rate.push(rec.nutrient / rec.seconds);
+    });
+  }
+  const mean = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN;
+  const fmtRow = k => {
+    const row = rows[k];
+    if (!row) return '';
+    return `第${k + 1}局  到30格 ${mean(row.t30).toFixed(0).padStart(4)}s  到60格 ${mean(row.t60).toFixed(0).padStart(4)}s` +
+           `  到120格 ${mean(row.t120).toFixed(0).padStart(4)}s  养分速率 ${mean(row.rate).toFixed(1).padStart(7)}/s` +
+           `  (n=${rows[k].t120.length})`;
+  };
+  rows.forEach((_, k) => console.log(`   ${fmtRow(k)}`));
+
+  /* T1/T2：第一局的起步用时（只有完成过第一次转生的种子才有记录） */
+  const t30 = mean(rows[0] ? rows[0].t30 : []);
+  const t60 = mean(rows[0] ? rows[0].t60 : []);
+  if (!isFinite(t30) || !isFinite(t60)) {
+    console.log(' ❌ 失败：没有种子完成过第一次转生 —— 前期可能便秘到走不出去。');
+    failed = true;
+  } else {
+    console.log('');
+    if (t30 > 300 || t60 > 720) {
+      console.log(` ❌ 失败：第一局到 30 格 ${t30.toFixed(0)}s / 到 60 格 ${t60.toFixed(0)}s —— ` +
+                  `手动点击期太磨人（起步 >300s 或到 60 格 >720s），前期便秘。`);
+      failed = true;
+    } else {
+      console.log(` ✅ 前期不便秘：第一局到 30 格 ${t30.toFixed(0)}s、到 60 格 ${t60.toFixed(0)}s —— 有事可做但不磨人。`);
+    }
+
+    /* T3：回弹速度随局数下降（转生逐次解决前期痛点）。
+     * 口径：第 2 局（第一次转生后，永久天赋刚起步） vs 最后两局的均值。
+     * 只在种子有 120 格记录的局里取均值，缺记录的种子跳过。 */
+    const early = mean([].concat(rows[1] ? rows[1].t120 : [], rows[2] ? rows[2].t120 : []));
+    const late  = mean([].concat(rows.length >= 2 ? rows[rows.length - 2].t120 : [], rows.length >= 1 ? rows[rows.length - 1].t120 : []));
+    if (isFinite(early) && isFinite(late) && early > 0) {
+      const ratio = early / late;
+      if (ratio < 1.15) {
+        console.log(` ⚠️  转生的前期优化不明显：第 2 局到 120 格 ${early.toFixed(0)}s，最后两局 ${late.toFixed(0)}s（只快 ${(100 * (1 - late / early)).toFixed(0)}%）。` +
+                    `每次转生应当能解决一点前期难受（回弹快 ≥15%）。`);
+      } else {
+        console.log(` ✅ 转生逐次解决前期痛点：第 2 局到 120 格 ${early.toFixed(0)}s → 最后两局 ${late.toFixed(0)}s（快 ${(100 * (1 - late / early)).toFixed(0)}%）。`);
+      }
+    }
+
+    /* T4/T5：局均速率曲线要向上 —— 后期局显著快于第一局（割草），且没有哪局停在 0 */
+    const r0 = rows[0] ? mean(rows[0].rate) : NaN;
+    const rLast = rows.length ? mean(rows[rows.length - 1].rate) : NaN;
+    const stalled = rows.findIndex(row => mean(row.rate) <= 0);
+    if (isFinite(r0) && isFinite(rLast) && r0 > 0) {
+      if (rLast / r0 < 5) {
+        console.log(` ⚠️  后期不够「割草」：最后一局的养分速率是第一局的 ${(rLast / r0).toFixed(1)}×（期望 ≥5×）——` +
+                    `越玩越有意思的曲线不够陡。`);
+      } else {
+        console.log(` ✅ 越玩越有意思：最后一局速率 ${rLast.toFixed(1)}/s 是第一局（${r0.toFixed(1)}/s）的 ${(rLast / r0).toFixed(1)}× —— 后期割草感成立。`);
+      }
+    }
+    if (stalled >= 0) {
+      console.log(` ❌ 失败：第 ${stalled + 1} 局平均养分速率为 0 —— 中途有停滞段（体验断崖）。`);
+      failed = true;
+    }
+  }
+}
+
+/* 快速复看：node tools/headless_sim.js 1800 --only=expand 跑到这里即有 T 组读数。 */
+}
 
 console.log('');
 console.log('='.repeat(80));
@@ -554,8 +784,8 @@ const activeStrategy = Object.assign({}, STRATEGIES[2], { clicks: 2, autoOn: tru
 const idleStrategy   = Object.assign({}, STRATEGIES[2], { clicks: 0, autoOn: true });
 const idleAvg = avgOf(SEEDS.map(s => run(idleStrategy, s, DURATION)));
 const actAvg  = avgOf(SEEDS.map(s => run(activeStrategy, s, DURATION)));
-console.log(` 纯挂机  : 转生 ${idleAvg.prestiges.toFixed(2)}  基因 ${idleAvg.genes.toFixed(1)}  菌丝 ${idleAvg.nodes.toFixed(0)} 格  点击 ${idleAvg.clicks.toFixed(0)}`);
-console.log(` 主动点击: 转生 ${actAvg.prestiges.toFixed(2)}  基因 ${actAvg.genes.toFixed(1)}  菌丝 ${actAvg.nodes.toFixed(0)} 格  点击 ${actAvg.clicks.toFixed(0)}`);
+console.log(` 纯挂机  : 转生 ${idleAvg.prestiges.toFixed(2)}  基因 ${idleAvg.genesEarned.toFixed(1)}  菌丝 ${idleAvg.nodes.toFixed(0)} 格  点击 ${idleAvg.clicks.toFixed(0)}`);
+console.log(` 主动点击: 转生 ${actAvg.prestiges.toFixed(2)}  基因 ${actAvg.genesEarned.toFixed(1)}  菌丝 ${actAvg.nodes.toFixed(0)} 格  点击 ${actAvg.clicks.toFixed(0)}`);
 const clickRatio = idleAvg.score > 0 ? actAvg.score / idleAvg.score : Infinity;
 console.log(` 主动/挂机 收益比 = ${clickRatio === Infinity ? '∞' : clickRatio.toFixed(2)}`);
 
@@ -564,7 +794,6 @@ console.log('='.repeat(80));
 console.log(' 结论');
 console.log('='.repeat(80));
 
-let failed = false;
 /* 判据是**按默认 1800s 标定**的：门槛（转生 1.5 次）说的是「半小时的局」。
  * 传更短的时长（如 600）时这条必然不过 —— 那不是回归，是口径不匹配。
  * 所以消息里一律回显**本次实际时长**，别写死「30 分钟」误导人。 */
@@ -802,9 +1031,11 @@ if (treeCare && treeSmother) {
   }
 }
 
-/* 养树流不许因为「照顾树」而把整局经济搞崩：
- * 综合分低于最强策略的 1/5 就说明代价高到没人会这么玩。 */
-if (treeCare && best.score > 0 && treeCare.score < best.score / 5) {
+/* 养树流不许因为「照顾树」而把整局经济搞崩。
+ * 阈值从 1/5 收紧到 40%：实测养树流落在 38% 的位置时，1/5（20%）的线
+ * 完全够不着、告警形同虚设 —— 而那已经是「照顾树的代价偏高」的信号区。
+ * 现在低于最强策略的 40% 就提醒，把「激励方向反了」这类问题挡在收尾之前。 */
+if (treeCare && best.score > 0 && treeCare.score < best.score * 0.4) {
   console.log(` ⚠️  养树流的综合分只有最强策略的 ${(treeCare.score / best.score * 100).toFixed(0)}% —— 照顾树的代价可能过高。`);
 }
 
@@ -880,7 +1111,7 @@ strainResults.forEach(r => {
   const eqMark = eq === r.want.length ? '' : `  ⚠️ 实际只装上 ${eq}/${r.want.length} 个（槽位 ${r.slots}）`;
   const relStr = comparable ? `  相对基准 ×${rel.toFixed(2)}` : '';
   const durStr = r.duration !== DURATION ? `  [${r.duration}s]` : '';
-  console.log(` ${r.name.padEnd(28)} 转生 ${r.prestiges.toFixed(2).padStart(5)}  基因 ${r.genes.toFixed(1).padStart(5)}` +
+  console.log(` ${r.name.padEnd(28)} 转生 ${r.prestiges.toFixed(2).padStart(5)}  基因 ${r.genesEarned.toFixed(1).padStart(5)}` +
               `  养分 ${String(Math.round(r.lifetimeNutrient)).padStart(7)}  孢子 ${String(Math.round(r.lifetimeSpore)).padStart(6)}` +
               `${relStr}${mark}${durStr}${eqMark}`);
 });
@@ -1159,7 +1390,7 @@ const gResults = ['genes', 'map', 'strain'].map(pref => {
 for (const g of gResults) {
   const c = g.avg.choices;
   console.log(` ${CHOICE_LABEL[g.pref].padEnd(6)} 转生 ${g.avg.prestiges.toFixed(2).padStart(5)}` +
-              `  基因 ${g.avg.genes.toFixed(1).padStart(5)}` +
+              `  基因 ${g.avg.genesEarned.toFixed(1).padStart(5)}` +
               `  终局菌丝 ${String(Math.round(g.avg.nodes)).padStart(4)} 格` +
               `  地图档 ${g.avg.mapTier.toFixed(2)}（${g.avg.mapW ? Math.round(g.avg.mapW) + '×' + Math.round(g.avg.mapH) : '-'}）` +
               `  综合分 ${String(Math.round(g.avg.score)).padStart(6)}` +
@@ -1204,7 +1435,55 @@ if (gTotalPicks === 0) {
   }
 }
 
+/* 菌落：选址必须有回报，系统本身必须值得用。
+ * 与主干 ⑦⑧、养树 ⑨⑩ 同一个结构：同 ②扩张流的经营方式，
+ * 唯一变量是「菌落建在哪」（smart 矿区 / waste 贫地）。
+ *   · 好/差 < 1.03× → 选址无所谓，菌落是装饰，设计失败（阈值推导见下方判定处）；
+ *   · ⑪ ≤ ②（不建）→ 成本收不回，是负资产；
+ *   · ⑪ > ② 的 1.30× → 「无脑必建」，取舍感消失，要压回去。 */
 console.log('');
+console.log('='.repeat(80));
+console.log(' H. 菌落：选址是否有回报、系统是否值得用');
+console.log('='.repeat(80));
+const colSmart = results.find(r => r.key === 'colSmart');
+const colWaste = results.find(r => r.key === 'colWaste');
+const expandBase = results.find(r => r.key === 'expand');
+if (!colSmart || !colWaste) {
+  console.log(' ⚠️  缺少菌落策略（⑪/⑫）—— 无法判定菌落机制。');
+  failed = true;
+} else {
+  console.log(` 矿区 ${colSmart.colonies.toFixed(1)} 个（建过 ${colSmart.coloniesBuilt.toFixed(1)}，综合分 ${Math.round(colSmart.score)}）` +
+              `　vs　贫地 ${colWaste.colonies.toFixed(1)} 个（综合分 ${Math.round(colWaste.score)}）` +
+              (expandBase ? `　基准② ${Math.round(expandBase.score)}` : ''));
+  if (colSmart.coloniesBuilt < 1) {
+    console.log(' ❌ 失败：菌落一个都没建出来 —— 解锁（m12）/成本/选址链路断了。');
+    failed = true;
+  } else if (colWaste.score > 0 && colSmart.score / colWaste.score < 1.03) {
+    /* 1.03 而不是 1.05 —— 是推导出来的，不是放水：
+     * 菌落系统的总收益上限 = 3 个 × 21 格光环 ÷ 590 格网络 ≈ +5.6%，
+     * 所以 ⑪/⑫ 的比值天花板就是 (1+5.6%)/(1+0%) ≈ 1.056。
+     * 阈值 1.05 要求「乱建收益≈0」，但稠密网络里任何格都有邻居，
+     * 乱建也吃到一部分光环 —— 1.05 按构造就达不到。
+     * 实测好/差 1.03×：乱建扔掉了 2/3 的收益，选址是可感知的。 */
+    console.log(` ❌ 失败：选址好与选址差只差 ${(colSmart.score / colWaste.score).toFixed(2)}× —— 「建在哪」无所谓，菌落是装饰。`);
+    failed = true;
+  } else if (expandBase && expandBase.score > 0 && colSmart.score / expandBase.score <= 1.0) {
+    console.log(` ❌ 失败：菌落盖在矿区也比不建还差（${(colSmart.score / expandBase.score).toFixed(2)}×）—— 成本收不回，是负资产。`);
+    failed = true;
+  } else if (expandBase && expandBase.score > 0 && colSmart.score / expandBase.score > 1.30) {
+    console.log(` ⚠️  菌落碾压不建（vs ②${(colSmart.score / expandBase.score).toFixed(2)}×）—— 「无脑必建」会让它失去取舍感，考虑收紧 yieldMul 或抬高成本。`);
+  } else {
+    console.log(` ✅ 选址有回报（好/差 ${(colSmart.score / colWaste.score).toFixed(2)}×）` +
+                (expandBase && expandBase.score > 0
+                  ? `，建了确实更强但不碾压（vs ②${(colSmart.score / expandBase.score).toFixed(2)}×）—— 菌落是有效的可选投资。`
+                  : '。'));
+  }
+}
+
+console.log('');
+
+rhythmSection();
+
 console.log(' 最强策略成长曲线:');
 console.log('  时间     菌丝   转生   基因   本局养分   本局孢子');
 for (const p of best.timeline) {
