@@ -6,31 +6,29 @@
  * 用 NEAREST 采样保持像素边缘锐利。
  *
  * 【像素密度随转生提升 —— 转生的可见回报之一】
- *   转生 0 次 → 4×4   （粗糙的孢子视角）
- *   1 次      → 6×6
- *   2 次      → 8×8
- *   3 次      → 12×12
- *   ≥4 次     → 16×16（封顶：完整像素画细节）
+ *   从 1×1（孢子眼里的纯色世界，即贴图化之前的观感）开始，
+ *   每转生一次 +1 像素，到 16×16 封顶（第 15 次转生）：
+ *   转生 k 次 → (k+1)×(k+1)，k = 0..15。
  * 地表贴图直接按目标密度程序化生成（图案坐标做了密度无关的归一化，
  * 所以密度越高、同一片地表的细节越丰富，而不是换了一张图）；
  * 实体贴图（树/核心/菌落/害虫/菌瘟）来自手绘的 16×16 母版，
- * 低密度时最近邻降采样 —— 是同一幅画的「更粗糙的版本」。
+ * 低密度时中心最近邻采样 —— 是同一幅画的「更粗糙的版本」。
  *
  * 转生后由 WorldScene 检测档位变化并调用 build() 重建整套贴图。
  * ==========================================================================*/
 var TEX = (function () {
   'use strict';
 
-  var DENSITIES = [4, 6, 8, 12, 16];
+  var MAX_DENSITY = 16;
 
-  /* 转生次数 → 密度档位（封顶在最后一档） */
+  /* 转生次数 → 密度：从 1×1 起步，每次转生 +1，16×16 封顶（第 15 次转生） */
   function tierOf(prestiges) {
     var p = prestiges || 0;
-    return Math.min(p, DENSITIES.length - 1);
+    return Math.min(p, MAX_DENSITY - 1);
   }
-  function densityFor(prestiges) { return DENSITIES[tierOf(prestiges)]; }
+  function densityFor(prestiges) { return tierOf(prestiges) + 1; }
 
-  var N = DENSITIES[0];          // 当前密度（build 时更新）
+  var N = 1;                     // 当前密度（build 时更新）
   var currentTier = -1;
 
   /* ---- 小工具 ------------------------------------------------------- */
@@ -201,15 +199,36 @@ var TEX = (function () {
       ] }
   };
 
-  /* 把母版画成 N×N（最近邻降采样，N≤16 时是「更粗糙的同一幅画」） */
+  /* 把母版画成 N×N（中心最近邻采样，N≤16 时是「更粗糙的同一幅画」）。
+   * 采样点带 0.5 偏移取格心：N=1 时正落在母版正中心，实体缩成
+   * 「一个有代表性的色点」而不是透明。中心若是透明（比如菌落是空心环），
+   * 就近搜索最近的不透明像素 —— 保证 1×1 档实体仍然可见。 */
   function drawMaster(ctx, def, n) {
     var art = def.art, pal = def.pal;
     for (var y = 0; y < n; y++) {
-      var sy = Math.min(15, (y * 16 / n) | 0);
+      var sy = Math.min(15, Math.max(0, Math.floor((y + 0.5) * 16 / n)));
       for (var x = 0; x < n; x++) {
-        var sx = Math.min(15, (x * 16 / n) | 0);
+        var sx = Math.min(15, Math.max(0, Math.floor((x + 0.5) * 16 / n)));
         var ch = art[sy][sx];
-        if (ch === '.' || !pal[ch]) continue;
+        if (ch === '.' || !pal[ch]) {
+          /* 就近搜索：半径 1 起步逐圈外扩，找最近的不透明像素 */
+          var found = null;
+          for (var r = 1; r <= 8 && !found; r++) {
+            for (var dy = -r; dy <= r && !found; dy++) {
+              for (var dx = -r; dx <= r && !found; dx++) {
+                if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+                var yy = sy + dy, xx = sx + dx;
+                if (yy < 0 || yy > 15 || xx < 0 || xx > 15) continue;
+                var c2 = art[yy][xx];
+                if (c2 !== '.' && pal[c2]) found = pal[c2];
+              }
+            }
+          }
+          if (!found) continue;
+          ctx.fillStyle = css(found);
+          ctx.fillRect(x, y, 1, 1);
+          continue;
+        }
         ctx.fillStyle = css(pal[ch]);
         ctx.fillRect(x, y, 1, 1);
       }
@@ -325,7 +344,7 @@ var TEX = (function () {
   function build(scene, tier) {
     if (tier === currentTier && scene.textures.exists('t_unknown')) return;
     currentTier = tier;
-    N = DENSITIES[tier];
+    N = tier + 1;
 
     var types = ['soil', 'litter', 'wood', 'vein', 'root', 'rock', 'unknown'];
     for (var i = 0; i < types.length; i++) {
