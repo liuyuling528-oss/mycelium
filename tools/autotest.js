@@ -58,6 +58,20 @@
     });
   }
 
+  /* ---- 开发用：?prestige=N —— 把转生次数拨到 N，看像素密度档位的实际效果 ---- */
+  if (/[?&]prestige=\d+/.test(q)) {
+    var pv = parseInt((q.match(/[?&]prestige=(\d+)/) || [])[1], 10) || 0;
+    window.addEventListener('load', function () {
+      setTimeout(function () {
+        var game = window.MYC.game, st = game.state;
+        st.prestiges = pv;
+        /* 场景按档位重建贴图与实体精灵 —— 与真实转生后的重建路径一致 */
+        if (game.scene && game.scene.rebuildVisuals) game.scene.rebuildVisuals();
+        game.dirty = true;
+      }, 700);
+    });
+  }
+
   /* ---- 开发用：?choice=1 —— 把转生三选一的弹窗摆出来，方便截图 ---- */
   if (/[?&]choice=1/.test(q)) {
     window.addEventListener('load', function () {

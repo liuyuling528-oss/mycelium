@@ -6,16 +6,23 @@
  * 自定义方法（drawSoil 等）没有挂到场景实例上，create() 里的输入监听、
  * graphics、悬停提示统统失效 —— 表现就是「点击地图完全没反应」。
  *
- * 渲染分三层，各自按需重绘：
- *   soilGfx  土壤（只在「已探明格子数」变化时重绘，680 格不该每帧重画）
- *   netGfx   菌丝网络与连线（每帧重绘，节点有生长弹出效果）
- *   flowGfx  沿路径流动的养分光点（用相位算位置，不需要粒子池）
+ * 渲染分层（depth 显式指定，不再依赖创建顺序）：
+ *   0   soilImgs   土壤贴图（Image 池，按可见窗口增删 —— 见 textures.js）
+ *   1   soilGfx    格线（只画可见窗口）
+ *   2   buffGfx    事件增益区
+ *   3   candGfx    候选格提示
+ *   4   netGfx     菌丝连线 / 光环 / 成长弧（每帧重绘）
+ *   5   nodeSprites 节点实体贴图（核心/菌丝/树/菌落）
+ *   6   flowGfx    沿路径流动的养分光点
+ *   7   gnatGfx    害虫/菌瘟的脉冲与倒计时环（实体本体是节点贴图）
+ *  像素密度随转生提升（4×4 → 16×16），换档时重建整套贴图与实体精灵。
  * ==========================================================================*/
 (function () {
   'use strict';
 
   var C = window.MYC.CONFIG;
   var GRID = C.GRID;
+  var TEX = window.MYC.TEX;
 
   var COL = {
     unknown:  0x070907,
@@ -77,15 +84,8 @@
   function centerX(x) { return cellPx(x) + GRID.CELL / 2; }
   function centerY(y) { return cellPy(y) + GRID.CELL / 2; }
 
-  /* 每个格子稳定的颜色扰动，让土壤不像一整块死板的色板 */
-  function soilShade(soilKey, x, y, seed) {
-    var base = C.SOILS[soilKey].color;
-    var j = 1 + (RNG.hash2(x, y, seed) - 0.5) * 0.30;
-    var r = Math.min(255, Math.max(0, ((base >> 16) & 255) * j)) | 0;
-    var g = Math.min(255, Math.max(0, ((base >> 8) & 255) * j)) | 0;
-    var b = Math.min(255, Math.max(0, (base & 255) * j)) | 0;
-    return (r << 16) | (g << 8) | b;
-  }
+  /* 每个格子稳定的颜色扰动已由贴图本身承担（变体 + 纹路），
+   * 这里不再做逐格调色。 */
 
   /* 用流量最大的那一项决定光点颜色 */
   function flowColor(v) {
@@ -102,12 +102,21 @@
     }
 
     create() {
-      this.soilGfx = this.add.graphics();
-      this.buffGfx = this.add.graphics();     // 事件增益区，压在网络下面
-      this.candGfx = this.add.graphics();
-      this.netGfx = this.add.graphics();
-      this.flowGfx = this.add.graphics();
-      this.gnatGfx = this.add.graphics();     // 害虫，盖在最上面才显眼
+      /* 像素密度档：由转生次数决定（4/6/8/12/16），转生后重建整套贴图 */
+      this.seenTier = null;
+      TEX.build(this, TEX.tierOf(window.MYC.game.state ? window.MYC.game.state.prestiges : 0));
+      this.seenTier = TEX.tierOf(window.MYC.game.state ? window.MYC.game.state.prestiges : 0);
+
+      this.soilGfx = this.add.graphics().setDepth(1);   // 只画格线；土壤是 Image 池
+      this.soilImgs = new Map();                        // 'x,y' -> Image（含未探明格）
+      this.buffGfx = this.add.graphics().setDepth(2);     // 事件增益区，压在网络下面
+      this.candGfx = this.add.graphics().setDepth(3);
+      this.netGfx = this.add.graphics().setDepth(4);
+      this.flowGfx = this.add.graphics().setDepth(6);
+      this.gnatGfx = this.add.graphics().setDepth(7);     // 害虫/菌瘟的脉冲与倒计时环
+      this.nodeSprites = [];                            // 节点实体贴图（下标 = node id）
+      this.nodeSigs = [];                               // 每个节点的贴图配置签名
+      this.nodeBaseDisp = [];                           // 每个节点的基准显示尺寸（弹出动画的回缩目标）
 
       this.lastKnown = -1;
       this.lastNodeCount = 0;
@@ -703,6 +712,7 @@
     /* 转生换图后由 UI / update() 的尺寸检测调用：
      * 地图尺寸/地形全变了，缓存与镜头都得重来。 */
     onMapChanged() {
+      this.rebuildVisuals();
       this.seenMapW = mapSize().w;
       this.seenMapH = mapSize().h;
       this.lastKnown = -1;
@@ -716,6 +726,24 @@
          上一张图留下的视野，可能正对着一片空地。 */
       this.viewMode = 'auto';
       this.syncViewBtn();
+    }
+
+    /* 重建整套视觉资产：贴图（按当前转生档的像素密度）、土壤 Image 池、
+     * 节点实体精灵。转生换档 / 换图 / 读档都会走这里。 */
+    rebuildVisuals() {
+      var st = window.MYC.game && window.MYC.game.state;
+      var tier = TEX.tierOf(st ? st.prestiges : 0);
+      TEX.build(this, tier);
+      this.seenTier = tier;
+      this.soilImgs.forEach(function (img) { img.destroy(); });
+      this.soilImgs.clear();
+      for (var i = 0; i < this.nodeSprites.length; i++) {
+        if (this.nodeSprites[i]) this.nodeSprites[i].destroy();
+      }
+      this.nodeSprites = [];
+      this.nodeSigs = [];
+      this.nodeBaseDisp = [];
+      this.lastSoilSig = null;
     }
 
     showTip(w, text) {
@@ -900,6 +928,18 @@
         this.onMapChanged();
       }
 
+      /* 像素密度随转生提升：档位一变，整套贴图与实体精灵重建。
+       * 升档时弹一条提示 —— 这是转生的可见回报之一。 */
+      var tierNow = TEX.tierOf(st.prestiges);
+      if (tierNow !== this.seenTier) {
+        var grew = this.seenTier != null && tierNow > this.seenTier;
+        this.rebuildVisuals();
+        if (grew && game.ui) {
+          var d = TEX.densityFor(st.prestiges);
+          game.ui.toast('转生回响：像素密度提升到 ' + d + '×' + d + '，世界更清晰了');
+        }
+      }
+
       var dt = Math.min(delta / 1000, 0.25);
       this.frames++;
 
@@ -957,9 +997,9 @@
       }
     }
 
-    /* 害虫（红）与菌瘟（紫）：压在节点上的标记 —— 它们是唯二「必须回应」的东西。
-     * 菌瘟会蔓延，所以加一圈**扩散倒计时环**：环走完它就往外爬一格。
-     * 紧迫感必须来自可见的信息，而不是凭空觉得慌。 */
+    /* 害虫（红）与菌瘟（紫）：本体已是节点层的像素贴图，
+     * 这里画「状态层」—— 脉冲光晕与菌瘟的**扩散倒计时环**：
+     * 环走满一圈它就往外爬一格。紧迫感必须来自可见的信息。 */
     drawGnats(st, time) {
       var g = this.gnatGfx;
       g.clear();
@@ -971,18 +1011,14 @@
           var nd = st.nodes[e.nodeId];
           if (!nd) continue;
           var x = centerX(nd.x), y = centerY(nd.y), c = GRID.CELL;
-          g.fillStyle(0xd0503a, 0.16 + 0.16 * pulse).fillCircle(x, y, c * 0.80);
-          g.fillStyle(0x7a2a1c, 1).fillCircle(x, y, c * 0.34);
-          g.fillStyle(0xe86a4a, 1).fillCircle(x, y, c * 0.20);
+          g.fillStyle(0xd0503a, 0.14 + 0.16 * pulse).fillCircle(x, y, c * 0.80);
           g.lineStyle(2, 0xffb08a, 0.45 + 0.45 * pulse).strokeCircle(x, y, c * 0.46);
         } else if (e.kind === 'blight') {
           var bnd = st.nodes[e.nodeId];
           if (!bnd) continue;
           var bx = centerX(bnd.x), by = centerY(bnd.y), bc = GRID.CELL;
           var cfgB = C.BLIGHT;
-          g.fillStyle(0x6b3fa0, 0.18 + 0.16 * pulse).fillCircle(bx, by, bc * 0.86);
-          g.fillStyle(0x2c1745, 1).fillCircle(bx, by, bc * 0.36);
-          g.fillStyle(0xa97bd6, 1).fillCircle(bx, by, bc * 0.19);
+          g.fillStyle(0x6b3fa0, 0.14 + 0.14 * pulse).fillCircle(bx, by, bc * 0.86);
           // 扩散倒计时环：走满一圈就尝试往外爬一格
           var prog = 1 - Math.max(0, e.spreadT) / (cfgB.spreadInterval * (st.mods.blightSlow ? 1.6 : 1));
           g.lineStyle(1, 0xd0a8ff, 0.22).strokeCircle(bx, by, bc * 0.55);
@@ -1030,9 +1066,11 @@
     }
 
     // ---------------------------------------------------------------- 绘制
-    /* 土壤层：只在「可见范围或已探明数」变化时重绘，且**只画可见窗口**。
-     * 早期版本每次都全图重画 —— 34×20 没问题，地图随转生长大之后
-     * 一万多个 fillRect 会造成明显的掉帧。 */
+    /* 土壤层：每格一张像素贴图（Image 池，按需创建 / 隐藏）。
+     * 早期版本是纯色 fillRect；现在每种基质是一张程序化像素画，
+     * 3 个变体按坐标哈希分布 + 贴图本身的纹路，大片地表不再像色板。
+     * 只在「可见窗口 / 已探明数 / 密度档」变化时扫一遍可见格 ——
+     * 一万多个格子的地图上不该每帧重建。 */
     drawSoil(st) {
       var m = mapSize();
       var v = viewRect();
@@ -1041,29 +1079,39 @@
       var x1 = Math.min(m.w - 1, Math.ceil((v.right - GRID.OX) / GRID.CELL) + pad);
       var y0 = Math.max(0, Math.floor((v.top - GRID.OY) / GRID.CELL) - pad);
       var y1 = Math.min(m.h - 1, Math.ceil((v.bottom - GRID.OY) / GRID.CELL) + pad);
-      var sig = x0 + ',' + y0 + ',' + x1 + ',' + y1 + ',' + st.explored.count;
+      var sig = x0 + ',' + y0 + ',' + x1 + ',' + y1 + ',' + st.explored.count + ',' + this.seenTier;
       if (sig === this.lastSoilSig) return;
       this.lastSoilSig = sig;
 
-      var g = this.soilGfx, cell = GRID.CELL;
-      g.clear();
+      var cell = GRID.CELL, seed = st.seed;
+      var seen = new Set();
       for (var y = y0; y <= y1; y++) {
         for (var x = x0; x <= x1; x++) {
           var c = st.grid[Sim.idx(x, y)];
-          var px = cellPx(x), py = cellPy(y);
-          if (!c.known) {
-            g.fillStyle(COL.unknown, 1);
-          } else if (c.soil === 'rock') {
-            g.fillStyle(COL.rock, 1);
-          } else {
-            g.fillStyle(soilShade(c.soil, x, y, st.seed), 1);
-          }
-          g.fillRect(px, py, cell, cell);
-          if (c.known && c.soil === 'rock') {
-            g.lineStyle(1, 0x3a3a42, 1).strokeRect(px + 2, py + 2, cell - 4, cell - 4);
+          var key = x + ',' + y;
+          seen.add(key);
+          var img = this.soilImgs.get(key);
+          var type = c.known ? c.soil : 'unknown';
+          var variant = (type === 'unknown') ? 0 : ((RNG.hash2(x, y, seed) * 3) | 0);
+          var texKey = TEX.groundKey(type, variant);
+          if (!img) {
+            img = this.add.image(cellPx(x) + cell / 2, cellPy(y) + cell / 2, texKey)
+              .setDisplaySize(cell, cell).setDepth(0);
+            this.soilImgs.set(key, img);
+          } else if (img.name !== texKey) {
+            img.setTexture(texKey);
+            img.name = texKey;
           }
         }
       }
+      /* 窗口外的格子隐藏（保留对象，滚回来不重建） */
+      this.soilImgs.forEach(function (img2, key2) {
+        if (!seen.has(key2)) img2.setVisible(false);
+        else img2.setVisible(true);
+      });
+
+      var g = this.soilGfx;
+      g.clear();
       g.lineStyle(1, COL.gridLine, 0.55);
       for (var x2 = x0; x2 <= x1 + 1; x2++) {
         var lx = GRID.OX + x2 * cell;
@@ -1148,86 +1196,128 @@
       }
 
       var R = GRID.CELL * 0.30;
+      /* 拆除节点后数组会变短（rebuildNetwork 保证 id===下标），
+       * 多出来的精灵要销毁，否则残留旧节点 */
+      while (this.nodeSprites.length > st.nodes.length) {
+        var dead = this.nodeSprites.pop();
+        if (dead) dead.destroy();
+        this.nodeSigs.pop();
+        if (this.nodeBaseDisp) this.nodeBaseDisp.pop();
+      }
       for (var j = 0; j < st.nodes.length; j++) {
         var n = st.nodes[j];
         var pop = this.pops[n.id] || 0;
-        var r = R * (1 + pop * 0.55);
         var x = centerX(n.x), y = centerY(n.y);
 
+        /* ---- 节点实体：贴图精灵（下标 = node id，rebuildNetwork 保证 id===下标）----
+         * 贴图选择优先级：菌瘟 > 害虫 > 核心 > 菌落 > 树 > 普通菌丝。
+         * 配置签名（贴图/染色/位置）变了才重建，平时只处理生长弹出。 */
+        var texKey, tint = 0xffffff, depth = 5, disp;
+        if (n.blighted) {
+          texKey = 't_blight'; depth = 6.8; disp = 1.10;
+        } else if (n.gnat) {
+          texKey = 't_gnat'; depth = 6.8; disp = 1.05;
+        } else if (n.id === 0) {
+          texKey = 't_core'; disp = 1.05;
+        } else if (n.colony) {
+          texKey = 't_colony'; disp = 1.30;
+          tint = COL[n.colony] || COL.nutrient;
+        } else if (n.soil === 'root') {
+          var tst2 = (n.treeStage == null || n.treeStage < 0) ? Sim.treeStageOf(n.tree || 0) : n.treeStage;
+          texKey = 't_tree' + Math.max(0, Math.min(2, tst2));
+          disp = 1.00 + 0.34 * Math.max(0, Math.min(2, tst2));
+        } else {
+          texKey = 't_myco'; disp = 0.50;
+          /* 节点颜色偏向它产出的资源，一眼能看出网络的资源分布 */
+          var c0 = C.SOILS[n.soil].color;
+          tint = (((c0 >> 16 & 255) * 0.42 + 236 * 0.58) | 0) << 16
+               | (((c0 >> 8 & 255) * 0.42 + 242 * 0.58) | 0) << 8
+               | (((c0 & 255) * 0.42 + 230 * 0.58) | 0);
+        }
+
+        var sig = texKey + '|' + tint + '|' + n.x + ',' + n.y;
+        var spr = this.nodeSprites[n.id];
+        if (!spr || this.nodeSigs[n.id] !== sig) {
+          if (!spr) {
+            spr = this.add.image(0, 0, texKey);
+            this.nodeSprites[n.id] = spr;
+          } else {
+            spr.setTexture(texKey);
+          }
+          spr.setOrigin(0.5).setDepth(depth)
+             .setPosition(x, y)
+             .setTint(tint);
+          this.nodeSigs[n.id] = sig;
+          this.nodeBaseDisp = this.nodeBaseDisp || [];
+          this.nodeBaseDisp[n.id] = disp;
+        }
+        var baseDisp = this.nodeBaseDisp[n.id] || disp;
+
+        /* 生长弹出：整体放大再缩回 —— 「生长」的手感来源。
+         * setDisplaySize 只是改 scale，每帧 600 次的量级完全可接受。 */
+        var w = GRID.CELL * baseDisp * (1 + pop * 0.38);
+        spr.setDisplaySize(w, w);
+
+        /* 核心呼吸光晕（贴图之下的一层柔光，仍用 graphics） */
         if (n.id === 0) {
           var glow = 0.5 + 0.5 * Math.sin(time / 520);
-          g.fillStyle(COL.core, 0.12 + 0.10 * glow).fillCircle(x, y, r * 2.4);
-          g.fillStyle(COL.core, 1).fillCircle(x, y, r * 1.1);
-        } else {
-          if (pop > 0) g.fillStyle(COL.myco, 0.26 * pop).fillCircle(x, y, r * 2.0);
-          // 节点颜色偏向它产出的资源，一眼能看出网络的资源分布
-          var c0 = C.SOILS[n.soil].color;
-          var tint = (((c0 >> 16 & 255) * 0.42 + 236 * 0.58) | 0) << 16
-                   | (((c0 >> 8 & 255) * 0.42 + 242 * 0.58) | 0) << 8
-                   | (((c0 & 255) * 0.42 + 230 * 0.58) | 0);
-          g.fillStyle(tint, 1).fillCircle(x, y, r * 0.52);
-          // 强化等级：套一圈暖色光环，等级越高越亮越大 —— 一眼看出深耕在哪
-          if (n.level > 0) {
-            var lv = Math.min(n.level, 10);
-            g.lineStyle(1.4, COL.best, 0.26 + lv * 0.05);
-            g.strokeCircle(x, y, r * (0.95 + lv * 0.055));
-          }
-          /* 结构角色：主干用实心大环 + 更亮的内点，汇流用虚线感的双环。
-           * 与强化的暖色光环分开（那是 --best 暖黄，结构用冷青），
-           * 两套视觉语言互不干扰。 */
-          if (n.trunk) {
-            var tp2 = 0.55 + 0.45 * Math.sin(time / 620);
-            g.lineStyle(2.2, COL.trunk, 0.45 + 0.35 * tp2);
-            g.strokeCircle(x, y, r * 1.35);
-            g.fillStyle(COL.trunk, 0.85).fillCircle(x, y, r * 0.26);
-          } else if (n.confluence) {
-            g.lineStyle(1.8, COL.trunk, 0.58);
-            g.strokeCircle(x, y, r * 1.20);
-            g.lineStyle(1.0, COL.trunk, 0.42);
-            g.strokeCircle(x, y, r * 0.78);
-          }
-          /* 菌落本体：资源色实心点 + 双环，呼吸感与主干一致 ——
-           * 它和主干一样是「玩家亲手做的结构投资」，得有存在感。 */
-          if (n.colony) {
-            var cc = COL[n.colony] || COL.nutrient;
-            var cb = 0.55 + 0.45 * Math.sin(time / 620 + 1.3);
-            g.lineStyle(2.2, cc, 0.55 + 0.35 * cb);
-            g.strokeCircle(x, y, r * 1.30);
-            g.fillStyle(cc, 0.95).fillCircle(x, y, r * 0.30);
-          }
-          /* 树：三档用颜色 + 环数直接编码，古树再补一圈光环。
-           * 成长进度画成一段圆弧 —— 这是「养成」唯一的进度条，
-           * 没有它玩家只知道「还没长大」，不知道「还差多少」。 */
-          if (n.soil === 'root') {
-            var tst = (n.treeStage == null || n.treeStage < 0) ? Sim.treeStageOf(n.tree || 0) : n.treeStage;
-            var tc = treeColour(tst);
-            var rings = tst + 1;                       // 幼苗 1 环 / 成年 2 环 / 古树 3 环
-            for (var ri = 0; ri < rings; ri++) {
-              g.lineStyle(1.6 - ri * 0.25, tc, 0.75 - ri * 0.16);
-              g.strokeCircle(x, y, r * (1.15 + ri * 0.30));
+          g.fillStyle(COL.core, 0.12 + 0.10 * glow).fillCircle(x, y, R * 2.4);
+        }
+
+        if (n.id === 0) continue;
+
+        /* ---- 以下仍是 graphics 层的结构标记（环 / 弧 / 光晕），叠在贴图上 ---- */
+        // 强化等级：套一圈暖色光环，等级越高越亮越大 —— 一眼看出深耕在哪
+        if (n.level > 0) {
+          var lv = Math.min(n.level, 10);
+          g.lineStyle(1.4, COL.best, 0.26 + lv * 0.05);
+          g.strokeCircle(x, y, R * (0.95 + lv * 0.055));
+        }
+        /* 结构角色：主干用实心大环 + 更亮的内点，汇流用虚线感的双环。
+         * 与强化的暖色光环分开（那是 --best 暖黄，结构用冷青），
+         * 两套视觉语言互不干扰。 */
+        if (n.trunk) {
+          var tp2 = 0.55 + 0.45 * Math.sin(time / 620);
+          g.lineStyle(2.2, COL.trunk, 0.45 + 0.35 * tp2);
+          g.strokeCircle(x, y, R * 1.35);
+        } else if (n.confluence) {
+          g.lineStyle(1.8, COL.trunk, 0.58);
+          g.strokeCircle(x, y, R * 1.20);
+          g.lineStyle(1.0, COL.trunk, 0.42);
+          g.strokeCircle(x, y, R * 0.78);
+        }
+        /* 菌落：呼吸外环（本体与资源色环已在贴图里） ——
+         * 它和主干一样是「玩家亲手做的结构投资」，得有存在感。 */
+        if (n.colony) {
+          var cc = COL[n.colony] || COL.nutrient;
+          var cb = 0.55 + 0.45 * Math.sin(time / 620 + 1.3);
+          g.lineStyle(2.2, cc, 0.30 + 0.30 * cb);
+          g.strokeCircle(x, y, R * 1.30);
+        }
+        /* 树：三档贴图已带形态；这里补成长进度弧与古树光环。
+         * 进度弧是「养成」唯一的进度条 —— 没有它玩家只知道「还没长大」。 */
+        if (n.soil === 'root') {
+          var tst3 = (n.treeStage == null || n.treeStage < 0) ? Sim.treeStageOf(n.tree || 0) : n.treeStage;
+          if (tst3 < 2) {
+            var tinfo2 = Sim.treeStateOf(st, n);
+            if (tinfo2 && tinfo2.progress > 0) {
+              var tcr = treeColour(tst3);
+              g.lineStyle(2.4, tcr, 0.85);
+              g.beginPath();
+              g.arc(x, y, R * 1.62, -Math.PI / 2,
+                    -Math.PI / 2 + Math.PI * 2 * Math.min(1, tinfo2.progress), false);
+              g.strokePath();
             }
-            g.fillStyle(tc, 0.9).fillCircle(x, y, r * 0.34);
-            if (tst < 2) {
-              /* 进度弧：从 12 点顺时针画 progress × 360° */
-              var tinfo2 = Sim.treeStateOf(st, n);
-              if (tinfo2 && tinfo2.progress > 0) {
-                g.lineStyle(2.4, tc, 0.85);
-                g.beginPath();
-                g.arc(x, y, r * 1.62, -Math.PI / 2,
-                      -Math.PI / 2 + Math.PI * 2 * Math.min(1, tinfo2.progress), false);
-                g.strokePath();
-              }
-            } else {
-              /* 古树：外圈常亮光环，范围就是 auraYieldMul 的作用半径 */
-              var ag = 0.45 + 0.25 * Math.sin(time / 900);
-              g.lineStyle(1.2, COL.aura, 0.30 + 0.20 * ag);
-              g.strokeCircle(x, y, GRID.CELL * (C.TREE.ringRadius + 0.9));
-            }
-          } else if (Sim.underOldTreeAura(st, n)) {
-            /* 被古树罩着的格子：加一圈淡光晕，让「哪几格在吃加成」可见 */
-            g.lineStyle(1.0, COL.aura, 0.34);
-            g.strokeCircle(x, y, r * 0.72);
+          } else {
+            /* 古树：外圈常亮光环，范围就是 auraYieldMul 的作用半径 */
+            var ag = 0.45 + 0.25 * Math.sin(time / 900);
+            g.lineStyle(1.2, COL.aura, 0.30 + 0.20 * ag);
+            g.strokeCircle(x, y, GRID.CELL * (C.TREE.ringRadius + 0.9));
           }
+        } else if (Sim.underOldTreeAura(st, n)) {
+          /* 被古树罩着的格子：加一圈淡光晕，让「哪几格在吃加成」可见 */
+          g.lineStyle(1.0, COL.aura, 0.34);
+          g.strokeCircle(x, y, R * 0.72);
         }
       }
     }
