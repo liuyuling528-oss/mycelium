@@ -1,167 +1,167 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-page-node-id="8ceiNJBfNBYEwCwa1PrZ3q">
-<head data-page-node-id="6aGQEVujzxvYAWRE3w22EJ">
-<meta charset="utf-8" data-page-node-id="ty0ebO5KDFiVNDXCBlYqum">
-<meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="vwuibopz9wX1OlJOp71FYS">
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>菌丝 Mycelium — 增量放置</title>
-<link rel="stylesheet" href="style.css" data-page-node-id="FprK6cLtEGz7bEP2DKom49">
+<link rel="stylesheet" href="style.css">
 </head>
-<body data-page-node-id="vTIdsOMt2v3lK4A4LYLWBK">
+<body>
 
-<div id="app" data-page-node-id="hB7BbN3eeVMJCsS22m2qne">
+<div id="app">
 
   <!-- 地图：由 Phaser 渲染 -->
-  <div id="stage" data-page-node-id="1JX1K0Eb3zvAF8gzFCE2Gd">
-    <div id="game" data-page-node-id="VFEbZ074zVQ948GUmDw3QA"></div>
-    <div id="toast" data-page-node-id="KwIM4Hu3JCq2c96pjLrGoN"></div>
+  <div id="stage">
+    <div id="game"></div>
+    <div id="toast"></div>
     <!-- 只在「手动视野」时显出来（WorldScene.syncViewBtn 控制） -->
-    <button id="viewReset" class="hidden" title="回到自动取景（跟着网络走）" data-page-node-id="hAEt8xuuQFFkTYdDVRrooS">⟲ 自动取景</button>
+    <button id="viewReset" class="hidden" title="回到自动取景（跟着网络走）">⟲ 自动取景</button>
   </div>
 
   <!-- 转生抉择：散播孢子之后弹出来，三选一。
        放在 #app 的直接子层（而不是面板里）—— 它是个**阻塞式**的选择，
        必须盖住整个界面，否则玩家会一边看着弹窗一边继续点地图。 -->
-  <div id="choiceOverlay" class="hidden" data-page-node-id="gnDME3LNuEzxmUNh7429Is">
-    <div class="choice-box" data-page-node-id="hBBGf2kEH05stXkovqFNnv">
-      <h2 data-page-node-id="2TCPFMpKeKhATHR6DUOdES">孢子落在了新的土壤上</h2>
-      <p class="hint" id="choiceHint" data-page-node-id="RpoBD6Cyx1zn2ubsf8gMF5"></p>
-      <div id="choiceCards" data-page-node-id="W5aIEPZyvgDqmT9SCehlXU"></div>
+  <div id="choiceOverlay" class="hidden">
+    <div class="choice-box">
+      <h2>孢子落在了新的土壤上</h2>
+      <p class="hint" id="choiceHint"></p>
+      <div id="choiceCards"></div>
     </div>
   </div>
 
   <!-- 右侧面板：HTML/CSS，排版与滚动都比在 canvas 里画靠谱 -->
-  <aside id="panel" data-page-node-id="7kBxdUywmRsRgESblj9YdM">
+  <aside id="panel">
 
-    <div class="card" data-page-node-id="E7vqiY2O8kxTQzUGNrovWL">
-      <div class="title-row" data-page-node-id="kZs9LPh3D16IaxA3bWp6KW">
-        <div class="name" data-page-node-id="bmTYP03EzNCcrssPXQGMMZ">菌丝 <span style="color:var(--muted);font-size:12px" data-page-node-id="T57Hr9jHFWm4IIc2sM0IiV">Mycelium</span></div>
-        <div class="clock" id="clock" data-page-node-id="uWjLC9A9grCN8Erb9VuOQN">00:00</div>
+    <div class="card">
+      <div class="title-row">
+        <div class="name">菌丝 <span style="color:var(--muted);font-size:12px">Mycelium</span></div>
+        <div class="clock" id="clock">00:00</div>
       </div>
-      <p class="hint" style="margin-top:8px" data-page-node-id="Rynp6Xqvwm3t5FUZlFbGUA">
+      <p class="hint" style="margin-top:8px">
         你是森林地表下的一张菌丝网络。点击地图上闪烁的格子来蔓延 ——
         吸收落叶与腐木的养分，沿水脉取水，连上树根结出孢子。
-        资源必须沿菌丝运回核心，<b data-page-node-id="6pQAtnhqizUJjSCmgwDBS6">路越远越亏</b>。
+        资源必须沿菌丝运回核心，<b>路越远越亏</b>。
       </p>
     </div>
 
-    <div class="card" data-page-node-id="WkgJOYA3wNE5KrfyqCz2UF">
-      <h2 data-page-node-id="iXp8mdeUg7x2dCrqRkEPMn">资源</h2>
-      <div class="res" data-page-node-id="0jA8nOUcrPLGGuK1F46LiC"><span class="dot c-water" data-page-node-id="mpwiEn4Whhx9VIFS0joxI0"></span><span class="label" data-page-node-id="8feB8UnyKNwrLq3ez9e2lD">水分</span>
-        <span class="val" id="vWater" data-page-node-id="Sv4ddiE8PdSLv0wxjd1wsV">0</span><span class="rate" id="rWater" data-page-node-id="6h9lZChrz3DQNm2jB8pdme">+0/s</span></div>
-      <div class="topsoil" id="topsoilRow" data-page-node-id="KrZlmFMthIpDXGAbt13j8t">壤土递减 0 格　0/s</div>
-      <div class="res" data-page-node-id="xZfyiwA9ETAUmXO8xsiEl7"><span class="dot c-nutrient" data-page-node-id="2mN5nG5WjeIsztzfLZiPkv"></span><span class="label" data-page-node-id="JEsRSmBCGEW5J8raimcFZg">养分</span>
-        <span class="val" id="vNutrient" data-page-node-id="kvmU8vknOD0ChZezTZlc8v">0</span><span class="rate" id="rNutrient" data-page-node-id="XJUBbPbfTGsRf6lmp7Eggg">+0/s</span></div>
-      <div class="res" data-page-node-id="XTbaXrCLN3p1cBBJGbMl1s"><span class="dot c-spore" data-page-node-id="gtCrZQW38cvXNiLDSfJp1Z"></span><span class="label" data-page-node-id="tvWsF46SBOpv2b2s2x5OKs">孢子</span>
-        <span class="val" id="vSpore" data-page-node-id="SqNnGoNMU87eWuAbhl2ljE">0</span><span class="rate" id="rSpore" data-page-node-id="5f8GejVz7lRmHkofNE3Zl9">+0/s</span></div>
+    <div class="card">
+      <h2>资源</h2>
+      <div class="res"><span class="dot c-water"></span><span class="label">水分</span>
+        <span class="val" id="vWater">0</span><span class="rate" id="rWater">+0/s</span></div>
+      <div class="topsoil" id="topsoilRow">壤土递减 0 格　0/s</div>
+      <div class="res"><span class="dot c-nutrient"></span><span class="label">养分</span>
+        <span class="val" id="vNutrient">0</span><span class="rate" id="rNutrient">+0/s</span></div>
+      <div class="res"><span class="dot c-spore"></span><span class="label">孢子</span>
+        <span class="val" id="vSpore">0</span><span class="rate" id="rSpore">+0/s</span></div>
     </div>
 
-    <div class="card" data-page-node-id="ao7uzyoVRLGeX5UsODy0TS">
-      <h2 data-page-node-id="nfnqGpJgZj7qJtJwQHXsMN">网络</h2>
-      <div class="stats" data-page-node-id="G3e0JRneRd5jctOd1Pa6il">
-        <div data-page-node-id="n8BulJ43TLBHDCWFu70Ffp"><span data-page-node-id="aRRTnGZboklGPTMSdO5rba">菌丝</span><b id="sNodes" data-page-node-id="7LynoEcpm9tC1EkBI4etLC">1</b></div>
-        <div data-page-node-id="BCVq0VHxLvBW8M8Grfxhni"><span data-page-node-id="Xbm5kbn1zpyTNZFF1ETy94">离核最远</span><b id="sDist" data-page-node-id="IEWuvg713Z6MCxiEXu3EI2">0</b></div>
-        <div data-page-node-id="hDSyjoQaDaP0XAWzqLe2IM"><span data-page-node-id="fYDuqjFSYcQ3pyvJ3rqDy1">拥堵损耗</span><b id="sLost" data-page-node-id="7ajX9bNcybz1n1VhSLAJ3N">无</b></div>
-        <div data-page-node-id="o4nelK3fDJsCgY41GgnvPh"><span data-page-node-id="VCKbAp7XpJHFjGzwUPDvm8">本局时长</span><b id="sRun" data-page-node-id="wzGlPyvkZXMQQiWkzRThGY">0s</b></div>
+    <div class="card">
+      <h2>网络</h2>
+      <div class="stats">
+        <div><span>菌丝</span><b id="sNodes">1</b></div>
+        <div><span>离核最远</span><b id="sDist">0</b></div>
+        <div><span>拥堵损耗</span><b id="sLost">无</b></div>
+        <div><span>本局时长</span><b id="sRun">0s</b></div>
       </div>
-      <div class="row" style="margin-top:10px" data-page-node-id="c32lALaeZh7YF5zLOZNbZ6">
-        <select id="policy" title="挂机时自动蔓延的选址倾向" data-page-node-id="WCeba0MzMjDxXJMtm4zsSz"></select>
+      <div class="row" style="margin-top:10px">
+        <select id="policy" title="挂机时自动蔓延的选址倾向"></select>
       </div>
-      <label class="switch row" id="autoGrowRow" style="margin-top:9px" data-page-node-id="GyNyLEQXtXFmH3D0DRV9D5">
-        <input type="checkbox" id="autoGrow" checked data-page-node-id="lYXDU98G3h7n2PLS2XLr3I">
-        <span id="autoGrowLabel" data-page-node-id="gfCkTAUORYHQtRMnJpbBFG">自动蔓延<span class="hint" style="display:inline" data-page-node-id="a80RlFQhdm0D2SxC7zCNIX">（关掉则只靠你手动点）</span></span>
+      <label class="switch row" id="autoGrowRow" style="margin-top:9px">
+        <input type="checkbox" id="autoGrow" checked>
+        <span id="autoGrowLabel">自动蔓延<span class="hint" style="display:inline">（关掉则只靠你手动点）</span></span>
       </label>
-      <div class="row" id="autoRuleRow" style="margin-top:8px" data-page-node-id="l9foapAsXpdnkXFvwOeRF9">
-        <select id="ruleMaxDist" title="自动蔓延的距离上限" data-page-node-id="8rAM0tFRzZTtsMdfkfhZsz"></select>
-        <select id="ruleMinYield" title="自动蔓延的收益阈值" data-page-node-id="HmpdO5EKzQy6rtqW2MXtTA"></select>
+      <div class="row" id="autoRuleRow" style="margin-top:8px">
+        <select id="ruleMaxDist" title="自动蔓延的距离上限"></select>
+        <select id="ruleMinYield" title="自动蔓延的收益阈值"></select>
       </div>
-      <p class="hint" id="ruleHint" data-page-node-id="wx07viVwlbDZCHx5pbZgKO"></p>
-      <p class="hint" id="policyHint" data-page-node-id="4YSDi4VtA3A7E2P7EbpWPd"></p>
-      <p class="hint" id="eventLine" data-page-node-id="ktVSh7XB996aI6BVXbkTVn"></p>
+      <p class="hint" id="ruleHint"></p>
+      <p class="hint" id="policyHint"></p>
+      <p class="hint" id="eventLine"></p>
     </div>
 
-    <div class="card" data-page-node-id="5WmVIaESDuS5xqjTIQWRwh">
-      <h2 data-page-node-id="5S900XUfoD7XUg8RPGboOY">网络结构 <span class="hint" id="trunkCount" data-page-node-id="F5BWtqIChCs8xttjUBQGJM"></span></h2>
-      <div class="row" id="structRow" data-page-node-id="V282jYR7CNl7FpAWEBT6Iq">
-        <button class="tiny" id="structNone" data-mode="none" data-page-node-id="SoxnZNPj6aH7epEjIqPEJQ">普通</button>
-        <button class="tiny" id="structTrunk" data-mode="trunk" data-page-node-id="bCW1HZEqBPlqDv4dgYkHih">主干</button>
-        <button class="tiny" id="structConf" data-mode="confluence" data-page-node-id="0rjYaPoViHIo4ZgK9HuZNu">汇流</button>
-        <button class="tiny colony-btn" id="structColW" data-mode="colonyWater" style="display:none" data-page-node-id="88EVaWJLEUCh0O8BGs7nQh">菌落·水</button>
-        <button class="tiny colony-btn" id="structColN" data-mode="colonyNutrient" style="display:none" data-page-node-id="HzgXDeRFGrTx9mjE5KMmgF">菌落·养分</button>
-        <button class="tiny colony-btn" id="structColS" data-mode="colonySpore" style="display:none" data-page-node-id="rf5oZdJ3w10ZhmdDFrPQw9">菌落·孢子</button>
-        <button class="tiny" id="structDig" data-mode="dig" data-page-node-id="lMdeJCOeG4jknE3K0ZgbAx">拆除</button>
+    <div class="card">
+      <h2>网络结构 <span class="hint" id="trunkCount"></span></h2>
+      <div class="row" id="structRow">
+        <button class="tiny" id="structNone" data-mode="none">普通</button>
+        <button class="tiny" id="structTrunk" data-mode="trunk">主干</button>
+        <button class="tiny" id="structConf" data-mode="confluence">汇流</button>
+        <button class="tiny colony-btn" id="structColW" data-mode="colonyWater" style="display:none">菌落·水</button>
+        <button class="tiny colony-btn" id="structColN" data-mode="colonyNutrient" style="display:none">菌落·养分</button>
+        <button class="tiny colony-btn" id="structColS" data-mode="colonySpore" style="display:none">菌落·孢子</button>
+        <button class="tiny" id="structDig" data-mode="dig">拆除</button>
       </div>
-      <p class="hint" id="structHint" data-page-node-id="W5EKv6SYo2Rt6onpQC6ocy"></p>
-      <p class="hint" data-page-node-id="7yyqr9dfudUQvfQd4JsIq5">
-        主干：把一格改造成主动脉，吞吐大幅提高但<b data-page-node-id="Q54WQDZfvIGuNp08on3XHq">自身产出下降</b>——
-        用来把远处富矿拉回来。全网络只有 <b id="trunkCap" data-page-node-id="o2wv0wDR5UCgmFkXA6MF0F">5</b> 格，必须挑。
+      <p class="hint" id="structHint"></p>
+      <p class="hint">
+        主干：把一格改造成主动脉，吞吐大幅提高但<b>自身产出下降</b>——
+        用来把远处富矿拉回来。全网络只有 <b id="trunkCap">5</b> 格，必须挑。
         汇流：支流在此合流，贴着的支流吞吐也会提高。
         拆除：树周围太挤时撤掉几格，给它腾地方长大；点在菌落上则只拆菌落、不拆菌丝。
       </p>
     </div>
 
-    <div class="card" data-page-node-id="IDqweYGgcG9F0JFp6jRJUe">
-      <h2 data-page-node-id="xxD77kDXQ4WRF92ZZn3qQn">树木 <span class="hint" id="treeCount" data-page-node-id="jDTexvX5foNQTdmAMW5KcB"></span></h2>
-      <p class="hint" id="treeHint" data-page-node-id="AD8QBtwYzyu3UihQIx1GQA"></p>
-      <p class="hint" data-page-node-id="ThLizkgkYMQM6wuLqwWWYC">
-        树根长成树后会<b data-page-node-id="O1eVqiM0kDZFcYYZij5DEF">随连接时长长大</b>：幼苗 → 成年 → 古树（产出 0.6× → 1.0× → 1.6×）。
-        <b data-page-node-id="1koGg0AxsTNDqPhji8kfZz">古树会给周围 2 格内的其它菌丝 +25% 产出</b>——这是它唯一值钱的地方。
-        但树周围<b data-page-node-id="0UXYXwZpT4l3tNGsMtEnZV">挤太多菌丝会压住成长</b>（超过 6 格就开始抵消，再多会倒退）：
+    <div class="card">
+      <h2>树木 <span class="hint" id="treeCount"></span></h2>
+      <p class="hint" id="treeHint"></p>
+      <p class="hint">
+        树根长成树后会<b>随连接时长长大</b>：幼苗 → 成年 → 古树（产出 0.6× → 1.0× → 1.6×）。
+        <b>古树会给周围 2 格内的其它菌丝 +25% 产出</b>——这是它唯一值钱的地方。
+        但树周围<b>挤太多菌丝会压住成长</b>（超过 6 格就开始抵消，再多会倒退）：
         想养出古树，就得克制着别把它的地盘铺满。
       </p>
     </div>
 
-    <div class="card" data-page-node-id="1xNTIPnAwpbpA73IDLqhXM">
-      <h2 data-page-node-id="ukq7RFZMu6jSZPYoaGE0Hi">菌丝本领 <span class="hint" id="slotHint" data-page-node-id="eKE34kLlkCvuosNWtUHV5N">按 1 / 2 / 3 使用</span></h2>
-      <div class="abilities" id="abilities" data-page-node-id="XKVIW42dxkYVu26KzMHXhM"></div>
-      <p class="hint" data-page-node-id="IBtGOBIwIDMpn9ADI8XN7T">点击地图上<b data-page-node-id="gEBSYx5YkjeIrd5H7OEkDx">已有的菌丝</b>可以强化它（消耗养分，提升产出与吞吐）——
+    <div class="card">
+      <h2>菌丝本领 <span class="hint" id="slotHint">按 1 / 2 / 3 使用</span></h2>
+      <div class="abilities" id="abilities"></div>
+      <p class="hint">点击地图上<b>已有的菌丝</b>可以强化它（消耗养分，提升产出与吞吐）——
         练高几个关键节点就是「深耕流」的玩法；点地图上的害虫可以把它驱除掉。</p>
     </div>
 
-    <div class="card" data-page-node-id="qS0urj1xXVUwnFDySg1tC9">
-      <h2 data-page-node-id="AXmcCKewuNOK6N4w3NEARL">升级（消耗养分）</h2>
-      <div class="list" id="upgrades" data-page-node-id="HwQMAVVsXIrq0te3IfzeUK"></div>
+    <div class="card">
+      <h2>升级（消耗养分）</h2>
+      <div class="list" id="upgrades"></div>
     </div>
 
-    <div class="card" id="msCard" data-page-node-id="rOGmOlVCE4cSElSzlrVMFS">
-      <h2 data-page-node-id="vACAxb83cfdxQJFsyjONzs">里程碑 <span id="msCount" style="float:right" data-page-node-id="LGHyxKiAYi882ayhsaoQKv"></span></h2>
-      <div class="list" id="milestones" data-page-node-id="cQC72JFG8X2SB1X62j3Zo4"></div>
+    <div class="card" id="msCard">
+      <h2>里程碑 <span id="msCount" style="float:right"></span></h2>
+      <div class="list" id="milestones"></div>
     </div>
 
-    <div class="card hidden" id="prestigeCard" data-page-node-id="HIOzLwwVjKeT0brrtPUQ3S">
-      <h2 data-page-node-id="Ry5bWjDkXkBq0faRNRTfHD">散播孢子</h2>
-      <div class="big" id="pText" data-page-node-id="EZbYEkdCqG2jTZOL240743"></div>
-      <div class="meter" data-page-node-id="Cc6xfEDJCIKMHcBr63Zh4k"><i id="pBar" style="width:0%" data-page-node-id="64DaQOyMoCm9ZWAjaqeFQt"></i></div>
-      <p class="hint" id="pHint" data-page-node-id="Ci99egYOjgSTtZajQOazBf"></p>
-      <button class="primary" id="pBtn" style="width:100%;margin-top:8px" data-page-node-id="t6P01mCXThmkmHGuH2oBBK">散播孢子</button>
+    <div class="card hidden" id="prestigeCard">
+      <h2>散播孢子</h2>
+      <div class="big" id="pText"></div>
+      <div class="meter"><i id="pBar" style="width:0%"></i></div>
+      <p class="hint" id="pHint"></p>
+      <button class="primary" id="pBtn" style="width:100%;margin-top:8px">散播孢子</button>
     </div>
 
-    <div class="card hidden" id="geneCard" data-page-node-id="ospqxfelYj5cYevpeYnzft">
-      <h2 data-page-node-id="y4RrGjN8reW9XxcRqRiJDr">基因（永久，跨转生）<span id="geneLeft" style="float:right" data-page-node-id="kV9M6oYoFmI7MPBL6sedAF"></span></h2>
-      <div class="list" id="genes" data-page-node-id="gnBUlqHXdGmrKpSAqwCztR"></div>
+    <div class="card hidden" id="geneCard">
+      <h2>基因（永久，跨转生）<span id="geneLeft" style="float:right"></span></h2>
+      <div class="list" id="genes"></div>
     </div>
 
-    <div class="card hidden" id="strainCard" data-page-node-id="0f5FFZc4CZOP7H8CyM3iN1">
-      <h2 data-page-node-id="uGAr0ZmHZyQc2vKL7JZELj">菌株 <span id="strainSlots" style="float:right" data-page-node-id="FQmcBhw2Ds92BETxfzISjw"></span></h2>
-      <div class="list" id="strains" data-page-node-id="MQF0Y2auXNWR4msf1wnL7O"></div>
-      <p class="hint" id="strainHint" data-page-node-id="t4EhmLXKtFuHRQomuZyAta"></p>
+    <div class="card hidden" id="strainCard">
+      <h2>菌株 <span id="strainSlots" style="float:right"></span></h2>
+      <div class="list" id="strains"></div>
+      <p class="hint" id="strainHint"></p>
     </div>
 
-    <div class="card" data-page-node-id="IP5EmYTGMYKl7L1GesEppX">
-      <h2 data-page-node-id="i7UHYXRe1leLaSvWVhzC5q">记录</h2>
-      <div id="log" data-page-node-id="YfYTJffzubTRxtiQlaAQA1"></div>
+    <div class="card">
+      <h2>记录</h2>
+      <div id="log"></div>
     </div>
 
-    <div class="card" data-page-node-id="JH24wzCoeqa5Da3q4nitD2">
-      <h2 data-page-node-id="9jXESAYxDy3eAz9C93OPqG">存档</h2>
-      <div class="row" data-page-node-id="9EzsXUCY1aHhvERSv911e5">
-        <button id="btnNew" class="tiny" data-page-node-id="7j5VwyovLREDFK9kXMAuBl">开始新游戏</button>
-        <button id="btnSave" class="tiny" data-page-node-id="ul3Zsk27ebe2gMVgeklxSg">保存</button>
-        <span class="hint" id="seedTxt" style="margin:0 0 0 auto" data-page-node-id="ZFFsAF1CCLerEo4v95XLFI"></span>
+    <div class="card">
+      <h2>存档</h2>
+      <div class="row">
+        <button id="btnNew" class="tiny">开始新游戏</button>
+        <button id="btnSave" class="tiny">保存</button>
+        <span class="hint" id="seedTxt" style="margin:0 0 0 auto"></span>
       </div>
       <!-- 三个存档槽。点「读取」展开槽位列表；有档的槽能读、能删，空的槽直接写。
            「自动存档」不是一个槽，它是当前局 —— 每次保存/关页面都会覆盖它。 -->
-      <div id="slotList" class="slots" data-page-node-id="uT95OXebxdwT6J5FlT87cc"></div>
-      <p class="hint" id="saveHint" data-page-node-id="K5nhpMkuIgAe9eWJOACN9f">进度自动存在浏览器本地。三个槽位可以随时存档/读档。</p>
+      <div id="slotList" class="slots"></div>
+      <p class="hint" id="saveHint">进度自动存在浏览器本地。三个槽位可以随时存档/读档。</p>
     </div>
 
   </aside>
@@ -174,6 +174,7 @@
 <script src="src/rng.js"></script>
 <script src="src/sim.js"></script>
 <script src="src/textures.js"></script>
+<script src="src/ambient.js"></script>
 <script src="src/scenes/WorldScene.js"></script>
 <script src="src/ui.js"></script>
 <script src="src/main.js"></script>

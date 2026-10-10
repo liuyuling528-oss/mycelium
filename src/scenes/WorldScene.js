@@ -23,6 +23,7 @@
   var C = window.MYC.CONFIG;
   var GRID = C.GRID;
   var TEX = window.MYC.TEX;
+  var AMB = window.MYC.AMB;
 
   var COL = {
     unknown:  0x070907,
@@ -117,6 +118,8 @@
       this.nodeSprites = [];                            // 节点实体贴图（下标 = node id）
       this.nodeSigs = [];                               // 每个节点的贴图配置签名
       this.nodeBaseDisp = [];                           // 每个节点的基准显示尺寸（弹出动画的回缩目标）
+      this.fx = AMB.create();                           // 环境动效层状态（粒子池等）
+      this.fxGfx = this.add.graphics().setDepth(6.5);   // 流点之上、虫瘟状态环之下
 
       this.lastKnown = -1;
       this.lastNodeCount = 0;
@@ -744,6 +747,15 @@
       this.nodeSigs = [];
       this.nodeBaseDisp = [];
       this.lastSoilSig = null;
+      /* 环境粒子随场景重建：增益区引用已作废，清空；
+       * 转生/换图时从核心荡开一圈光环 —— 仪式感 */
+      if (this.fx) {
+        this.fx.zoneP.length = 0;
+        this.fx.motes.length = 0;
+        this.fx.motesSynced = 0;
+        var coreNd = (window.MYC.game && window.MYC.game.state && window.MYC.game.state.nodes[0]) || null;
+        if (coreNd) this.fx.rings.push({ t0: performance.now(), x: coreNd.x, y: coreNd.y });
+      }
     }
 
     showTip(w, text) {
@@ -969,6 +981,10 @@
       this.drawFlow(st, time);
       this.drawGnats(st, time);
       this.drawFloaters(st);
+      /* 环境动效层：漂浮孢子 / 增益区粒子 / 核心喷发 / 转生扩散环 */
+      AMB.draw(this.fx, this.fxGfx, st, dt, time, function (gx, gy) {
+        return { x: GRID.OX + (gx + 0.5) * GRID.CELL, y: GRID.OY + (gy + 0.5) * GRID.CELL };
+      }, GRID.CELL);
 
       if (game.ui) game.ui.update(dt, game);
     }
