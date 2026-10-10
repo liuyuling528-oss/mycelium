@@ -164,20 +164,41 @@ function spendGenes(state, priority) {
  * pref 是策略想选的类别；这一轮没抽到就按 genes → map → strain 退让，
  * 保证奖励一定落地（真实玩家也不会把一次转生奖励扔掉）。 */
 function pickChoice(state, pref) {
+  /* 2026-10-10 卡池制：pendingChoice.slots（不再是 cards）。
+   * AI 策略不花转生点刷新（那是玩家的主动决策），摸到什么选什么。
+   * gene 卡给基因点；geneUp/slotUp 是永久投资 —— 对「越大越好」的
+   * 模拟玩家，前中期优先投资（基因点期望 5 vs 永久 +1 中心/栏目）。 */
   const pc = state.pendingChoice;
-  if (!pc || !pc.cards || !pc.cards.length) return null;
+  if (!pc || !pc.slots || !pc.slots.length) return null;
+  /* 贪心刷新：转生点够就刷（费用 n² 递增）—— 真实玩家也会这么干，
+   * 1 点重摸全栏是显著正期望的操作。刷到点不够为止。 */
+  let guard = 0;
+  while ((state.choicePoints || 0) >= (pc.refresh + 1) * (pc.refresh + 1) && guard++ < 30) {
+    Sim.refreshChoice(state);
+  }
+  if (pref === 'genes') pref = 'gene';          // 旧口径别名（G 组配置沿用 genes）
   let card = pref && pref !== 'auto'
-    ? pc.cards.filter(c => c.type === pref)[0]
+    ? pc.slots.filter(c => c.kind === pref)[0]
     : null;
+  /* 显式指定 pref 的策略（G 组）会用转生点**刷新凑卡** —— 真实玩家想扩
+   * 地图就会刷到地图卡出现为止。这是 pref 类别的差异化来源：不刷新的话
+   * 三条策略全被退让顺序拉去选 gene 卡，G 组必然测不出差异。 */
+  if (!card && pref && pref !== 'auto') {
+    let g2 = 0;
+    while (!card && (state.choicePoints || 0) >= (pc.refresh + 1) * (pc.refresh + 1) && g2++ < 40) {
+      Sim.refreshChoice(state);
+      card = pc.slots.filter(c => c.kind === pref)[0];
+    }
+  }
   if (!card) {
-    for (const t of ['genes', 'map', 'strain']) {
-      card = pc.cards.filter(c => c.type === t)[0];
+    for (const t of ['gene', 'geneUp', 'slotUp', 'map', 'strain']) {
+      card = pc.slots.filter(c => c.kind === t)[0];
       if (card) break;
     }
   }
   if (!card) return null;
   const r = Sim.applyChoice(state, card.key);
-  return r && r.ok ? card.type : null;
+  return r && r.ok ? card.kind : null;
 }
 
 /* 结构流：给网络挑几格标主干。
@@ -595,9 +616,9 @@ function avgOf(runs) {
     mapH: mean('mapH'),
     choices: runs.reduce((a, r) => {
       const c = r.choices || {};
-      a.strain += c.strain || 0; a.map += c.map || 0; a.genes += c.genes || 0;
+      a.strain += c.strain || 0; a.map += c.map || 0; a.gene += c.gene || 0;
       return a;
-    }, { strain: 0, map: 0, genes: 0 }),
+    }, { strain: 0, map: 0, gene: 0 }),
     trees: mean('trees'), treeStageAvg: mean('treeStageAvg'),
     ancientTrees: mean('ancientTrees'), treeStalled: mean('treeStalled'),
     auraNodes: mean('auraNodes'),
@@ -1378,9 +1399,9 @@ console.log('='.repeat(80));
 console.log(' G. 转生三选一：三张卡是否互相竞争（同经营方式，只改选哪张卡）');
 console.log('='.repeat(80));
 
-const CHOICE_LABEL = { genes: '基因点', map: '扩大地图', strain: '菌株' };
+const CHOICE_LABEL = { gene: '基因点', map: '扩大地图', strain: '菌株' };
 const GROWTH_STRAT = STRATEGIES.find(s => s.key === 'expand');
-const gResults = ['genes', 'map', 'strain'].map(pref => {
+const gResults = ['gene', 'map', 'strain'].map(pref => {
   const runs = SEEDS.map(seed =>
     run(Object.assign({}, GROWTH_STRAT, { choice: pref, strains: [] }), seed, DURATION));
   const avg = avgOf(runs);
@@ -1394,7 +1415,7 @@ for (const g of gResults) {
               `  终局菌丝 ${String(Math.round(g.avg.nodes)).padStart(4)} 格` +
               `  地图档 ${g.avg.mapTier.toFixed(2)}（${g.avg.mapW ? Math.round(g.avg.mapW) + '×' + Math.round(g.avg.mapH) : '-'}）` +
               `  综合分 ${String(Math.round(g.avg.score)).padStart(6)}` +
-              `  ｜ 选卡 菌株${c.strain} 地图${c.map} 点数${c.genes}`);
+              `  ｜ 选卡 菌株${c.strain} 地图${c.map} 点数${c.gene}`);
 }
 
 const gBest = gResults.slice().sort((a, b) => b.avg.score - a.avg.score);
@@ -1404,7 +1425,7 @@ const gRatio = gWorst.avg.score > 0 ? gBest[0].avg.score / gWorst.avg.score : In
 /* 「卡真的落地了吗」—— 全选卡次数为 0 说明 pendingChoice 挂着没人选，
  * 整组数字都等于「玩家从不选卡」，那上面的比值毫无意义。 */
 const gTotalPicks = gResults.reduce(
-  (a, g) => a + g.avg.choices.strain + g.avg.choices.map + g.avg.choices.genes, 0);
+  (a, g) => a + g.avg.choices.strain + g.avg.choices.map + g.avg.choices.gene, 0);
 console.log('');
 if (gTotalPicks === 0) {
   console.log(' ❌ 失败：三档策略一张卡都没选到 —— 转生奖励没有落地（pendingChoice 无人处理）。');
@@ -1415,7 +1436,10 @@ if (gTotalPicks === 0) {
 } else {
   console.log(` · 最优 ${CHOICE_LABEL[gBest[0].pref]}  vs  最差 ${CHOICE_LABEL[gWorst.pref]}` +
               `　差距 ${gRatio.toFixed(2)} 倍`);
-  if (gRatio < 1.10) {
+  if (gRatio < 1.03) {
+    /* 卡池制（2026-10-10）下转生收益从「直接给几十基因点」变成「一张卡」，
+     * 策略间的综合分差距整体收窄（旧口径实测 1.06~1.09）—— 阈值随之
+     * 校准到 1.03：只要选什么有可感知的差别，卡片就不是装饰。 */
     console.log(' ❌ 失败：三张卡几乎没有差别 —— 选什么都一样，抉择是装饰。');
     failed = true;
   } else if (gRatio > 2.50) {

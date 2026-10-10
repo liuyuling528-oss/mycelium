@@ -131,6 +131,15 @@ var Sim = (function () {
        * ×10 倍率的资源会污染正常平衡口径）。老存档没有这个字段，
        * 所有用到的地方都要 dev 容错读取。 */
       dev: { time: 1, water: 1, nutrient: 1, spore: 1, enemyOn: true },
+      /* ---- 转生卡池的玩家资产（跨转生累积）----
+       * choicePoints 转生点（原「转生直接给基因点」已废除，改给转生点，
+       * 只能花在刷新栏目上）；choiceSlots 栏目数（slotUp 卡永久 +1，上限 8）；
+       * choiceCenter 基因点卡区间中心（geneUp 卡永久 +1，上限 10 → 6-14）；
+       * choiceRefresh 刷新计数（每次转生重置，费用 n²）。 */
+      choicePoints: 0,
+      choiceSlots: 3,
+      choiceCenter: 5,
+      choiceRefresh: 0,
       floaters: []                 // 浮动数字，供渲染层消费
     };
     CONFIG.UPGRADES.forEach(function (u) { state.up[u.key] = 0; });
@@ -2489,14 +2498,17 @@ var Sim = (function () {
     state.nodeAt[idx(state.core.x, state.core.y)] = 0;
 
     // 基因点兑现
-    state.pendingGenes = (state.pendingGenes || 0) + gained;
+    /* 转生奖励 = 转生点（不再直接给基因点）。基因点只从卡池的
+     * 「基因点卡」获得；转生点只能花在刷新栏目上。 */
+    state.choicePoints = (state.choicePoints || 0) + gained;
+    state.choiceRefresh = 0;          // 刷新计数每次转生重置
 
     rebuildNetwork(state);
     reveal(state);
     state.lastRecord = record;
     /* 发三选一的卡。放在**世界重置之后** —— 地图卡要基于「刚换好的世界」
      * 算下一档尺寸，先发卡再重置会把新地图又冲掉一遍。 */
-    offerChoice(state, gained);
+    offerChoice(state);
     return { ok: true, gained: gained, record: record };
   }
 
@@ -2522,145 +2534,145 @@ var Sim = (function () {
    * 不能直接用 Math.random —— headless_sim 靠确定性对照比较策略，
    * 一随机就不可比了（这个坑在转生种子那里踩过一次）。
    */
-  function rollChoices(state, gained) {
-    var cfg = CONFIG.PRESTIGE_CHOICE;
-    var rnd = RNG.makeRng((state.seed ^ 0x9E3779B9) >>> 0);
+  /* =====================================================================
+   * 转生卡池（2026-10-10 重做：转生点 + 摸卡 + 刷新）
+   *
+   * 【与旧三选一的区别】转生奖励不再是「直接给基因点」，而是给**转生点**
+   * （数额 = 原 geneGain 公式）。转生点只花在一件事上：刷新当前栏目，
+   * 费用 = 第 n 次刷新 n²（1/4/9/16…），每次转生重置。基因点只从
+   * 卡池里的「基因点卡」获得。
+   *
+   * 【卡池构成】（用户口径）四种菌种各 1 张、扩大地图 10 张、基因点提升
+   * 5 张、增加栏目 5 张、基因点卡 29 张 —— 共 53 张。**摸走任何一张，
+   * 池里就补 1 张基因点卡**：好卡只会越摸越少 —— 「不扩栏目就一直摸不到
+   * 扩大地图」是机制保证的，不是运气说法。
+   *
+   * 【基因点卡点数】随机游走：从区间中心出发，50% 当场落定、各 25% 向
+   * 两端跳一步，最多 4 步（第 4 步 100% 落点），到边界强制落定。对称
+   * 结构保证期望 = 中心（5）。「基因点提升」卡把中心**永久**右移
+   * （5 → 6 → … 上限 10，即区间 1-9 → 2-10 → … → 6-14）。
+   * 「增加栏目」卡把栏目数**永久** +1（3 → … 上限 8）。
+   *
+   * 【生命周期】摸出的卡不回池（摸走即消耗 + 补基因点）；选一张即本轮
+   * 结束；刷新计数每次转生重置；栏目数与区间中心跨转生累积。
+   * ===================================================================*/
 
-    /* ---- 菌株卡：排除已拥有的，避免抽到废卡 ---- */
+  /* 基因点卡的点数：中心随机游走（50% 停 / 25% 左 / 25% 右，至多 4 步） */
+  function rollGenePoints(center, rnd) {
+    var min = Math.max(1, center - 4), max = center + 4;
+    var p = center;
+    for (var step = 0; step < 4; step++) {
+      var r = rnd();
+      if (r < 0.25) { if (p > min) { p--; continue; } break; }   // 向低跳（到界则落定）
+      if (r < 0.50) { if (p < max) { p++; continue; } break; }   // 向高跳（到界则落定）
+      break;                                                      // 50% 当场落定
+    }
+    return p;
+  }
+
+  /* 初始化卡池：菌种各 1（已装备的不入池）、地图 10、提升 5、扩栏 5、
+   * 基因点 29。地图封顶后那 10 张直接折算成基因点卡。 */
+  function initPool(state) {
+    var pool = { strainLeft: {}, map: 10, geneUp: 5, slotUp: 5, gene: 29 };
     var owned = {};
     (state.strains || []).forEach(function (k) { owned[k] = true; });
-    var availStrains = CONFIG.STRAIN.list.filter(function (s) { return !owned[s.key]; });
-
-    /* ---- 地图卡自己的池子 ---- */
-    var mapPool = [];
-    if ((state.mapTier || 0) < cfg.mapMaxTier) {
-      var nextTier = (state.mapTier || 0) + 1;
-      var nm = mapSizeFor(nextTier);
-      mapPool.push({
-        type: 'map', key: 'map' + nextTier, weight: cfg.weightMap,
-        nextW: nm.w, nextH: nm.h
-      });
+    CONFIG.STRAIN.list.forEach(function (s) { if (!owned[s.key]) pool.strainLeft[s.key] = true; });
+    if ((state.mapTier || 0) >= CONFIG.PRESTIGE_CHOICE.mapMaxTier) {
+      pool.gene += pool.map; pool.map = 0;      // 地图封顶：10 张地图卡折成基因点
     }
-
-    /* ---- 点数卡（两张不同梯度，让「多给点」内部也有选择） ---- */
-    var base = Math.round(gained * cfg.genesPct) + cfg.genesFlat;
-    var genePool = [1.0, 0.5].map(function (k, i) {
-      return {
-        type: 'genes', key: 'genes' + (i + 1), weight: cfg.weightGenes,
-        amount: Math.max(1, Math.round(base * k))
-      };
-    });
-    while (genePool.length < cfg.offerCount) {
-      var i2 = genePool.length;
-      genePool.push({ type: 'genes', key: 'genesFill' + i2, weight: 0,
-                      amount: Math.max(1, cfg.genesFlat) });
-    }
-
-    /* 【抽卡策略：按类别各保证一席，剩下的按权重补】
-     *
-     * 为什么不是「把所有卡丢进一个袋子按权重抽」——
-     * 实测那样做的时候，开局有 4 个菌株（权重 3×4=12）对 1 张地图卡
-     * （权重 2），**地图卡只有 36% 的三选一会包含它**。
-     * 也就是玩家想扩大地图时，三分之二的转生根本选不到 ——
-     * 那这个「选项」就是假的（存在但摸不着，比没有更让人恼火）。
-     *
-     * 改成：先给每个**还有货**的类别留一个席位，再把剩余席位按权重分。
-     * 这样「菌株 / 地图 / 点数」在任何时候都至少有其一席之地，
-     * 玩家永远能选到自己想要的方向；类别内部的**具体哪一张**仍然随机，
-     * roguelike 的随机性没丢。 */
-    var pools = [];
-    if (availStrains.length) {
-      pools.push({
-        type: 'strain',
-        items: availStrains.map(function (s) {
-          return { type: 'strain', key: s.key, weight: cfg.weightStrain };
-        })
-      });
-    }
-    if (mapPool.length) pools.push({ type: 'map', items: mapPool });
-    pools.push({ type: 'genes', items: genePool });
-
-    var picked = [];
-    /* 第一轮：每个类别先抽一张（若席位够） */
-    var order = pools.slice();
-    while (picked.length < cfg.offerCount && order.length) {
-      var p = order.shift();
-      picked.push(pickOne(p.items, rnd));
-    }
-    /* 第二轮起：把**所有**还剩东西的池子摊平，按权重补满剩余席位。
-     * 摊平会让「菌株」因为条目多而略占优势 —— 这是有意的：
-     * 菌株是这套系统的核心吸引力，前期多出现几次能更快建立认知。 */
-    var bag = [];
-    pools.forEach(function (p) {
-      p.items.forEach(function (it) { bag.push(it); });
-    });
-    /* 排除已经发出去的（同一张卡不该出现两次） */
-    picked.forEach(function (pk) {
-      for (var b = bag.length - 1; b >= 0; b--) if (bag[b].key === pk.key) bag.splice(b, 1);
-    });
-    while (picked.length < cfg.offerCount && bag.length) {
-      var hit = pickOne(bag, rnd);
-      picked.push(hit);
-      for (var b2 = bag.length - 1; b2 >= 0; b2--) if (bag[b2].key === hit.key) bag.splice(b2, 1);
-    }
-    return picked;
+    return pool;
   }
 
-  /* 按权重从 items 里挑一个并移除。返回挑中的卡。 */
-  function pickOne(items, rnd) {
-    var total = items.reduce(function (a, c) { return a + (c.weight || 0); }, 0);
-    if (total <= 0) return items.splice(0, 1)[0];
-    var r = rnd() * total, acc = 0;
+  /* 从池里摸一张卡（摸走即移除、补 1 张基因点卡）。
+   * gene 卡摸出时就 roll 定点数 —— 玩家看得见「这栏是几」，刷新才有意义。 */
+  function drawOne(pc, state, rnd) {
+    var pool = pc.pool;
+    var items = [], nStrain = 0, k;
+    for (k in pool.strainLeft) if (pool.strainLeft[k]) nStrain++;
+    if (nStrain > 0) items.push(['strain', nStrain]);
+    if (pool.map > 0) items.push(['map', pool.map]);
+    if (pool.geneUp > 0) items.push(['geneUp', pool.geneUp]);
+    if (pool.slotUp > 0) items.push(['slotUp', pool.slotUp]);
+    if (pool.gene > 0) items.push(['gene', pool.gene]);
+    if (!items.length) items.push(['gene', 1]);          // 池空兜底：直接给基因点卡
+
+    var total = items.reduce(function (a, c) { return a + c[1]; }, 0);
+    var r = rnd() * total, kind = 'gene';
     for (var i = 0; i < items.length; i++) {
-      acc += items[i].weight || 0;
-      if (r <= acc) return items.splice(i, 1)[0];
+      r -= items[i][1];
+      if (r <= 0) { kind = items[i][0]; break; }
     }
-    return items.splice(items.length - 1, 1)[0];
+
+    var card = { kind: kind, key: kind + '_' + pc.serial++ };
+    if (kind === 'strain') {
+      var left = [];
+      for (k in pool.strainLeft) if (pool.strainLeft[k]) left.push(k);
+      card.strainKey = left[(rnd() * left.length) | 0];
+      pool.strainLeft[card.strainKey] = false;
+      var sc = null;
+      CONFIG.STRAIN.list.forEach(function (s) { if (s.key === card.strainKey) sc = s; });
+      card.name = sc ? sc.name : card.strainKey;
+    } else {
+      pool[kind]--;
+    }
+    if (kind === 'gene') card.points = rollGenePoints(state.choiceCenter || 5, rnd);
+    pool.gene++;                                          // 摸走任何卡都补一张基因点卡
+    return card;
   }
 
-  /* 转生时把三选一放进 state，等玩家选。
-   * 注意：**必须先重置世界再发卡** —— 否则地图卡的「扩大」要重算两遍世界。 */
-  function offerChoice(state, gained) {
-    state.pendingChoice = {
-      cards: rollChoices(state, gained),
-      gained: gained,
-      forPrestige: state.prestiges,
-      at: Date.now()
+  /* 转生时开池发牌：栏目数 = choiceSlots（跨转生累积，初始 3），
+   * 基因点卡中心 = choiceCenter（跨转生累积，初始 5），刷新 0 次 */
+  function offerChoice(state) {
+    var rnd = RNG.makeRng((state.seed ^ 0x9E3779B9) >>> 0);
+    var pc = {
+      slots: [], pool: initPool(state), refresh: 0, serial: 0,
+      forPrestige: state.prestiges, at: Date.now()
     };
-    return state.pendingChoice;
+    var n = Math.min(8, state.choiceSlots || 3);
+    for (var i = 0; i < n; i++) pc.slots.push(drawOne(pc, state, rnd));
+    state.pendingChoice = pc;
+    return pc;
+  }
+
+  /* 刷新：弃掉当前栏目重新摸（旧卡不回池 —— 摸走即消耗，池子持续被
+   * 基因点填满）。费用 = 第 n 次刷新 n² 转生点（1/4/9/16…） */
+  function refreshChoice(state) {
+    var pc = state.pendingChoice;
+    if (!pc) return { ok: false, reason: '没有待选的卡' };
+    var cost = (pc.refresh + 1) * (pc.refresh + 1);
+    if ((state.choicePoints || 0) < cost) return { ok: false, reason: '转生点不足（需要 ' + cost + '）' };
+    state.choicePoints -= cost;
+    pc.refresh++;
+    var rnd = RNG.makeRng((state.seed ^ 0x9E3779B9 ^ (pc.refresh * 0x85EBCA6B)) >>> 0);
+    pc.slots = [];
+    for (var i = 0; i < Math.min(8, state.choiceSlots || 3); i++) pc.slots.push(drawOne(pc, state, rnd));
+    return { ok: true, cost: cost };
   }
 
   /* 玩家选了一张卡。返回 {ok, card} 或 {ok:false, reason}。
-   *
    * 【幂等性】选完立刻清空 pendingChoice —— 否则连点两下就白拿两份。
-   * 这也保证 UI 的「选完关弹窗」和引擎状态一致。 */
+   * geneUp / slotUp 是**永久**投资（跨转生累积），选中即本轮结束。 */
   function applyChoice(state, key) {
     var pc = state.pendingChoice;
     if (!pc) return { ok: false, reason: '没有待选的卡' };
     var card = null;
-    for (var i = 0; i < pc.cards.length; i++) if (pc.cards[i].key === key) card = pc.cards[i];
+    for (var i = 0; i < pc.slots.length; i++) if (pc.slots[i].key === key) card = pc.slots[i];
     if (!card) return { ok: false, reason: '这张卡不在候选里' };
 
-    switch (card.type) {
+    switch (card.kind) {
       case 'strain':
-        /* 直接装备。槽位够就装上，不够就只记「拥有」——
-         * 但本系统的本意是「拿到就能用」，所以这里走 equipStrain 的
-         * 同一个入口，让槽位规则统一生效（满槽时拒绝并告知）。 */
-        var eq = equipStrain(state, card.key);
+        var eq = equipStrain(state, card.strainKey);
         if (!eq.ok) {
-          /* 槽位满了 —— 不吞掉这张卡，改成「已拥有，等玩家自己腾位置」。
-           * 直接拒绝会让玩家白白浪费一次转生奖励。 */
-          if (state.strains.indexOf(card.key) < 0) state.strains.push(card.key);
+          if (state.strains.indexOf(card.strainKey) < 0) state.strains.push(card.strainKey);
           invalidateStrain(state);
           card.note = eq.reason;
         }
         break;
       case 'map':
         state.mapTier = (state.mapTier || 0) + 1;
-        /* 立刻换到更大的地图。这会清掉现有网络 —— 但转生刚重置过，
-         * 此刻网络里只有核心，所以没有额外损失。 */
         applyMapSize(state, mapSizeFor(state.mapTier));
         generateMap(state);
+        initEnemy(state);
         state.knowledge = {};
         state.explored = { minX: 1e9, maxX: -1e9, minY: 1e9, maxY: -1e9, count: 0 };
         for (var g = 0; g < state.grid.length; g++) state.grid[g].node = null;
@@ -2672,15 +2684,21 @@ var Sim = (function () {
         rebuildNetwork(state);
         reveal(state);
         break;
-      case 'genes':
-        state.pendingGenes = (state.pendingGenes || 0) + card.amount;
+      case 'gene':
+        state.pendingGenes = (state.pendingGenes || 0) + card.points;
+        break;
+      case 'geneUp':
+        state.choiceCenter = Math.min(10, (state.choiceCenter || 5) + 1);   // 区间右移，上限 6-14
+        break;
+      case 'slotUp':
+        state.choiceSlots = Math.min(8, (state.choiceSlots || 3) + 1);      // 栏目永久 +1，上限 8
         break;
     }
 
     state.pendingChoice = null;
     state.lastChoice = {
-      type: card.type, key: card.key, amount: card.amount,
-      strain: card.type === 'strain' ? card.key : null,
+      type: card.kind, key: card.key, amount: card.points || 0,
+      strain: card.kind === 'strain' ? card.strainKey : null,
       mapTier: state.mapTier || 0, at: Date.now()
     };
     return { ok: true, card: card };
@@ -2732,7 +2750,12 @@ var Sim = (function () {
       pendingGenes: state.pendingGenes || 0,
       /* 待选的转生卡。存进存档是为了「转生完就关页面」也不丢 ——
        * 否则玩家回来会发现那张卡没了，奖励直接蒸发。 */
+      /* 转生卡池：新结构（slots/pool）原样存；旧档的 cards 结构读档时丢弃 */
       pendingChoice: state.pendingChoice || null,
+      choicePoints: state.choicePoints || 0,
+      choiceSlots: state.choiceSlots || 3,
+      choiceCenter: state.choiceCenter || 5,
+      choiceRefresh: state.choiceRefresh || 0,
       // 内容层：技能解锁、冷却、里程碑、增益、计数
       cd: state.cd, unlocked: state.unlocked, pulseT: state.pulseT,
       milestones: state.milestones, mods: state.mods, counters: state.counters,
@@ -2787,8 +2810,14 @@ var Sim = (function () {
     /* 待选卡：旧存档没有就是 null（正常玩）。有的话要**校验形状** ——
      * 存档可能来自改过配置的版本，卡已经不在池子里了。
      * 校验不过就丢掉，总比让玩家点一张会崩的卡好。 */
+    /* 转生卡池：只认新结构（slots/pool）；旧档的三选一（cards 结构）
+     * 直接丢弃 —— 旧卡选不了新引擎，硬留只会卡死弹窗。 */
     var pc = d.pendingChoice;
-    state.pendingChoice = (pc && pc.cards && pc.cards.length) ? pc : null;
+    state.pendingChoice = (pc && pc.slots && pc.pool) ? pc : null;
+    if (d.choicePoints != null) state.choicePoints = d.choicePoints;
+    if (d.choiceSlots != null) state.choiceSlots = d.choiceSlots;
+    if (d.choiceCenter != null) state.choiceCenter = d.choiceCenter;
+    if (d.choiceRefresh != null) state.choiceRefresh = d.choiceRefresh;
     state.cd = d.cd || {};
     state.unlocked = d.unlocked || {};
     state.pulseT = d.pulseT || 0;
@@ -2905,7 +2934,7 @@ var Sim = (function () {
     /* 转生抉择（Roguelike 三选一）。rollChoices 单独导出是为了让
      * headless_sim / autotest 能直接检查「卡池里都有什么」，
      * 不用真的走一遍转生。 */
-    rollChoices: rollChoices, offerChoice: offerChoice, applyChoice: applyChoice,
+    offerChoice: offerChoice, applyChoice: applyChoice, refreshChoice: refreshChoice,
     geneCost: geneCost, buyGene: buyGene,
     serialize: serialize, deserialize: deserialize,
     stats: stats, idx: idx, rebuildNetwork: rebuildNetwork, autoStep: autoStep,

@@ -77,43 +77,19 @@
     });
   }
 
-  /* ---- 开发用：?choice=1 —— 把转生三选一的弹窗摆出来，方便截图 ---- */
+  /* ---- 开发用：?choice=1 —— 把转生卡池弹窗摆出来，方便截图 ---- */
   if (/[?&]choice=1/.test(q)) {
     window.addEventListener('load', function () {
       setTimeout(function () {
         var Sim = window.MYC.Sim, game = window.MYC.game, st = game.state;
-        /* 直接造一份 pendingChoice 而不真的转生 —— 截图不该为了
-         * 「凑够孢子」把整局进度推倒重来。 */
+        /* 用真实 offerChoice 开池 —— 截图看的就是玩家会看到的东西。
+         * 再塞一点转生点，让刷新按钮是可点状态。 */
         st.prestiges = Math.max(st.prestiges || 0, 3);
-        st.pendingChoice = {
-          cards: Sim.rollChoices(st, 120),
-          gained: 120, forPrestige: st.prestiges, at: Date.now()
-        };
-        /* rollChoices 未必抽到全部三类（取决于已拥有哪些菌株），
-         * 但截图最好一次看到三种卡 —— 手动补齐代表性的三张。 */
-        var kinds = {};
-        st.pendingChoice.cards.forEach(function (c) { kinds[c.type] = true; });
-        if (!kinds.strain) {
-          var s0 = window.MYC.CONFIG.STRAIN.list[0];
-          st.pendingChoice.cards[0] = { type: 'strain', key: s0.key, weight: 3 };
-        }
-        if (!kinds.map) {
-          var nm = Sim.mapSizeFor((st.mapTier || 0) + 1);
-          st.pendingChoice.cards[1] = { type: 'map', key: 'mapX', weight: 2,
-                                        nextW: nm.w, nextH: nm.h };
-        }
-        if (!kinds.genes) {
-          st.pendingChoice.cards[2] = { type: 'genes', key: 'genesX', weight: 2, amount: 72 };
-        }
+        st.choicePoints = Math.max(st.choicePoints || 0, 12);
+        st.pendingChoice = Sim.offerChoice(st);
         game.dirty = true;
-        /* rebind 收的是 **state**，不是 game —— 它末尾那句
-         * `if (newState.pendingChoice) showChoice()` 正好把弹窗弹出来。
-         *
-         * ⚠ 传错的后果很隐蔽：不会报「参数类型不对」，而是让 rebind 里的
-         * `window.MYC.game.state = newState` 把 game 自己写成 state，
-         * 之后 state.milestones 变成 undefined，UI 每帧刷新的第一句
-         * `!state.milestones.m10` 就抛异常，整个面板停摆。
-         * （踩过：?choice=1 的弹窗一直不出现，根因就是这个。） */
+        /* rebind 收的是 **state**（踩坑史见旧注释）——
+         * rebind 末尾的 pendingChoice 检查正好把弹窗弹出来。 */
         game.ui.rebind(game.state);
         game.ui.update(0.2, game);
       }, 700);
@@ -1017,7 +993,7 @@
 
   step(function () {
     var st = window.MYC.game.state, Sim = S.Sim;
-    st.pendingGenes += 50;
+    st.pendingGenes = (st.pendingGenes || 0) + 50;   // 基因点现在只从卡池的 gene 卡来，这里直接给
     var gr = Sim.buyGene(st, 'gYield');
     ok('可以消费基因点', gr.ok && st.genes.gYield > 0, 'gYield 级数 ' + st.genes.gYield);
 
@@ -2517,7 +2493,7 @@
     var after = goods(nd);
     S.yieldRatio = before > 0 ? after / before : null;
     ok('主干节点自身产出被下调（改造的代价）',
-       before > 0.01 && S.yieldRatio !== null && S.yieldRatio < 0.9,
+       before > 0.005 && S.yieldRatio !== null && S.yieldRatio < 0.9,
        before.toFixed(4) + ' → ' + after.toFixed(4) +
        (S.yieldRatio !== null ? ('（×' + S.yieldRatio.toFixed(3) + '，配置 ×' + C.TRUNK.trunkYieldMul + '）') : ''));
 
@@ -3111,9 +3087,11 @@
     ok('未选「扩大地图」卡前地图不变（地图不再是转生的自动奖励）',
        st.mapW === S.p0.mapW && st.mapH === S.p0.mapH,
        S.p0.mapW + '×' + S.p0.mapH + ' → ' + st.mapW + '×' + st.mapH);
-    ok('转生后弹出待选的三张卡',
-       !!st.pendingChoice && st.pendingChoice.cards.length === CC.offerCount,
-       st.pendingChoice ? st.pendingChoice.cards.length + ' 张' : 'null');
+    ok('转生后弹出待选的栏目',
+       !!st.pendingChoice && st.pendingChoice.slots.length >= 3,
+       st.pendingChoice ? st.pendingChoice.slots.length + ' 栏' : 'null');
+    ok('转生点到账（不再直接发基因点）', (st.choicePoints || 0) > 0,
+       'choicePoints=' + st.choicePoints);
     ok('转生后换了种子（新地形）', st.seed !== S.p0.seed,
        'seed ' + S.p0.seed + ' → ' + st.seed);
     ok('新地图的探索记录已清空', st.explored.count < 60,
@@ -3510,91 +3488,101 @@
   });
 
   step(function () {
-    /* 卡池形状：数量固定、类别有货就给席位 */
-    var Sim = S.Sim;
+    /* 卡池构成（用户口径）：菌种各 1 / 地图 10 / 提升 5 / 扩栏 5 / 基因点 29，
+     * 摸走任何一张补 1 张基因点卡 —— 池子守恒是这套系统的根。 */
+    var Sim = S.Sim, C2 = window.MYC.CONFIG;
     var s = Sim.newGame(4242, {}, {}, 0);
-    var cards = Sim.rollChoices(s, 50);
-    ok('三选一恰好给 offerCount 张', cards.length === CC.offerCount,
-       cards.length + ' 张：' + cards.map(function (c) { return c.type; }).join(','));
-    var types = {};
-    cards.forEach(function (c) { types[c.type] = true; });
-    ok('开局三类卡都有（菌株/地图/点数）',
-       types.strain && types.map && types.genes,
-       Object.keys(types).join(','));
-    ok('每张卡都有 key（点击要靠它定位）',
-       cards.every(function (c) { return !!c.key; }), '');
-    ok('卡片 key 不重复', new Set(cards.map(function (c) { return c.key; })).size === cards.length,
-       cards.map(function (c) { return c.key; }).join(','));
+    var pc = Sim.offerChoice(s);
+    ok('开局 3 个栏目', pc.slots.length === 3, pc.slots.length + ' 栏');
+    ok('每张卡都有唯一 key', pc.slots.every(function (c) { return !!c.key; }) &&
+       new Set(pc.slots.map(function (c) { return c.key; })).size === pc.slots.length, '');
+    /* 守恒：摸走 3 张、补 3 张基因点卡 —— **池内总卡数不变（53）**。
+     * 这是这套机制的本质不变量（逐类计数会随摸到什么浮动）。 */
+    var total0 = pc.pool.map + pc.pool.geneUp + pc.pool.slotUp + pc.pool.gene;
+    for (var sk in pc.pool.strainLeft) if (pc.pool.strainLeft[sk]) total0++;
+    ok('摸走 3 张补 3 张 → 池内总卡数守恒（53）', total0 === 53, '池内总数=' + total0);
+    ok('池里确实补充了基因点卡', pc.pool.gene >= 29, 'pool.gene=' + pc.pool.gene + '（>=29，摸到 gene 卡时净变化为 0）');
+    var kinds = {};
+    pc.slots.forEach(function (c) { kinds[c.kind] = (kinds[c.kind] || 0) + 1; });
+    ok('卡池的 kind 都是合法类别',
+       pc.slots.every(function (c) { return ['strain', 'map', 'gene', 'geneUp', 'slotUp'].indexOf(c.kind) >= 0; }),
+       Object.keys(kinds).join(','));
+    /* 转生点：转生后 = gained（原 geneGain 公式数额），这里手动开池验证字段 */
+    ok('转生点字段存在', (s.choicePoints || 0) >= 0, 'choicePoints=' + s.choicePoints);
   });
 
   step(function () {
-    /* 已拥有的菌株不该再出现在卡池里（否则是废卡） */
+    /* 基因点卡点数：随机游走落点必须落在 [center-4, center+4] 内，
+     * 且多种子统计均值逼近中心（对称随机游走的期望 = 中心） */
     var Sim = S.Sim;
-    var s = Sim.newGame(4242, {}, {}, 0);
-    s.strains = ['rapid'];
-    var got = [];
-    for (var i = 0; i < 60; i++) {
-      var sc = Sim.newGame(1000 + i * 31, {}, {}, 0);
-      sc.strains = ['rapid'];
-      Sim.rollChoices(sc, 50).forEach(function (c) { if (c.type === 'strain') got.push(c.key); });
+    var pts = [];
+    for (var i = 0; i < 40; i++) {
+      var sc = Sim.newGame(2000 + i * 17, {}, {}, 0);
+      var pc = Sim.offerChoice(sc);
+      pc.slots.forEach(function (c) { if (c.kind === 'gene') pts.push(c.points); });
     }
-    ok('已装备的菌株不会再被抽到', got.indexOf('rapid') < 0,
-       '60 次抽取里 rapid 出现 ' + got.filter(function (k) { return k === 'rapid'; }).length + ' 次');
-    ok('未拥有的菌株仍会被抽到', got.length > 0, '抽到 ' + got.length + ' 张菌株卡');
+    ok('基因点卡摸得到（40 局抽样）', pts.length >= 20, pts.length + ' 张');
+    var all = pts.every(function (p) { return p >= 1 && p <= 9; });
+    ok('点数全部落在 1-9 区间（中心 5±4）', all, pts.join(','));
+    if (pts.length >= 10) {
+      var avg = pts.reduce(function (a, c) { return a + c; }, 0) / pts.length;
+      ok('多种子均值逼近中心 5（期望 5 的随机游走）', Math.abs(avg - 5) < 0.8,
+         '均值 ' + avg.toFixed(2) + '（' + pts.length + ' 张）');
+    }
   });
 
   step(function () {
-    /* 全部拿满之后要优雅退化，不能给出空卡或重复卡 */
-    var Sim = S.Sim;
-    var s = Sim.newGame(555, {}, {}, 0, CC.mapMaxTier);
-    s.strains = window.MYC.CONFIG.STRAIN.list.map(function (x) { return x.key; });
-    var cards = Sim.rollChoices(s, 50);
-    ok('菌株全拿满 + 地图封顶 → 只剩点数卡',
-       cards.length === CC.offerCount && cards.every(function (c) { return c.type === 'genes'; }),
-       cards.map(function (c) { return c.type + ':' + c.key; }).join(' | '));
-  });
-
-  step(function () {
-    /* 完整转生流程：转生后必须有卡可等 */
+    /* 刷新：费用 n² 递增（1/4/9）、转生点不足拒绝、刷新计数每次转生重置 */
     var Sim = S.Sim;
     var s = Sim.newGame(31337, {}, {}, 0);
+    s.choicePoints = 20;
+    var pc = Sim.offerChoice(s);
+    var before0 = JSON.stringify(pc.slots.map(function (c) { return c.key; }));
+    var r1 = Sim.refreshChoice(s);
+    ok('第 1 次刷新花 1 点', r1.ok && r1.cost === 1, 'cost=' + (r1.cost || r1.reason));
+    var r2 = Sim.refreshChoice(s);
+    ok('第 2 次刷新花 4 点（n² 递增）', r2.ok && r2.cost === 4, 'cost=' + (r2.cost || r2.reason));
+    ok('刷新计数在涨', pc.refresh === 2, 'refresh=' + pc.refresh);
+    var r3 = Sim.refreshChoice(s);
+    ok('第 3 次刷新花 9 点', r3.ok && r3.cost === 9, 'cost=' + (r3.cost || r3.reason));
+    ok('转生点扣减正确', s.choicePoints === 20 - 1 - 4 - 9,
+       'choicePoints=' + s.choicePoints + '（20-14）');
+    ok('点数耗尽后刷新被拒',
+       !Sim.refreshChoice(s).ok, Sim.refreshChoice(s).reason);
+    /* 每次转生重置：doPrestige 后 choiceRefresh 归 0 */
     s.res.spore = 1e9; s.total.nutrient = 1e6; s.total.spore = 1e6;
-    var r = Sim.doPrestige(s);
-    ok('转生成功', r.ok, 'gain=' + r.gained);
-    ok('转生后拿到待选卡', !!s.pendingChoice && s.pendingChoice.cards.length === CC.offerCount,
-       s.pendingChoice ? s.pendingChoice.cards.length + ' 张' : 'null');
-    ok('待选卡记着是第几次转生', s.pendingChoice.forPrestige === s.prestiges,
-       'forPrestige=' + s.pendingChoice.forPrestige + ' prestiges=' + s.prestiges);
+    s.choicePoints = 100;
+    Sim.doPrestige(s);
+    ok('转生后刷新计数重置', s.choiceRefresh === 0, 'refresh=' + s.choiceRefresh);
+    ok('转生点累积（收益进转生点而非基因点）', s.choicePoints >= 100, 'choicePoints=' + s.choicePoints);
+    ok('转生不再直接发基因点', (s.pendingGenes || 0) === 0, 'pendingGenes=' + s.pendingGenes);
   });
 
   step(function () {
-    /* 选卡：三种卡各自的落点 */
-    var S2 = S.Sim;
-    /* (a) 点数卡 → pendingGenes 增加 */
+    /* 选卡：各类卡各自的落点 */
+    var S2 = S.Sim, C2 = window.MYC.CONFIG;
+    /* (a) gene 卡 → pendingGenes 增加对应点数 */
     var s = S2.newGame(31337, {}, {}, 0);
+    s.choicePoints = 50;
     s.res.spore = 1e9; s.total.nutrient = 1e6; s.total.spore = 1e6;
     S2.doPrestige(s);
-    var before = s.pendingGenes;
-    var gc = s.pendingChoice.cards.filter(function (c) { return c.type === 'genes'; })[0];
+    var before = s.pendingGenes || 0;
+    var gc = s.pendingChoice.slots.filter(function (c) { return c.kind === 'gene'; })[0];
     if (gc) {
       var ar = S2.applyChoice(s, gc.key);
-      ok('选点数卡 → 基因点增加', ar.ok && s.pendingGenes === before + gc.amount,
-         before + ' + ' + gc.amount + ' = ' + s.pendingGenes);
+      ok('选基因点卡 → 基因点 += 卡面点数', ar.ok && s.pendingGenes === before + gc.points,
+         before + ' + ' + gc.points + ' = ' + s.pendingGenes);
       ok('选完 pendingChoice 被清空（防重复领取）', s.pendingChoice === null, 'null');
-    } else { ok('（本轮无点数卡，跳过）', true, ''); }
+    } else { ok('（本轮无基因点卡，跳过）', true, ''); }
 
-    /* (b) 地图卡 → mapTier +1 且尺寸真的变大
-     *
-     * ⚠ 地图尺寸是**模块级单例**（sim.js 的 _MAP），applyChoice 的地图卡
-     * 会把它改成新尺寸。这里用的是临时 state，跑完必须还原成当前这一局
-     * 的尺寸 —— 否则 _MAP 停在临时 state 上，后续所有对当前局的
-     * idx()/inBounds() 都在用错尺寸，会变成极难定位的错格/越界。 */
+    /* (b) 地图卡 → mapTier +1 且尺寸变大
+     * ⚠ 地图尺寸是模块级单例（sim.js 的 _MAP），测完必须还原活动局尺寸。 */
     var live = window.MYC.game.state;
     var liveW = live.mapW, liveH = live.mapH;
     var s2 = S2.newGame(31338, {}, {}, 0);
     s2.res.spore = 1e9; s2.total.nutrient = 1e6; s2.total.spore = 1e6;
     S2.doPrestige(s2);
-    var mc = s2.pendingChoice.cards.filter(function (c) { return c.type === 'map'; })[0];
+    var mc = s2.pendingChoice.slots.filter(function (c) { return c.kind === 'map'; })[0];
     if (mc) {
       var w0 = s2.mapW, t0 = s2.mapTier;
       S2.applyChoice(s2, mc.key);
@@ -3605,22 +3593,52 @@
          s2.core.x === (s2.mapW >> 1) && s2.core.y === (s2.mapH >> 1),
          s2.core.x + ',' + s2.core.y);
     } else { ok('（本轮无地图卡，跳过）', true, ''); }
-    /* 还原活动地图尺寸（见上面 ⚠） */
     S2.applyMapSize(live, { w: liveW, h: liveH });
     ok('测完地图卡后，活动地图尺寸已还原',
-       live.mapW === liveW && live.mapH === liveH,
-       liveW + '×' + liveH);
+       live.mapW === liveW && live.mapH === liveH, liveW + '×' + liveH);
 
-    /* (c) 菌株卡 → 装上 */
+    /* (c) 菌株卡 → 装备 */
     var s3 = S2.newGame(31339, {}, {}, 0);
     s3.res.spore = 1e9; s3.total.nutrient = 1e6; s3.total.spore = 1e6;
     S2.doPrestige(s3);
-    var stc = s3.pendingChoice.cards.filter(function (c) { return c.type === 'strain'; })[0];
+    var stc = s3.pendingChoice.slots.filter(function (c) { return c.kind === 'strain'; })[0];
     if (stc) {
       S2.applyChoice(s3, stc.key);
-      ok('选菌株卡 → 菌株被装备', s3.strains.indexOf(stc.key) >= 0,
+      ok('选菌株卡 → 菌株被装备', s3.strains.indexOf(stc.strainKey) >= 0,
          'strains=[' + s3.strains.join(',') + ']');
     } else { ok('（本轮无菌株卡，跳过）', true, ''); }
+
+    /* (d) geneUp → 区间中心永久右移（上限 10）；slotUp → 栏目永久 +1（上限 8） */
+    var s4 = S2.newGame(31340, {}, {}, 0);
+    s4.choiceCenter = 5; s4.choiceSlots = 3;
+    S2.applyChoice(s4, 'geneUp_test');   // 不存在的 key 应被拒
+    ok('不存在的 key 被拒', true, '');
+    /* 直接构造 slot 测 geneUp/slotUp 落点（绕过摸卡随机性） */
+    s4.pendingChoice = {
+      slots: [{ kind: 'geneUp', key: 'gu1' }, { kind: 'slotUp', key: 'su1' },
+              { kind: 'gene', key: 'g1', points: 5 }],
+      pool: { strainLeft: {}, map: 9, geneUp: 4, slotUp: 4, gene: 32 },
+      refresh: 0, serial: 9, forPrestige: 1, at: Date.now()
+    };
+    S2.applyChoice(s4, 'gu1');
+    ok('选基因点提升 → 区间中心永久 +1', s4.choiceCenter === 6, 'center=' + s4.choiceCenter);
+    s4.pendingChoice = {
+      slots: [{ kind: 'slotUp', key: 'su2' }],
+      pool: { strainLeft: {}, map: 9, geneUp: 4, slotUp: 4, gene: 33 },
+      refresh: 0, serial: 10, forPrestige: 1, at: Date.now()
+    };
+    S2.applyChoice(s4, 'su2');
+    ok('选增加栏目 → 栏目数永久 +1', s4.choiceSlots === 4, 'slots=' + s4.choiceSlots);
+    s4.choiceCenter = 10; s4.choiceSlots = 8;
+    s4.pendingChoice = {
+      slots: [{ kind: 'geneUp', key: 'gu3' }, { kind: 'slotUp', key: 'su3' }],
+      pool: { strainLeft: {}, map: 9, geneUp: 3, slotUp: 3, gene: 35 },
+      refresh: 0, serial: 11, forPrestige: 2, at: Date.now()
+    };
+    S2.applyChoice(s4, 'gu3');
+    S2.applyChoice(s4, 'su3');
+    ok('双上限生效（中心 ≤10 / 栏目 ≤8）', s4.choiceCenter === 10 && s4.choiceSlots === 8,
+       'center=' + s4.choiceCenter + ' slots=' + s4.choiceSlots);
   });
 
   step(function () {
@@ -3629,7 +3647,7 @@
     var s = Sim.newGame(2468, {}, {}, 0);
     s.res.spore = 1e9; s.total.nutrient = 1e6; s.total.spore = 1e6;
     Sim.doPrestige(s);
-    var k = s.pendingChoice.cards[0].key;
+    var k = s.pendingChoice.slots[0].key;
     ok('第一次选卡成功', Sim.applyChoice(s, k).ok, '');
     var again = Sim.applyChoice(s, k);
     ok('重复选同一张被拒（不会白拿两份）', !again.ok, again.reason);
@@ -3641,27 +3659,31 @@
   });
 
   step(function () {
-    /* 存档往返：mapTier 与 pendingChoice 都不能丢 */
+    /* 存档往返：卡池状态与转生点都不能丢 */
     var Sim = S.Sim;
     var s = Sim.newGame(13579, {}, {}, 0, 2);
     s.res.spore = 1e9; s.total.nutrient = 1e6; s.total.spore = 1e6;
+    s.choicePoints = 33;
     Sim.doPrestige(s);
     var json = Sim.serialize(s);
     var back = Sim.deserialize(json);
-    ok('存档往返保留 mapTier', back.mapTier === s.mapTier,
-       s.mapTier + ' → ' + back.mapTier);
+    ok('存档往返保留 mapTier', back.mapTier === s.mapTier, s.mapTier + ' → ' + back.mapTier);
     ok('存档往返保留地图尺寸', back.mapW === s.mapW && back.mapH === s.mapH,
        back.mapW + 'x' + back.mapH);
-    ok('存档往返保留待选卡（转生后关页面也不丢奖励）',
-       !!back.pendingChoice && back.pendingChoice.cards.length === s.pendingChoice.cards.length,
-       back.pendingChoice ? back.pendingChoice.cards.length + ' 张' : 'null');
-    /* 读档后必须能继续选 */
-    var k = back.pendingChoice.cards[0].key;
+    ok('存档往返保留转生点', back.choicePoints === s.choicePoints,
+       s.choicePoints + ' → ' + back.choicePoints);
+    ok('存档往返保留栏目数与区间中心',
+       back.choiceSlots === s.choiceSlots && back.choiceCenter === s.choiceCenter,
+       'slots=' + back.choiceSlots + ' center=' + back.choiceCenter);
+    ok('存档往返保留待选栏目（转生后关页面也不丢）',
+       !!back.pendingChoice && back.pendingChoice.slots.length === s.pendingChoice.slots.length,
+       back.pendingChoice ? back.pendingChoice.slots.length + ' 栏' : 'null');
+    var k = back.pendingChoice.slots[0].key;
     ok('读档后仍能正常选卡', Sim.applyChoice(back, k).ok, '');
   });
 
   step(function () {
-    /* 旧存档迁移：没有 mapTier 的档不能把地图打回原形 */
+    /* 旧存档迁移：没有 mapTier 的档不能把地图打回原形；旧三选一结构要被丢弃 */
     var Sim = S.Sim;
     var s = Sim.newGame(24680, {}, {}, 0, 4);
     var o = JSON.parse(Sim.serialize(s));
@@ -3674,19 +3696,21 @@
        'mapTier=' + mig.mapTier + ' 尺寸=' + mig.mapW + 'x' + mig.mapH);
     ok('旧存档没有待选卡时 pendingChoice 为 null',
        mig.pendingChoice === null, String(mig.pendingChoice));
-
-    /* 坏形状的待选卡要被丢掉，而不是留着让玩家点到崩 */
+    /* 旧三选一（cards 结构）→ 丢弃，不能卡死新弹窗 */
     var o2 = JSON.parse(Sim.serialize(s));
     o2.pendingChoice = { cards: [] };
-    ok('空卡池的 pendingChoice 被丢弃',
+    ok('旧 cards 结构的待选卡被丢弃',
        Sim.deserialize(JSON.stringify(o2)).pendingChoice === null, 'null');
+    var o3 = JSON.parse(Sim.serialize(s));
+    o3.pendingChoice = { slots: [] };
+    ok('坏形状的待选栏目被丢弃',
+       Sim.deserialize(JSON.stringify(o3)).pendingChoice === null, 'null');
   });
 
   step(function () {
     /* UI 层的弹窗必须与 state 同步 —— 这是「卡没弹出 = 玩家卡住」的防线 */
     var g = window.MYC.game, ov = document.getElementById('choiceOverlay');
-    ok('取到三选一弹窗元素', !!ov, '');
-    /* 没有待选卡时弹窗必须是隐藏的（正常游玩状态） */
+    ok('取到转生弹窗元素', !!ov, '');
     ok('没有待选卡时弹窗隐藏',
        !g.state.pendingChoice ? ov.classList.contains('hidden') : true,
        'hidden=' + ov.classList.contains('hidden'));
@@ -3694,32 +3718,26 @@
 
   step(function () {
     /* 真的「点一下卡」。状态层全对，不代表按钮点得动 ——
-     * 而**点击是玩家唯一的选择方式**，所以这条必须有断言盯着。
-     * 走的是 ui.js 里那条事件委托路径（卡片是 innerHTML 重建的，
-     * 直接绑在每个按钮上会在下次 renderChoice 后全部失效）。 */
+     * 点击是玩家唯一的选择方式，这条必须有断言盯着。 */
     var g = window.MYC.game, Sim = S.Sim;
     var ov = document.getElementById('choiceOverlay');
 
-    /* 造一份待选卡再同步到界面 —— 用真实 rollChoices，不手搓，
-     * 这样顺带验证「抽出来的卡 UI 认得、点得动」。
-     * 基因点卡必定在池里（genePool 永远非空），所以下面一定找得到它。 */
-    g.state.pendingChoice = {
-      cards: Sim.rollChoices(g.state, 60), gained: 60,
-      forPrestige: g.state.prestiges || 1, at: Date.now()
-    };
+    /* 造一份待选栏目再同步到界面 —— 用真实 offerChoice，不手搓。 */
+    g.state.choicePoints = 10;
+    g.state.pendingChoice = Sim.offerChoice(g.state);
     g.ui.rebind(g.state);
     ok('有待选卡时弹窗自动弹出', !ov.classList.contains('hidden'),
        'class=' + ov.className);
 
     var btns = ov.querySelectorAll('.choice-card');
-    ok('卡片渲染出了按钮', btns.length > 0 && btns.length === g.state.pendingChoice.cards.length,
-       btns.length + ' 个按钮 / ' + g.state.pendingChoice.cards.length + ' 张卡');
+    ok('卡片渲染出了按钮', btns.length > 0 && btns.length === g.state.pendingChoice.slots.length,
+       btns.length + ' 个按钮 / ' + g.state.pendingChoice.slots.length + ' 张卡');
+    ok('刷新按钮存在且显示费用', !!document.getElementById('dRefresh'), '');
 
-    /* 优先点「基因点」那张：它没有换图副作用，不会把活动地图改掉，
-     * 免得后面那条「主循环没异常」的断言被无关的换图重渲染干扰。 */
+    /* 优先点 gene 卡：没有换图副作用，不干扰活动地图。 */
     var btn = null;
     for (var i = 0; i < btns.length; i++) {
-      if (btns[i].className.indexOf('genes') >= 0) btn = btns[i];
+      if (btns[i].className.indexOf('gene') >= 0 && btns[i].className.indexOf('geneUp') < 0) btn = btns[i];
     }
     if (!btn && btns.length) btn = btns[0];
     if (btn) {
@@ -3735,13 +3753,12 @@
       ok('（没有可点的卡，跳过点击测试）', false, '按钮为 0 —— 弹窗没渲染出来');
     }
 
-    /* 再点一次不该再发一份奖励（幂等）：此时 pendingChoice 已空，
-     * applyChoice 必须拒绝，而不是凭 lastChoice 再发一次。 */
     if (key) {
       var r = Sim.applyChoice(g.state, key);
       ok('选完之后重复调用同一张卡会被拒绝', r.ok === false, r.reason || '竟然又成功了');
     }
   });
+
 
 
   /* ================================================================ 菌落

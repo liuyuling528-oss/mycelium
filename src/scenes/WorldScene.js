@@ -57,6 +57,12 @@
     var st = window.MYC.game && window.MYC.game.state;
     return { w: (st && st.mapW) || GRID.W, h: (st && st.mapH) || GRID.H };
   }
+  /* 渲染层的格索引：**必须用活动局自己的 mapW**，不能用 Sim.idx ——
+   * 后者按 sim 的模块级 _MAP 计算，而临时局测试会把 _MAP 留在别的尺寸，
+   * 一旦两者不一致，idx 就越过活动局 grid 的边界（间歇性渲染崩溃的根因）。 */
+  function gridAt(st, x, y) {
+    return st.grid[x + y * st.mapW];
+  }
   function worldW() { return GRID.OX * 2 + mapSize().w * GRID.CELL; }
   function worldH() { return GRID.OY * 2 + mapSize().h * GRID.CELL; }
 
@@ -540,7 +546,7 @@
       }
       this.hoverKey = key;
 
-      var cell = st.grid[Sim.idx(c.x, c.y)];
+      var cell = gridAt(st, c.x, c.y);
       if (!cell.known) {
         this.showTip(p, '未探明 —— 让菌丝蔓延过去才能感知');
         return;
@@ -802,7 +808,7 @@
     tryAct(c) {
       var game = window.MYC.game;
       var st = game.state;
-      var cell = st.grid[Sim.idx(c.x, c.y)];
+      var cell = gridAt(st, c.x, c.y);
 
       // 点已有菌丝 —— 这一格「不空」，于是点击有了第二种用途
       if (cell.node != null) {
@@ -1129,7 +1135,7 @@
       var seen = new Set();
       for (var y = y0; y <= y1; y++) {
         for (var x = x0; x <= x1; x++) {
-          var c = st.grid[Sim.idx(x, y)];
+          var c = gridAt(st, x, y);
           var key = x + ',' + y;
           seen.add(key);
           var img = this.soilImgs.get(key);

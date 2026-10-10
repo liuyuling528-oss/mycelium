@@ -66,7 +66,7 @@ var UI = (function () {
      'structColW', 'structColN', 'structColS',
     'treeCount', 'treeHint', 'topsoilRow',
     'btnSave', 'btnNew', 'slotList', 'saveHint', 'toast',
-    'choiceOverlay', 'choiceCards', 'choiceHint',
+    'choiceOverlay', 'choiceCards', 'choiceHint', 'dRefresh',
     /* 主菜单 + 开发者面板 */
     'menu', 'mContinue', 'mKeep', 'mFresh', 'mStats', 'mDev',
     'devPanel', 'dTime', 'dWater', 'dNutrient', 'dSpore', 'dEnemy',
@@ -107,6 +107,9 @@ var UI = (function () {
         pickChoice(b.getAttribute('data-key'));
       });
     }
+    /* 刷新按钮：转生弹窗里的独立按钮（不在 cards 容器里，单独接） */
+    var dRefresh = document.getElementById('dRefresh');
+    if (dRefresh) dRefresh.addEventListener('click', doRefreshChoice);
     /* 读档时如果存档里有没选完的卡，立刻把弹窗恢复出来 ——
      * 否则玩家会带着一个「看不见的待选状态」继续玩，
      * 而下一次转生会把那张卡直接覆盖掉（奖励蒸发）。 */
@@ -523,32 +526,48 @@ var UI = (function () {
    * 没选完不能继续玩，所以它的开/关都必须和 state.pendingChoice 严格同步 ——
    * 只靠 DOM 的 .hidden 判断会出现「存档里还有卡、但界面没弹」的错位。
    * 真相永远在 state.pendingChoice 里。 */
-  var KIND_LABEL = { strain: '菌株', map: '地图', genes: '基因点' };
+  var KIND_LABEL = { strain: '菌株', map: '地图', gene: '基因点', geneUp: '基因点提升', slotUp: '增加栏目' };
 
-  /* 把一张卡翻译成「标题 / 说明 / 代价」三段。
-   * 代价那行是这个系统的灵魂 —— 三选一的意义就在于让玩家看见亏什么。 */
+  /* 把一张卡翻译成「标题 / 说明 / 底注」。摸出时点数已定（刷新才有意义）。 */
   function cardText(card) {
-    if (card.type === 'strain') {
+    if (card.kind === 'strain') {
       var s = null;
-      C.STRAIN.list.forEach(function (x) { if (x.key === card.key) s = x; });
-      if (!s) return { name: card.key, desc: '', cost: '' };
-      /* 菌株配置里没有单独的「代价」字段（收益与代价混在 desc 里）。
-       * 这里用 hint 当补充说明，desc 原样用。 */
+      C.STRAIN.list.forEach(function (x) { if (x.key === card.strainKey) s = x; });
+      if (!s) return { name: card.strainKey, desc: '', cost: '' };
       return { name: s.name, desc: s.hint || s.desc, cost: s.desc };
     }
-    if (card.type === 'map') {
+    if (card.kind === 'map') {
       return {
         name: '世界扩大一档',
-        desc: '地图变成 ' + card.nextW + '×' + card.nextH +
-              '（当前 ' + state.mapW + '×' + state.mapH + '）',
+        desc: '下一档地图更大，可铺的地更多',
         cost: '更大的地图要铺更久才填得满'
       };
     }
-    return {
-      name: '+' + card.amount + ' 基因点',
-      desc: '立刻到手，可以直接买天赋',
-      cost: '不改变玩法，只是数值'
-    };
+    if (card.kind === 'gene') {
+      return {
+        name: '+' + card.points + ' 基因点',
+        desc: '立刻到手，可以直接买天赋（区间中心 ' + (state.choiceCenter || 5) + '，随机游走落点）',
+        cost: '不改变玩法，只是数值'
+      };
+    }
+    if (card.kind === 'geneUp') {
+      var nc = Math.min(10, (state.choiceCenter || 5) + 1);
+      return {
+        name: '基因点提升',
+        desc: '基因点卡的区间整体右移：' + (state.choiceCenter || 5) + '±4 → ' + nc + '±4' +
+              '（上限 6-14）。永久生效。',
+        cost: '本轮没有现钱收益 —— 为以后每一次转生投资'
+      };
+    }
+    if (card.kind === 'slotUp') {
+      var ns = Math.min(8, (state.choiceSlots || 3) + 1);
+      return {
+        name: '增加栏目',
+        desc: '每次转生的栏目 +1：' + (state.choiceSlots || 3) + ' → ' + ns + '（上限 8）。永久生效。',
+        cost: '栏目多了，同池好卡被摊薄 —— 自己权衡'
+      };
+    }
+    return { name: card.kind, desc: '', cost: '' };
   }
 
   function showChoice() {
@@ -562,12 +581,20 @@ var UI = (function () {
   function renderChoice() {
     var pc = state.pendingChoice;
     if (!pc || !el.choiceCards) { hideChoice(); return; }
-    el.choiceHint.textContent =
-      '第 ' + pc.forPrestige + ' 次转生 —— 挑一样带进新的世界（只能选一个）';
-    el.choiceCards.innerHTML = pc.cards.map(function (c) {
+    var cost = (pc.refresh + 1) * (pc.refresh + 1);
+    el.choiceHint.innerHTML = '第 ' + pc.forPrestige + ' 次转生 —— 点一张卡带走；' +
+      '转生点 <b>' + (state.choicePoints || 0) + '</b>' +
+      '　·　刷新费用 ' + cost + '（第 ' + (pc.refresh + 1) + ' 次）' +
+      '　·　栏目 ' + pc.slots.length;
+    var btn = document.getElementById('dRefresh');
+    if (btn) {
+      btn.textContent = '刷新（' + cost + ' 点）';
+      btn.disabled = (state.choicePoints || 0) < cost;
+    }
+    el.choiceCards.innerHTML = pc.slots.map(function (c) {
       var t = cardText(c);
-      return '<button class="choice-card ' + esc(c.type) + '" data-key="' + esc(c.key) + '">' +
-               '<span class="cc-kind">' + esc(KIND_LABEL[c.type] || c.type) + '</span>' +
+      return '<button class="choice-card ' + esc(c.kind) + '" data-key="' + esc(c.key) + '">' +
+               '<span class="cc-kind">' + esc(KIND_LABEL[c.kind] || c.kind) + '</span>' +
                '<span class="cc-name">' + esc(t.name) + '</span>' +
                '<span class="cc-desc">' + esc(t.desc) + '</span>' +
                (t.cost ? '<span class="cc-cost">' + esc(t.cost) + '</span>' : '') +
@@ -575,16 +602,16 @@ var UI = (function () {
     }).join('');
   }
 
-  /* 选一张卡。用事件委托（卡片是 innerHTML 重建的）。 */
+  /* 选一张卡（事件委托，卡片是 innerHTML 重建的）。 */
   function pickChoice(key) {
     var r = window.MYC.Sim.applyChoice(state, key);
     if (!r.ok) { toast(r.reason); return; }
     var c = r.card, t = cardText(c);
-    pushLog('抉择：' + (KIND_LABEL[c.type] || c.type) + ' → ' + t.name +
+    pushLog('抉择：' + (KIND_LABEL[c.kind] || c.kind) + ' → ' + t.name +
             (c.note ? '（' + c.note + '）' : ''));
     toast('获得了「' + t.name + '」');
     /* 地图卡会换掉整张地图 → 场景缓存必须重来 */
-    if (c.type === 'map') {
+    if (c.kind === 'map') {
       var sc = window.MYC.game.scene;
       if (sc && sc.onMapChanged) sc.onMapChanged();
       pushLog('世界扩大到 ' + state.mapW + '×' + state.mapH);
@@ -592,6 +619,14 @@ var UI = (function () {
     hideChoice();
     window.MYC.game.save(true);
     UI.update(0, window.MYC.game);
+  }
+
+  /* 刷新：花转生点重摸全部栏目（费用 n² 递增，转生点不足时按钮已禁用） */
+  function doRefreshChoice() {
+    var r = window.MYC.Sim.refreshChoice(state);
+    if (!r.ok) { toast(r.reason); return; }
+    pushLog('刷新了栏目（-' + r.cost + ' 转生点）');
+    renderChoice();
   }
 
   /* ---------------------------------------------------------------- 提示 */
