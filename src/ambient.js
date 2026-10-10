@@ -49,8 +49,12 @@ var AMB = (function () {
   }
 
   /* 每帧驱动 + 绘制。g = fxGfx；W2S(worldX, worldY) -> {x,y} 屏幕像素；
-   * dt 秒；time 毫秒；CELL 格的屏幕像素尺寸 */
+   * dt 秒；time 毫秒；CELL 格的屏幕像素尺寸。
+   * 【必须先 clear】fxGfx 是本层独占的 graphics，所有粒子逐帧重画 ——
+   * 忘了 clear 就是上一版「满屏同心圆」的直接原因：扩散环每帧
+   * 在新半径上画一个圈，又从不清掉旧的，54 帧叠出一整套年轮。 */
   function draw(a, g, st, dt, time, W2S, CELL) {
+    g.clear();
     var rnd = Math.random;
 
     /* ---- 环境孢子 ---- */
