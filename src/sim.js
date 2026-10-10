@@ -169,6 +169,37 @@ var Sim = (function () {
       }
     }
 
+    /* 元胞自动机收敛（2 轮）：噪声阈值切出来的落叶分布满是孤岛毛刺。
+     * 规则针对**低密度团块**设计（落叶只占 ~10%，5/8 多数票永远不触发）：
+     *   · 孤岛退化 —— 落叶邻居 ≤1 的落叶格退回壤土（毛刺的主要来源）；
+     *   · 密集核生长 —— 落叶邻居 ≥6 的壤土格收编（只在大斑块边界生长）。
+     * 只动 litter/soil，岩石水脉后面才生成。 */
+    for (var ca = 0; ca < 2; ca++) {
+      var next = [];
+      for (y = 0; y < H; y++) {
+        for (x = 0; x < W; x++) {
+          var cc = state.grid[idx(x, y)];
+          if (cc.soil !== 'litter' && cc.soil !== 'soil') { next.push(null); continue; }
+          var litterN = 0;
+          for (var cy = -1; cy <= 1; cy++) {
+            for (var cx2 = -1; cx2 <= 1; cx2++) {
+              if (!cy && !cx2) continue;
+              var nx = x + cx2, ny = y + cy;
+              if (!inBounds(nx, ny)) continue;
+              if (state.grid[idx(nx, ny)].soil === 'litter') litterN++;
+            }
+          }
+          if (cc.soil === 'litter') next.push(litterN <= 1 ? 'soil' : null);
+          else next.push(litterN >= 6 ? 'litter' : null);
+        }
+      }
+      for (y = 0; y < H; y++) {
+        for (x = 0; x < W; x++) {
+          if (next[y * W + x] != null) state.grid[idx(x, y)].soil = next[y * W + x];
+        }
+      }
+    }
+
     // 岩石簇：障碍物就是空间取舍的来源
     for (i = 0; i < Math.round(CONFIG.GEN.rockClusters * dens); i++) {
       var cx = Math.floor(rnd() * W), cy = Math.floor(rnd() * H);

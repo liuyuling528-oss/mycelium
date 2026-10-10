@@ -248,72 +248,138 @@ var TEX = (function () {
     unknown: 0x070907
   };
 
+  /* 元胞自动机平滑：邻域（含自身）取平均，迭代 iterations 轮。
+   * keepDir = 'y' 时只沿 y 向平均 —— 木纹这类**方向性纹理**用它消除横向噪点、
+   * 保留竖条纹。平滑把「乱七八糟的噪点」收敛成有机的连贯明暗团块。 */
+  function caSmooth(f, n, iterations, keepDir) {
+    for (var it = 0; it < iterations; it++) {
+      var nf = new Array(n);
+      for (var y = 0; y < n; y++) {
+        nf[y] = new Array(n);
+        for (var x = 0; x < n; x++) {
+          if (keepDir === 'y') {
+            var a = f[y][x];
+            var b = f[Math.max(0, y - 1)][x];
+            var c2 = f[Math.min(n - 1, y + 1)][x];
+            nf[y][x] = (a * 2 + b + c2) / 4;      // 本格权重高一点，条纹不至于被磨平
+          } else {
+            var sum = 0, cnt = 0;
+            for (var dy = -1; dy <= 1; dy++) {
+              for (var dx = -1; dx <= 1; dx++) {
+                var yy = Math.min(n - 1, Math.max(0, y + dy));
+                var xx = Math.min(n - 1, Math.max(0, x + dx));
+                sum += f[yy][xx]; cnt++;
+              }
+            }
+            nf[y][x] = sum / cnt;
+          }
+        }
+      }
+      f = nf;
+    }
+    return f;
+  }
+
+  /* 平滑会把值域往中间压（多轮平均的必然代价）—— 重新拉伸回 0..1，
+   * 色阶才有全幅度。没有这一步，4 档色阶会塌成 1 档「死平」。 */
+  function normalizeField(f, n) {
+    var mn = Infinity, mx = -Infinity;
+    for (var y = 0; y < n; y++) {
+      for (var x = 0; x < n; x++) {
+        if (f[y][x] < mn) mn = f[y][x];
+        if (f[y][x] > mx) mx = f[y][x];
+      }
+    }
+    if (mx - mn < 1e-6) return f;
+    for (var y2 = 0; y2 < n; y2++) {
+      for (var x2 = 0; x2 < n; x2++) f[y2][x2] = (f[y2][x2] - mn) / (mx - mn);
+    }
+    return f;
+  }
+
+  /* 平滑场 → 4 档量化色阶。像素风要的是**有限色阶**：
+   * 连续明暗会显得糊，量化后每一档都是清晰可数的颜色块。 */
+  function rampShade(base, v) {
+    var steps = [0.82, 0.94, 1.06, 1.17];
+    var idx = Math.max(0, Math.min(3, (v * 4) | 0));
+    return shade(base, steps[idx]);
+  }
+
   function genGround(type, n, variant) {
     var base = GROUND_BASE[type];
     var seed = 1000 + variant * 7919;
+
+    /* ① 原始噪声场（图案坐标密度无关 —— 密度越高同一图案越精细） */
+    var f = [];
+    for (var y = 0; y < n; y++) {
+      var row = new Array(n);
+      for (var x = 0; x < n; x++) {
+        var fu = x / n, fv = y / n;
+        var v;
+        if (type === 'wood') {
+          v = RNG.fbm(fu * 9, fv * 1.6, seed, 2);                       // 竖向木纹
+        } else if (type === 'vein') {
+          var ripple = Math.sin((fv * 5.2 + RNG.fbm(fu * 3, fv * 3, seed, 2) * 1.6) * Math.PI);
+          v = ripple * 0.5 + 0.5;                                       // 波纹带
+        } else if (type === 'litter') {
+          v = RNG.fbm(fu * 4, fv * 4, seed, 3);
+        } else {
+          v = RNG.fbm(fu * 4, fv * 4, seed, 3);
+        }
+        row[x] = v;
+      }
+      f.push(row);
+    }
+
+    /* ② 元胞自动机平滑（木纹只沿 y 向；其余各向同性 3 轮） */
+    f = caSmooth(f, n, type === 'wood' ? 2 : 3, type === 'wood' ? 'y' : null);
+    f = normalizeField(f, n);
+
+    /* ③ 场值 → 色阶，再叠**低对比结构特征**（结构性笔触，不是散噪点） */
     var px = [];
     var walk = null;
-
     if (type === 'root') {
-      /* 根系脉络：一条随机游走的根须，暗线 + 亮边 */
       walk = [];
       var rr = RNG.makeRng(seed ^ 0x5eed);
       var wx = (rr() * n) | 0, wy = (rr() * n) | 0;
-      for (var s = 0; s < n * 3; s++) {
+      for (var s2 = 0; s2 < n * 3; s2++) {
         walk.push([wx, wy]);
         wx = Math.max(0, Math.min(n - 1, wx + ((rr() * 3) | 0) - 1));
         wy = Math.max(0, Math.min(n - 1, wy + ((rr() * 3) | 0) - 1));
       }
     }
-
-    for (var y = 0; y < n; y++) {
-      var row = new Array(n);
-      for (var x = 0; x < n; x++) {
-        var fu = x / n, fv = y / n;
-        var h = RNG.hash2(x, y, seed);
-        var noise = RNG.fbm(fu * 4, fv * 4, seed, 3);
-        var c = base;
-
-        if (type === 'soil') {
-          c = shade(base, 0.90 + noise * 0.24);
-          if (h > 0.94) c = shade(base, 1.28);          // 砂砾亮点
-          else if (h < 0.045) c = shade(base, 0.72);    // 小石子暗点
-        } else if (type === 'litter') {
-          c = shade(base, 0.92 + noise * 0.20);
-          if (h > 0.90) c = shade(base, 1.38);          // 碎叶亮片
-          else if (h < 0.06) c = shade(base, 0.70);
-          if (RNG.fbm(fu * 7, fv * 7, seed + 31, 2) > 0.63) c = shade(base, 1.14);
-        } else if (type === 'wood') {
-          /* 竖向木纹：x 方向高频、y 方向低频的噪声拉成条纹 */
-          var grain = RNG.fbm(fu * 9, fv * 1.6, seed, 2);
-          c = shade(base, 0.84 + grain * 0.42);
-          if (grain > 0.60) c = shade(base, 1.30);      // 木质亮纹
-          if (h > 0.965) c = shade(base, 0.55);         // 纵裂
-        } else if (type === 'vein') {
-          /* 水波：y 方向的波纹带，波峰提亮成青色高光 */
-          var ripple = Math.sin((fv * 5.2 + RNG.fbm(fu * 3, fv * 3, seed, 2) * 1.6) * Math.PI);
-          c = shade(base, 0.86 + noise * 0.22);
-          if (ripple > 0.45) c = shade(base, 1.42);
-          if (h > 0.972) c = 0x5ec8e8;                  // 水面闪光
-          if (noise < 0.34) c = shade(base, 0.72);      // 深水
-        } else if (type === 'root') {
-          c = shade(base, 0.92 + noise * 0.18);
-        } else if (type === 'rock') {
-          c = shade(base, 0.92 + noise * 0.16);
-        } else { // unknown
-          c = shade(base, 0.92 + noise * 0.16);
-        }
-        row[x] = c;
+    /* 叶斑的第二张场：高频噪声 + CA 收敛 → 碎叶成「簇」而不是满天星 */
+    var fleck = null;
+    if (type === 'litter') {
+      var ff = [];
+      for (var ly = 0; ly < n; ly++) {
+        var lrow = new Array(n);
+        for (var lx = 0; lx < n; lx++) lrow[lx] = RNG.fbm((lx / n) * 7, (ly / n) * 7, seed + 31, 2);
+        ff.push(lrow);
       }
-      px.push(row);
+      fleck = caSmooth(ff, n, 2, null);
+      fleck = normalizeField(fleck, n);
     }
 
-    /* 地表特征笔触（在噪声底上叠加结构性纹理） */
+    for (var y2 = 0; y2 < n; y2++) {
+      var prow = new Array(n);
+      for (var x2 = 0; x2 < n; x2++) {
+        var v2 = f[y2][x2];
+        var c = rampShade(base, v2);
+        if (type === 'litter' && fleck[y2][x2] > 0.62) c = shade(c, 1.13);   // 叶斑簇
+        if (type === 'wood' && v2 > 0.62) c = shade(c, 1.14);                // 木质亮纹
+        if (type === 'vein' && v2 > 0.72) c = shade(c, 1.30);                // 波峰高光
+        prow[x2] = c;
+      }
+      px.push(prow);
+    }
+
+    /* ④ 结构性笔触（形状特征，保留锐利轮廓） */
     if (type === 'root' && walk) {
       for (var i = 0; i < walk.length; i++) {
         var wx2 = walk[i][0], wy2 = walk[i][1];
         px[wy2][wx2] = shade(base, 0.55);               // 根须暗线
-        if (i % 3 === 0 && wy2 > 0) px[wy2 - 1][wx2] = shade(base, 1.35);
+        if (i % 3 === 0 && wy2 > 0) px[wy2 - 1][wx2] = shade(base, 1.30);
       }
     }
     if (type === 'rock') {
@@ -326,7 +392,7 @@ var TEX = (function () {
           cy = Math.min(n - 1, cy + 1);
         }
       }
-      for (var e2 = 0; e2 < n; e2++) {                  // 边缘描一圈暗 + 内圈亮（石块棱角）
+      for (var e2 = 0; e2 < n; e2++) {                  // 边缘棱角
         px[0][e2] = px[n - 1][e2] = shade(base, 0.62);
         px[e2][0] = px[e2][n - 1] = shade(base, 0.62);
         if (n >= 8) {
