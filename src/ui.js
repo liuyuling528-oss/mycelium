@@ -70,7 +70,7 @@ var UI = (function () {
     /* 主菜单 + 开发者面板 */
     'menu', 'mContinue', 'mKeep', 'mFresh', 'mStats', 'mDev',
     'devPanel', 'dTime', 'dWater', 'dNutrient', 'dSpore', 'dEnemy',
-    'dPlace', 'dClearEnemy', 'dRes', 'dClose'].forEach(function (id) { el[id] = document.getElementById(id); });
+    'dPlace', 'dClearEnemy', 'dPrestige', 'dRes', 'dClose'].forEach(function (id) { el[id] = document.getElementById(id); });
 
     el.seedTxt.textContent = '种子 ' + state.seed;
 
@@ -474,6 +474,19 @@ var UI = (function () {
       window.MYC.Sim.removeEnemy(state);
       window.MYC.game.dirty = true;
       toast('对手菌种已清除');
+    });
+    /* 立即转生（免成本）：孢子顶到成本线以上，**累计产出**补到基因除数
+     * 以上（geneGain 读 total 不读库存 —— 只补 res 的话新局里 geneGain=0，
+     * canPrestige 永远 false，「资源+1000 转生不了」的根因就是它），
+     * 然后走**正规**转生流程 —— 杀菌波演出、三选一、清场全一致。 */
+    el.dPrestige.addEventListener('click', function () {
+      var st = window.MYC.game.state;
+      var PC = window.MYC.CONFIG.PRESTIGE;
+      st.res.spore = Math.max(st.res.spore, window.MYC.Sim.prestigeCost(st) + 1);
+      st.total.spore = Math.max(st.total.spore, PC.geneDivisorSpore);
+      st.total.nutrient = Math.max(st.total.nutrient, PC.geneDivisorNutrient);
+      window.MYC.game.dirty = true;
+      doPrestige();
     });
     el.dRes.addEventListener('click', function () {
       state.res.water += 1000; state.res.nutrient += 1000; state.res.spore += 1000;
