@@ -746,15 +746,21 @@
       this.nodeSprites = [];
       this.nodeSigs = [];
       this.nodeBaseDisp = [];
+      for (var ei = 0; ei < (this.enemySprites || []).length; ei++) {
+        if (this.enemySprites[ei]) this.enemySprites[ei].destroy();
+      }
+      this.enemySprites = [];
       this.lastSoilSig = null;
-      /* 环境粒子随场景重建：增益区引用已作废，清空；
-       * 转生/换图时从核心荡开一圈光环 —— 仪式感 */
+      /* 环境粒子随场景重建：增益区引用已作废，清空。
+       * 转生的「仪式感」由 playNukeWave（杀菌波 + 死亡粒子）承担，
+       * 这里不再另推扩散环 —— 两个动画叠在一起会互相抢戏。 */
       if (this.fx) {
         this.fx.zoneP.length = 0;
         this.fx.motes.length = 0;
         this.fx.motesSynced = 0;
-        var coreNd = (window.MYC.game && window.MYC.game.state && window.MYC.game.state.nodes[0]) || null;
-        if (coreNd) this.fx.rings.push({ t0: performance.now(), x: coreNd.x, y: coreNd.y });
+        this.fx.nuke = null;
+        this.fx.deaths = [];
+        this.fx.rings.length = 0;
       }
     }
 
@@ -978,6 +984,7 @@
       this.drawBuff(st, time);
       this.drawCandidates(st);
       this.drawNetwork(st, time);
+      this.drawEnemy(st);
       this.drawFlow(st, time);
       this.drawGnats(st, time);
       this.drawFloaters(st);
@@ -1336,6 +1343,36 @@
           g.strokeCircle(x, y, R * 0.72);
         }
       }
+    }
+
+    /* 对手菌种：玫红色菌斑铺在它们占的格子上（与玩家的白绿、菌瘟的紫、
+     * 害虫的红都区分开）。格子位置永不变动，精灵只在数量增长时新建，
+     * 之后每帧零维护 —— 对手后期有几百格，别每帧都 set 一遍。 */
+    drawEnemy(st) {
+      var en = st.enemy;
+      var want = en ? en.cells.length : 0;
+      var pool = this.enemySprites || (this.enemySprites = []);
+      while (pool.length > want) { var dead = pool.pop(); if (dead) dead.destroy(); }
+      if (!en) return;
+      for (var i = 0; i < en.cells.length; i++) {
+        if (pool[i]) continue;                     // 已存在：位置/贴图永不变，直接跳过
+        var c = en.cells[i];
+        var isCore = i === 0;
+        var spr = this.add.image(centerX(c[0]), centerY(c[1]), 't_myco')
+          .setDepth(isCore ? 5.5 : 4.5)
+          .setTint(isCore ? 0xff8a9a : 0xd96a8a);
+        var w = GRID.CELL * (isCore ? 1.35 : 0.66);
+        spr.setDisplaySize(w, w);
+        pool[i] = spr;
+      }
+    }
+
+    /* 杀菌波：转生瞬间全屏清场的演出。cells = 被杀死的全部菌丝格
+     * （己方 + 对手），波前从核心推进到地图边缘，波到之处逐格消散。 */
+    playNukeWave(cells) {
+      if (!this.fx || !AMB.startNuke) return;
+      var core = window.MYC.game.state ? window.MYC.game.state.core : { x: 0, y: 0 };
+      AMB.startNuke(this.fx, core.x, core.y, cells || [], this.time.now);
     }
 
     /* 沿路径流动的养分光点。

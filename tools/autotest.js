@@ -58,13 +58,18 @@
     });
   }
 
-  /* ---- 开发用：?prestige=N —— 把转生次数拨到 N，看像素密度档位的实际效果 ---- */
+  /* ---- 开发用：?prestige=N —— 把转生次数拨到 N，看像素密度档位的实际效果。
+   * 顺便把游戏推到 400s（开自动蔓延、灌满水）：能同时看到玩家版图、
+   * 对手菌种的扩张（即时对抗）和像素密度，一张截图核对三件事。 */
   if (/[?&]prestige=\d+/.test(q)) {
     var pv = parseInt((q.match(/[?&]prestige=(\d+)/) || [])[1], 10) || 0;
     window.addEventListener('load', function () {
       setTimeout(function () {
-        var game = window.MYC.game, st = game.state;
+        var Sim = window.MYC.Sim, game = window.MYC.game, st = game.state;
         st.prestiges = pv;
+        st.milestones.m10 = true; st.autoGrow = true;
+        st.res.water = 1e9;
+        for (var i = 0; i < 1600; i++) { st.res.water = Math.max(st.res.water, 1e6); Sim.tick(st, 0.25); }
         /* 场景按档位重建贴图与实体精灵 —— 与真实转生后的重建路径一致 */
         if (game.scene && game.scene.rebuildVisuals) game.scene.rebuildVisuals();
         game.dirty = true;
@@ -2281,7 +2286,21 @@
 
   /* ---- 自动蔓延的两条选址规则（距离上限 / 收益阈值）---------------------
    * 判据：规则必须**真的改变自动蔓延的结果**，而且**不能挡住手动点击**。
-   * 后者是手感底线：玩家想连哪格就连哪格，自动化规则是给「我不在的时候」用的。 */
+   * 后者是手感底线：玩家想连哪格就连哪格，自动化规则是给「我不在的时候」用的。
+   *
+   * 【对手菌种隔离】这一段要 tick 上千秒 —— 对手菌种会在这段时间里按
+   * 压力曲线推进到网络边缘、把高产格占光（真实玩法如此），规则测试的
+   * 前置假设（有格可长）就全被破坏了。规则/树木这类**机制隔离测试**
+   * 一律先撤走对手；对手自己的行为单测在文件末尾的专门块里。 */
+  function killEnemy(st) {
+    if (!st.enemy) return;
+    for (var i = 0; i < st.enemy.cells.length; i++) {
+      var c = st.grid[st.enemy.cells[i][1] * st.mapW + st.enemy.cells[i][0]];
+      if (c) c.enemy = false;
+    }
+    st.enemy = null;
+  }
+
   step(function () {
     var st = window.MYC.game.state, Sim = S.Sim, C = window.MYC.CONFIG;
 
@@ -2289,6 +2308,7 @@
        C.AUTORULE ? C.AUTORULE.map(function (r) { return r.key; }).join('/') : 'missing');
 
     /* 先把网络铺到足够大，规则才测得出效果 */
+    killEnemy(st);
     st.res.water = 1e9; st.autoGrow = true; st.milestones.m10 = true;
     S.ruleSave = { d: st.ruleMaxDist, y: st.ruleMinYield, p: st.policy };
     st.ruleMaxDist = 0; st.ruleMinYield = 0;
@@ -3843,9 +3863,59 @@
     }, 200);
   });
 
+  /* ---- 对手菌种（即时对抗）--------------------------------------------
+   * 专门测对手自己的行为：落地、扩张、领土互斥、转生清场。
+   * 上面的机制隔离测试都撤走了对手 —— 这里是它的主场。 */
+  step(function () {
+    var Sim = window.MYC.Sim, C = window.MYC.CONFIG;
+    var tmp = Sim.newGame(90210, {}, {});
+
+    ok('对手菌种已落地（离玩家核心最远的角落）',
+       !!tmp.enemy && tmp.enemy.cells.length >= 4,
+       tmp.enemy ? ('对手 (' + tmp.enemy.x + ',' + tmp.enemy.y + ')　' + tmp.enemy.cells.length + ' 格') : 'null');
+    var far = Math.abs(tmp.enemy.x - tmp.core.x) + Math.abs(tmp.enemy.y - tmp.core.y);
+    ok('对手落地在地图远端（不是贴脸）', far > (tmp.mapW + tmp.mapH) / 3,
+       '曼哈顿距离 ' + far + '（地图半周约 ' + ((tmp.mapW + tmp.mapH) / 2) + '）');
+
+    /* 开局缓冲期内不扩张（tick 到 startDelay - 1 秒，第 startDelay 秒整
+     * 恰好越线 —— 按设计那一拍就该开始长第一格） */
+    var c0 = tmp.enemy.cells.length;
+    for (var i = 0; i < C.ENEMY.startDelay - 1; i++) Sim.tick(tmp, 1);
+    ok('开局缓冲期内对手不扩张', tmp.enemy.cells.length === c0,
+       '延迟 ' + C.ENEMY.startDelay + 's，t=' + tmp.t + 's，仍 ' + tmp.enemy.cells.length + ' 格');
+
+    /* 缓冲期后按间隔扩张 */
+    for (var j = 0; j < 90; j++) Sim.tick(tmp, 1);
+    ok('缓冲期后对手按曲线扩张', tmp.enemy.cells.length > c0 + 10,
+       c0 + ' → ' + tmp.enemy.cells.length + ' 格（90s，上限 ' +
+       Math.round(C.ENEMY.baseCap + tmp.t * C.ENEMY.capPerSec) + '）');
+
+    /* 领土互斥：玩家的候选格绝不含敌格；直接长进敌格必须失败 */
+    var cs = Sim.candidates(tmp);
+    var hit = 0;
+    for (var k = 0; k < cs.length; k++) {
+      if (tmp.grid[Sim.idx(cs[k].x, cs[k].y)].enemy) hit++;
+    }
+    ok('玩家的候选格里没有对手的格', hit === 0, '违规 ' + hit + ' 格');
+    var ec = tmp.enemy.cells[tmp.enemy.cells.length - 1];
+    var rr = Sim.growAt(tmp, ec[0], ec[1]);
+    ok('直接长进对手的地块被拒绝', rr.ok === false, rr.reason);
+
+    /* 存档往返：对手版图跟着存档走 */
+    var st2 = Sim.deserialize(Sim.serialize(tmp));
+    ok('对手版图经存档往返保留', !!st2.enemy && st2.enemy.cells.length === tmp.enemy.cells.length,
+       tmp.enemy.cells.length + ' → ' + (st2.enemy ? st2.enemy.cells.length : 'null'));
+
+    /* 转生 = 杀菌波：双方清场，对手在新图重新落地 */
+    tmp.res.spore = 1e9; tmp.total.spore = 1e9; tmp.total.nutrient = 1e6;
+    var pr = Sim.doPrestige(tmp);
+    ok('转生清场：对手随换图被杀死并重新落地',
+       pr.ok && !!tmp.enemy && tmp.enemy.cells.length < 20,
+       pr.ok ? ('旧 ' + tmp.enemy.cells.length + ' 格（初始菌斑）') : 'prestige 失败');
+  });
+
   /* 腐殖潮：第三种增益区（养分版）。增益区事件在核心 1 格网络下只会抽
-   * rain/bloom/flush 三种 —— 连抽多次必须出现 flush，buffAt 对应养分。 */
-  step(function () { /* 腐殖潮：三种增益区齐全 */
+   * rain/bloom/flush 三种 —— 连抽多次必须出现 flush，buffAt 对应养分。 */  step(function () { /* 腐殖潮：三种增益区齐全 */
     var g3 = window.MYC.game, Sim3 = window.MYC.Sim, C3 = window.MYC.CONFIG;
     var st = g3.state;
     var kinds = {};

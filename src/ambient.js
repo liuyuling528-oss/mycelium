@@ -24,8 +24,24 @@ var AMB = (function () {
       coreP: [],        // 核心喷发 {x,y,vy,life,max,r}
       zoneP: [],        // 增益区粒子 {zx,y, x,y,vx,vy,life,max,r,c,kind}
       rings: [],        // 转生扩散环 {t0}
+      nuke: null,       // 杀菌波 {t0, x, y}（格坐标）—— 转生时的全屏清场演出
+      deaths: [],       // 杀菌波的死亡粒子 {x,y,t0}（格坐标，t0 含按距离的延迟）
       motesSynced: 0    // 上次按网络规模调整粒子数的节点数
     };
+  }
+
+  /* 杀菌波：转生瞬间全屏清场。deaths 是「被波及的菌丝格」名单，
+   * 每格按「到核心的距离」排死亡时刻（波前推进到它才死），波速约 90 格/秒。
+   * cells 太多时抽样播粒子（cap 320）—— 波本身已经足够传达「全灭」。 */
+  function startNuke(a, coreX, coreY, cells, time) {
+    a.nuke = { t0: time, x: coreX, y: coreY };
+    a.deaths = [];
+    var cap = 320;
+    var step = Math.max(1, Math.floor(cells.length / cap));
+    for (var i = 0; i < cells.length; i += step) {
+      var d = Math.abs(cells[i][0] - coreX) + Math.abs(cells[i][1] - coreY);
+      a.deaths.push({ x: cells[i][0], y: cells[i][1], t0: time + d * 11 });
+    }
   }
 
   /* 网络规模变化时增减环境孢子（只增不减到下限，避免闪断） */
@@ -147,9 +163,43 @@ var AMB = (function () {
       g.lineStyle(2.4, rg.c != null ? rg.c : 0xffe9a8, 0.55 * (1 - age));
       g.strokeCircle(pc.x, pc.y, CELL * (0.6 + ease * 7));
     }
+
+    /* ---- 杀菌波：转生的全屏清场演出 ----
+     * 波前从核心匀速推进到地图边缘（约 90 格/秒），波前经过的死亡格
+     * 依次炸开一个小型消散粒子。时钟倒挂（t0 在未来/超时）一律丢弃。 */
+    if (a.nuke) {
+      var el = time - a.nuke.t0;
+      var spd = 90 * CELL / 1000;                        // 世界像素/毫秒
+      var radius = el * spd;
+      var pc0 = W2S(a.nuke.x, a.nuke.y);
+      /* 波前结束条件：半径超过「核心到地图最远角」的对角线 */
+      var maxD = Math.hypot(a.nuke.x, a.nuke.y) + Math.hypot(st.mapW - a.nuke.x, st.mapH - a.nuke.y);
+      if (radius > maxD * CELL + CELL * 2) {
+        a.nuke = null; a.deaths = [];
+      } else if (pc0) {
+        for (var wv = 0; wv < 2; wv++) {
+          var rr = radius - wv * CELL * 0.9;
+          if (rr <= 0) continue;
+          g.lineStyle(3 - wv, 0xffe9a8, (0.6 - wv * 0.22) * Math.max(0, 1 - radius / (maxD * CELL + CELL)));
+          g.strokeCircle(pc0.x, pc0.y, rr);
+        }
+      }
+      for (var d3 = a.deaths.length - 1; d3 >= 0; d3--) {
+        var de = a.deaths[d3];
+        if (time < de.t0) continue;
+        var dk = (time - de.t0) / 500;
+        if (dk >= 1) { a.deaths.splice(d3, 1); continue; }
+        var pd = W2S(de.x, de.y);
+        if (!pd) continue;
+        g.fillStyle(0xd96a8a, 0.5 * (1 - dk));
+        g.fillCircle(pd.x, pd.y, CELL * 0.24 * (1 + dk * 1.6));
+        g.fillStyle(0xf2f7ea, 0.4 * (1 - dk));
+        g.fillCircle(pd.x, pd.y, CELL * 0.10 * (1 + dk));
+      }
+    }
   }
 
-  return { create: create, draw: draw };
+  return { create: create, draw: draw, startNuke: startNuke };
 })();
 
 if (typeof module !== 'undefined' && module.exports) { module.exports = AMB; }

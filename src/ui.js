@@ -56,7 +56,7 @@ var UI = (function () {
     state = game.state;
 
     ['clock', 'vWater', 'rWater', 'vNutrient', 'rNutrient', 'vSpore', 'rSpore',
-     'sNodes', 'sDist', 'sLost', 'sRun', 'policy', 'policyHint', 'autoGrow',
+     'sNodes', 'sDist', 'sLost', 'sRun', 'sRival', 'policy', 'policyHint', 'autoGrow',
      'autoGrowRow', 'autoGrowLabel', 'autoRuleRow', 'ruleMaxDist', 'ruleMinYield', 'ruleHint',
      'upgrades', 'prestigeCard', 'pText', 'pBar', 'pHint', 'pBtn',
      'geneCard', 'genes', 'geneLeft', 'log', 'seedTxt',
@@ -396,14 +396,20 @@ var UI = (function () {
   /* ---------------------------------------------------------------- 转生 */
   function doPrestige() {
     if (!window.MYC.Sim.canPrestige(state)) { toast('孢子还不够，再长一会儿'); return; }
+    /* 杀菌波名单要在清场**之前**收集 —— 转生后这些格子已经不存在了。
+     * 名单 = 己方全部菌丝 + 对手全部菌斑：「屏幕内所有菌子一起杀死」。 */
+    var doomed = state.nodes.map(function (n) { return [n.x, n.y]; });
+    if (state.enemy) doomed = doomed.concat(state.enemy.cells);
     var r = window.MYC.Sim.doPrestige(state);
     if (!r.ok) { toast(r.reason); return; }
     window.MYC.game.shake();
-    pushLog('散播孢子！获得 ' + r.gained + ' 基因点（第 ' + r.record.run + ' 次，用了 ' + clk(r.record.seconds) + '）');
-    toast('散播孢子成功，获得 ' + r.gained + ' 基因点');
+    pushLog('杀菌波扩散到地图边缘！' + r.record.rivals + ' 格菌丝化为孢子，获得 ' + r.gained + ' 基因点（第 ' + r.record.run + ' 次）');
+    toast('杀菌波！全屏菌丝清场，获得 ' + r.gained + ' 基因点');
     // 换图了：场景里的地形缓存、已探明数、镜头全都要重来
     var sc = window.MYC.game.scene;
     if (sc && sc.onMapChanged) sc.onMapChanged();
+    /* 波的演出放在换图**之后** —— onMapChanged 会重建并清空动效层 */
+    if (sc && sc.playNukeWave) sc.playNukeWave(doomed);
     window.MYC.game.save(true);
     /* 弹三选一。**必须在 doPrestige 之后** —— 卡池里的地图卡要基于
      * 刚换好的世界算下一档尺寸。 */
@@ -624,6 +630,8 @@ var UI = (function () {
     el.sDist.textContent = state.maxDist;
     el.sLost.textContent = (state.lostTotal > 0 ? fmt(state.lostTotal) + ' 累计' : '无');
     el.sRun.textContent = clk(state.t);
+    /* 对手菌丝：即时对抗的核心读数 —— 它扩张到多少了、离你还有多远 */
+    if (el.sRival) el.sRival.textContent = state.enemy ? state.enemy.cells.length : 0;
 
     /* 结构配额：这是本机制最需要「一直被看见」的数字 ——
      * 上限少到必须取舍，所以玩家得随时知道还剩几格。 */

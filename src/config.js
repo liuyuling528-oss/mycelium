@@ -348,6 +348,24 @@ var CONFIG = (function () {
     costGrowth: 2.1          // 成本增速：320 → 672 → 1411（第 3 个开始肉痛）
   };
 
+  /* ---- 对手菌种（敌对 AI 菌落）-----------------------------------------
+   * 设计意图：即时对抗的压力源。对手在离玩家核心最远的角落落地，
+   * 自动向外扩张，抢占地图上玩家还没拿走的富矿。
+   * 领土规则（用户的原话）：**互相都不能侵入对方的菌块** ——
+   *   格子被谁先占了就归谁，另一方的菌丝长不进去；
+   *   领土可以接壤，但不会互相覆盖（v1 没有战斗，只有圈地竞争）。
+   * 转生 = 「杀菌波」：己方与对手的菌丝全部杀死（换新图的同时清场）。
+   * 上限随本局时长增长是压力曲线 —— 挂得越久，对手圈走的地越多。 */
+  var ENEMY = {
+    startDelay: 30,          // 开局缓冲（秒）：玩家先起手，对手 30s 后才开始扩张
+    interval: 0.7,           // 扩张间隔（秒/格）
+    baseCap: 24,             // 初始规模上限（格）
+    capPerSec: 0.35,         // 上限随本局时长增长：600s 时 ≈ 234 格（与玩家同期体量相当）
+    hardCap: 480,            // 硬上限（大地图后期也不至于铺满全图）
+    blob: 8,                 // 落地时的初始菌斑格数（核心一圈）
+    revealRadius: 2          // 对手扩张时顺带揭示的半径 —— 玩家能看见它推进
+  };
+
   /* ---- 自动蔓延的选址规则（玩家可调的两个开关）------------------------
    * 规划评估文档明确要求「不要过度设计」：只在 scoreCandidate 里加
    * 两个可选的过滤条件，不做规则引擎。
@@ -817,6 +835,7 @@ var CONFIG = (function () {
     NODE_UP: NODE_UP, ABILITIES: ABILITIES, EVENTS: EVENTS, BLIGHT: BLIGHT,
     MAINT: MAINT, TRUNK: TRUNK, AUTORULE: AUTORULE, TREE: TREE,
     COLONY: COLONY,
+    ENEMY: ENEMY,
     STRAIN: STRAIN,
     PRESTIGE_CHOICE: PRESTIGE_CHOICE,
     OFFLINE: OFFLINE,

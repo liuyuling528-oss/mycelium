@@ -75,25 +75,15 @@
   }
 
   /* ---- 状态：能读到存档就续上，否则开新局 ---- */
-  var state, resumed = false, offlineResult = null;
+  /* 【离线收益已移除】游戏改成即时对抗后没有「挂机收益」的概念 ——
+   * 离线期间对手菌种照样按曲线扩张（读档时一次性按离线时长补算 tick 不做，
+   * 对手从存档时的版图继续），挂机不再产生任何价值。 */
+  var state, resumed = false;
   try {
     var raw = localStorage.getItem(UI.KEY);
     if (raw) {
       state = Sim.deserialize(raw);
       resumed = true;
-      /* 离线收益：用存档里的「上次保存时间」算离开了多久。
-       *
-       * 时间戳放在 payload 的 `_meta.savedAt` 里（自动存档和槽位存档
-       * 共用同一个约定）。没有 `_meta` 的是旧档（本功能之前存的），
-       * 那就**不发离线收益** —— 宁可少发，也不要拿一个编造的时间去发，
-       * 否则老玩家一更新就会收到一笔莫名其妙的巨款。 */
-      var away = 0;
-      try {
-        var obj = JSON.parse(raw);
-        var savedAt = obj._meta && obj._meta.savedAt;
-        if (savedAt) away = (Date.now() - savedAt) / 1000;
-      } catch (e2) {}
-      offlineResult = Sim.settleOffline(state, away);
     }
   } catch (e) {
     console.warn('存档损坏，已开新局', e);
@@ -117,10 +107,6 @@
     dirty: true,
     scene: null,
     ui: null,
-    /* 本次启动结算到的离线收益（没结算到就是 null）。
-     * UI 在首次 update 时读它弹提示 —— 不能在读档那一刻弹，
-     * 那时 DOM 还没挂上，toast / 日志都会丢。 */
-    offline: offlineResult,
 
     shake: function () {
       if (this.scene) this.scene.cameras.main.shake(420, 0.007);
@@ -207,20 +193,6 @@
   UI.init(game);
   game.ui = UI;
   UI.pushLog(resumed ? '已读取上次的进度' : '一粒孢子落在土壤里……');
-  /* 离线收益的提示放在这里而不是读档那一刻：那时 DOM 刚挂上、
-   * toast 容器还没准备好，提示会静默丢掉。 */
-  if (offlineResult) {
-    var g = offlineResult.gained;
-    var mins = Math.round(offlineResult.seconds / 60);
-    var span = mins >= 60 ? (mins / 60).toFixed(1) + ' 小时' : mins + ' 分钟';
-    UI.pushLog('离开的 ' + span + ' 里，菌丝自己长了：' +
-               UI.fmt(g.nutrient) + ' 养分、' + UI.fmt(g.spore) + ' 孢子' +
-               (offlineResult.capped ? '（已按 ' + window.MYC.CONFIG.OFFLINE.capHours + ' 小时封顶）' : ''));
-    UI.toast('离线 ' + span + '，收回了 ' + UI.fmt(g.nutrient) + ' 养分');
-    /* 结算完立刻存一次：把时间戳刷新到现在。
-     * 不刷的话，如果玩家看完就走，下次进来会把同一段时间**再发一次**。 */
-    game.save(true);
-  }
   UI.pushLog('点击地图上描边的格子开始蔓延菌丝');
   UI.update(0, game);
 

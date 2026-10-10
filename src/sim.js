@@ -124,6 +124,9 @@ var Sim = (function () {
        * 菌落本身记在节点上（nd.colony），转生重建网络时随节点一起消失，
        * 这个计数器也要跟着归零。 */
       coloniesBuilt: 0,
+      /* 对手菌种（敌对 AI 菌落）。占格用 grid 上的 enemy 标记 + 这里的
+       * cells 列表（供渲染/存档/转生清场统计）。null = 初始化前。 */
+      enemy: null,
       floaters: []                 // 浮动数字，供渲染层消费
     };
     CONFIG.UPGRADES.forEach(function (u) { state.up[u.key] = 0; });
@@ -131,6 +134,7 @@ var Sim = (function () {
     applyMapSize(state, m);
 
     generateMap(state);
+    initEnemy(state);
     state.res.water = CONFIG.START.water + state.genes.gWater * 150;
 
     // 核心：第一颗菌丝节点
@@ -704,6 +708,8 @@ var Sim = (function () {
         var x = nb[k][0], y = nb[k][1], key = x + ',' + y;
         if (seen[key]) continue;
         if (state.nodeAt[idx(x, y)] != null) continue;
+        /* 对手菌种的地块：领土规则 —— 谁先占归谁，玩家的菌丝长不进去 */
+        if (state.grid[idx(x, y)].enemy) continue;
         if (SOILS[state.grid[idx(x, y)].soil].solid) continue;
         seen[key] = 1;
         var dist = nd.dist + 1;
@@ -794,6 +800,117 @@ var Sim = (function () {
     state.res.water -= best.cost;
     addNode(state, best.x, best.y, best.soil);
     return true;
+  }
+
+  /* ------------------------------------------------------- 对手菌种（敌对 AI）
+   * 即时对抗的压力源：对手在离玩家核心最远的角落落地，自动向外扩张，
+   * 抢占地图上玩家还没拿走的富矿。领土规则：格子被谁先占了就归谁，
+   * 另一方的菌丝长不进去（candidates 过滤掉 enemy 格；对手这边过滤 node 格）。
+   * 转生 = 杀菌波：双方菌丝随换图一起清场（initEnemy 在新图重新落地）。 */
+  function clearEnemyFlags(state) {
+    var en = state.enemy;
+    if (en && en.cells) {
+      for (var i = 0; i < en.cells.length; i++) {
+        var c = state.grid[idx(en.cells[i][0], en.cells[i][1])];
+        if (c) c.enemy = false;
+      }
+    }
+  }
+
+  /* 在新地图上落地一簇对手菌斑：选离玩家核心最远的角落，
+   * 从最近的可用格起 BFS 铺一小圈。全图找不到落脚点就放弃（极端岩石图）。 */
+  function initEnemy(state) {
+    clearEnemyFlags(state);
+    var W = state.mapW, H = state.mapH;
+    var corners = [[0, 0], [W - 1, 0], [0, H - 1], [W - 1, H - 1]];
+    var corner = corners[0], bestD = -1;
+    for (var i = 0; i < 4; i++) {
+      var d = Math.abs(corners[i][0] - state.core.x) + Math.abs(corners[i][1] - state.core.y);
+      if (d > bestD) { bestD = d; corner = corners[i]; }
+    }
+    var ex = null, ey = null;
+    for (var r = 0; r < 8 && ex == null; r++) {
+      for (var dy = -r; dy <= r && ex == null; dy++) {
+        for (var dx = -r; dx <= r && ex == null; dx++) {
+          var x = corner[0] + dx, y = corner[1] + dy;
+          if (!inBounds(x, y)) continue;
+          if (SOILS[state.grid[idx(x, y)].soil].solid) continue;
+          if (Math.abs(x - state.core.x) + Math.abs(y - state.core.y) < 6) continue;
+          ex = x; ey = y;
+        }
+      }
+    }
+    if (ex == null) { state.enemy = null; return; }
+    var cells = [[ex, ey]];
+    state.grid[idx(ex, ey)].enemy = true;
+    var frontier = [[ex, ey]], guard = 0;
+    while (cells.length < CONFIG.ENEMY.blob && frontier.length && guard++ < 200) {
+      var cur = frontier.shift();
+      var nb = neighbours(cur[0], cur[1]);
+      for (var k = 0; k < nb.length && cells.length < CONFIG.ENEMY.blob; k++) {
+        var bx = nb[k][0], by = nb[k][1];
+        if (!inBounds(bx, by)) continue;
+        var bc = state.grid[idx(bx, by)];
+        if (bc.enemy || bc.node != null || SOILS[bc.soil].solid) continue;
+        bc.enemy = true;
+        cells.push([bx, by]);
+        frontier.push([bx, by]);
+      }
+    }
+    state.enemy = { x: ex, y: ey, cells: cells, timer: 0 };
+  }
+
+  /* 对手长一格：在全部已占领格的邻格里挑「产出分最高、且偏向自家核心」的。
+   * 完全确定性（无随机）—— headless 同种子同局面必得同一结果。
+   * 不长进玩家的格（node != null），玩家也长不进它的格（candidates 过滤）。
+   * **菌落威慑圈**：玩家菌落半径内的格对手也长不进来 —— 菌落在对抗里的
+   * 价值不只是产出倍率，还是「锁住一片矿区」的领土锚点（盖在矿区 vs
+   * 盖在贫地的差异因此被对抗放大，H 组好/差判据在对抗口径下依然成立）。
+   * 每占一格顺带揭示周围 —— 玩家能看见对手推进，被偷家之前有预警。 */
+  function growEnemyOne(state) {
+    var en = state.enemy;
+    var best = null, bestScore = -Infinity;
+    for (var i = 0; i < en.cells.length; i++) {
+      var nb = neighbours(en.cells[i][0], en.cells[i][1]);
+      for (var k = 0; k < nb.length; k++) {
+        var x = nb[k][0], y = nb[k][1];
+        if (!inBounds(x, y)) continue;
+        var c = state.grid[idx(x, y)];
+        if (c.enemy || c.node != null || SOILS[c.soil].solid) continue;
+        var mul = colonyMulFor(state, { x: x, y: y });
+        if (mul.water > 1 || mul.nutrient > 1 || mul.spore > 1) continue;   // 威慑圈
+        var yy = SOILS[c.soil].yield || {};
+        var s = (yy.water || 0) + (yy.nutrient || 0) * 1.6 + (yy.spore || 0) * 1.2
+                - (Math.abs(x - en.x) + Math.abs(y - en.y)) * 0.06;
+        if (s > bestScore) { bestScore = s; best = { x: x, y: y, c: c }; }
+      }
+    }
+    if (!best) return false;
+    best.c.enemy = true;
+    en.cells.push([best.x, best.y]);
+    var r = CONFIG.ENEMY.revealRadius;
+    for (var dy2 = -r; dy2 <= r; dy2++) {
+      for (var dx2 = -r; dx2 <= r; dx2++) {
+        var rx = best.x + dx2, ry = best.y + dy2;
+        if (inBounds(rx, ry) && Math.sqrt(dx2 * dx2 + dy2 * dy2) <= r + 0.5) markKnown(state, rx, ry);
+      }
+    }
+    invalidateCands(state);   // 领土变了，玩家的候选缓存必须作废
+    return true;
+  }
+
+  function tickEnemy(state, dt) {
+    var E = CONFIG.ENEMY;
+    var en = state.enemy;
+    if (!en) return;
+    if (state.t < E.startDelay) return;
+    en.timer += dt;
+    /* 上限随本局时长增长 = 压力曲线：挂得越久，对手圈走的地越多 */
+    var cap = Math.min(E.hardCap, Math.round(E.baseCap + state.t * E.capPerSec));
+    while (en.timer >= E.interval) {
+      en.timer -= E.interval;
+      if (en.cells.length >= cap || !growEnemyOne(state)) { en.timer = 0; break; }
+    }
   }
 
   /* 自动蔓延的两条选址规则（见 CONFIG.AUTORULE）。
@@ -1712,6 +1829,9 @@ var Sim = (function () {
       state.autoTimer -= interval;
     }
 
+    // 对手菌种：即时对抗的 AI 扩张（领土规则见 initEnemy 注释）
+    tickEnemy(state, dt);
+
     // 内容层
     tickEvents(state, dt);
     state.newMilestones = checkMilestones(state);
@@ -2231,13 +2351,16 @@ var Sim = (function () {
   function doPrestige(state) {
     if (!canPrestige(state)) return { ok: false, reason: '孢子不足' };
     var gained = geneGain(state);
+    /* 杀菌波的战果：本波杀死的对手菌丝格数（表现层用它播死亡粒子） */
+    var rivalCells = state.enemy ? state.enemy.cells.length : 0;
     var record = {
       run: state.prestiges + 1,
       seconds: Math.round(state.t),
       stage: state.nodes.length,
       nutrient: Math.round(state.total.nutrient),
       spore: Math.round(state.total.spore),
-      genes: gained
+      genes: gained,
+      rivals: rivalCells + state.nodes.length
     };
     state.runs.push(record);
 
@@ -2254,6 +2377,9 @@ var Sim = (function () {
     state.seed = (RNG.hash2(state.prestiges, 7717, state.seed) * 4294967296) >>> 0;
     applyMapSize(state, mapSizeFor(state.mapTier || 0));
     generateMap(state);
+    /* 杀菌波：换图即清场。对手菌种在新地图上重新落地（仍是离玩家最远的角落），
+     * 玩家与对手都从零起步 —— 转生是「把屏幕内所有菌子全部杀死」的终极技能。 */
+    initEnemy(state);
     state.knowledge = {};
     state.explored = { minX: 1e9, maxX: -1e9, minY: 1e9, maxY: -1e9, count: 0 };
 
@@ -2549,7 +2675,13 @@ var Sim = (function () {
       }),
       /* 本局已建菌落数：决定下一个菌落的价格。丢了的话价格会退回
        * baseCost —— 轻则白便宜，重则被用来刷价差，所以必须存。 */
-      coloniesBuilt: state.coloniesBuilt || 0
+      coloniesBuilt: state.coloniesBuilt || 0,
+      /* 对手菌种：占格列表 + 扩张计时。读档后对手从存档时的版图继续扩张 ——
+       * 不存的话读一次档对手就凭空缩回出生点，领土规则就成了一句空话。 */
+      enemy: state.enemy ? {
+        x: state.enemy.x, y: state.enemy.y, timer: state.enemy.timer,
+        cells: state.enemy.cells
+      } : null
     });
   }
 
@@ -2627,6 +2759,31 @@ var Sim = (function () {
     var colonyFromNodes = 0;
     for (var ci = 0; ci < state.nodes.length; ci++) if (state.nodes[ci].colony) colonyFromNodes++;
     state.coloniesBuilt = Math.max(d.coloniesBuilt || 0, colonyFromNodes);
+    /* 对手菌种：newGame 已经按种子落了一个初始菌斑，这里换成存档里的版图。
+     * 必须**先清掉初始菌斑再校验** —— 同种子同地图，初始菌斑和存档前几个
+     * 格子必然重叠，先校验会把存档误判成「与对手重叠」而整个丢弃（实测踩过）。
+     * 校验：在界内、不与玩家节点重叠、列表内不重复。
+     * 不合格就丢弃整份对手数据（回退到 newGame 的初始菌斑，总好过领土规则错乱）。 */
+    if (d.enemy && d.enemy.cells && d.enemy.cells.length) {
+      clearEnemyFlags(state);
+      var okE = true, listE = [], seenE = {};
+      for (var ei = 0; ei < d.enemy.cells.length; ei++) {
+        var ex2 = d.enemy.cells[ei][0], ey2 = d.enemy.cells[ei][1];
+        if (!inBounds(ex2, ey2)) { okE = false; break; }
+        var ec = state.grid[idx(ex2, ey2)];
+        var ek = ex2 + ',' + ey2;
+        if (ec.node != null || seenE[ek]) { okE = false; break; }   // 与玩家重叠 / 列表内重复
+        seenE[ek] = 1;
+        listE.push([ex2, ey2]);
+      }
+      if (okE) {
+        for (var ej = 0; ej < listE.length; ej++) state.grid[idx(listE[ej][0], listE[ej][1])].enemy = true;
+        state.enemy = { x: d.enemy.x, y: d.enemy.y, cells: listE, timer: d.enemy.timer || 0 };
+        invalidateCands(state);
+      }
+      // 不合格：什么都不做 —— initEnemy 落的初始菌斑已被清掉，重新落一份
+      else initEnemy(state);
+    }
     rebuildNetwork(state);
     reveal(state);
     return state;
