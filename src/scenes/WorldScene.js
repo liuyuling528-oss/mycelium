@@ -908,6 +908,21 @@
       var st = game.state;
       if (!c || !st) return;
 
+      /* 开发者面板的「放置对手落点」模式：下一次点击就是对手的新家，
+         不触发任何常规操作。失败（岩石/玩家格）时 toast 并保持模式，
+         让开发者再点一次，而不是静默丢掉这次点击。 */
+      if (this.devPlacing) {
+        var pk = Sim.placeEnemyAt(st, c.x, c.y);
+        if (pk) {
+          this.devPlacing = false;
+          game.dirty = true;
+          if (game.ui) game.ui.toast('对手菌种已迁移到 (' + c.x + ',' + c.y + ')');
+        } else if (game.ui) {
+          game.ui.toast('这里落不了脚（岩石或玩家格）—— 再点一处');
+        }
+        return;
+      }
+
       var r = this.tryAct(c);
       if (r.ok) { if (game.ui && r.msg) game.ui.toast(r.msg); return; }
 
@@ -961,10 +976,14 @@
       var dt = Math.min(delta / 1000, 0.25);
       this.frames++;
 
-      Sim.tick(st, dt);
+      /* 主菜单开着 = 世界暂停：不 tick、不自动存档 ——
+       * 但渲染照常跑，菜单半透明背景后面地图还是活的。 */
+      if (!game.menuOpen) {
+        Sim.tick(st, dt * (st.dev ? st.dev.time : 1));
 
-      this.autoSave += dt;
-      if (this.autoSave > 15) { this.autoSave = 0; if (game.save) game.save(true); }
+        this.autoSave += dt;
+        if (this.autoSave > 15) { this.autoSave = 0; if (game.save) game.save(true); }
+      }
 
       // 新长出的节点弹一下 —— 「生长」的手感来源
       if (st.nodes.length !== this.lastNodeCount) {
@@ -1360,8 +1379,8 @@
         var isCore = i === 0;
         var spr = this.add.image(centerX(c[0]), centerY(c[1]), 't_myco')
           .setDepth(isCore ? 5.5 : 4.5)
-          .setTint(isCore ? 0xff8a9a : 0xd96a8a);
-        var w = GRID.CELL * (isCore ? 1.35 : 0.66);
+          .setTint(isCore ? 0xff8a9a : 0xc46272);   // 暗玫红：可辨识但不喧宾夺主
+        var w = GRID.CELL * (isCore ? 1.30 : 0.56);
         spr.setDisplaySize(w, w);
         pool[i] = spr;
       }

@@ -29,6 +29,46 @@
     </div>
   </div>
 
+  <!-- 主菜单：开机即进。世界在半透明背景后活着但被暂停（game.menuOpen）。
+       这是「像一个正式的游戏」的门面 —— 继续上一局 / 开新一局都在这里选。 -->
+  <div id="menu" class="hidden">
+    <div class="menu-box">
+      <div class="menu-title">菌丝<span>MYCELIUM</span></div>
+      <p class="menu-sub">地下菌根网络的即时对抗 —— 铺网络、抢地盘、一波带走</p>
+      <div class="menu-btns">
+        <button id="mContinue" class="primary">继续上次的进度</button>
+        <button id="mKeep">新一局（保留基因）</button>
+        <button id="mFresh">全新开始</button>
+      </div>
+      <div class="menu-foot">
+        <span class="hint" id="mStats"></span>
+        <button id="mDev" class="tiny">开发者面板</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 开发者面板：调资源倍率 / 时间倍速 / 对手开关与落点。
+       会话级设置（不进存档），快捷键 `（反引号）随时开关。 -->
+  <div id="devPanel" class="hidden">
+    <h3>开发者面板 <span class="hint">（会话级，不进存档）</span></h3>
+    <div class="dev-row"><span>时间倍速</span>
+      <select id="dTime">
+        <option value="0.5">0.5×</option><option value="1" selected>1×</option>
+        <option value="2">2×</option><option value="5">5×</option><option value="10">10×</option>
+      </select></div>
+    <div class="dev-row"><span>水速率 ×</span><input id="dWater" type="number" min="0" max="50" step="0.5" value="1"></div>
+    <div class="dev-row"><span>养分速率 ×</span><input id="dNutrient" type="number" min="0" max="50" step="0.5" value="1"></div>
+    <div class="dev-row"><span>孢子速率 ×</span><input id="dSpore" type="number" min="0" max="50" step="0.5" value="1"></div>
+    <div class="dev-row"><span>对手菌种</span>
+      <label style="display:inline"><input id="dEnemy" type="checkbox" checked> 启用扩张</label></div>
+    <div class="dev-btns">
+      <button id="dPlace" class="tiny">放置对手落点（点地图）</button>
+      <button id="dClearEnemy" class="tiny">清除对手</button>
+      <button id="dRes" class="tiny">资源 +1000</button>
+      <button id="dClose" class="tiny">关闭</button>
+    </div>
+  </div>
+
   <!-- 右侧面板：HTML/CSS，排版与滚动都比在 canvas 里画靠谱 -->
   <aside id="panel">
 

@@ -458,3 +458,86 @@ button.tiny.on { border-color: #4d8f88; background: #16292a; color: #9fe8dd; }
   #stage { height: 64vh; height: 64svh; min-height: 140px; }
 }
 
+
+
+/* ============================================================================
+ * 主菜单 & 开发者面板
+ * 菜单盖全屏但半透明 —— 背后的地图是活的（渲染在跑，只是被暂停），
+ * 一开始就把「这是个活世界」的印象给出去。
+ * ==========================================================================*/
+#menu {
+  position: fixed;
+  inset: 0;
+  z-index: 60;                 /* 盖过转生抉择(50) */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(5, 7, 5, .72);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  animation: choiceIn .3s ease-out;
+}
+#menu.hidden { display: none; }
+
+.menu-box {
+  width: min(480px, 92vw);
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: 16px;
+  padding: 30px 34px 22px;
+  box-shadow: 0 24px 60px -12px #000, 0 0 0 1px #000 inset;
+  text-align: center;
+}
+.menu-title {
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: 6px;
+  color: var(--myco);
+  line-height: 1.1;
+  text-shadow: 0 0 24px rgba(242, 247, 234, .25);
+}
+.menu-title span {
+  display: block;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 10px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.menu-sub { margin: 12px 0 22px; color: var(--muted); font-size: 12.5px; }
+.menu-btns { display: flex; flex-direction: column; gap: 9px; }
+.menu-btns button { padding: 10px 0; font-size: 14px; border-radius: 9px; }
+.menu-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+/* ---- 开发者面板：右侧滑入的窄条，贴着面板上方，不遮地图 ---- */
+#devPanel {
+  position: fixed;
+  right: 12px;
+  top: 12px;
+  z-index: 55;
+  width: 250px;
+  background: var(--panel);
+  border: 1px solid #6a5a2a;          /* 暖边：一眼看出这是非游戏功能 */
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: 0 12px 32px -8px #000;
+}
+#devPanel.hidden { display: none; }
+#devPanel h3 { margin: 0 0 8px; font-size: 13px; }
+.dev-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 6px 0;
+  gap: 8px;
+}
+.dev-row input[type="number"] { width: 76px; }
+.dev-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.dev-btns button { flex: 1 1 auto; }

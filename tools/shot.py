@@ -47,6 +47,10 @@ threading.Thread(target=serve, daemon=True).start()
 time.sleep(1.0)
 
 url = "http://127.0.0.1:%d/index.html%s" % (PORT, QUERY)
+# 截图要的是游戏运行画面，不是主菜单 —— 自动带上 nomenu=1（除非显式想截菜单）
+if "nomenu" not in QUERY:
+    QUERY += ("&" if "?" in QUERY else "?") + "nomenu=1"
+    url = "http://127.0.0.1:%d/index.html%s" % (PORT, QUERY)
 if os.path.exists(OUT):
     os.remove(OUT)
 

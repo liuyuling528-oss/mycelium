@@ -64,9 +64,13 @@ var UI = (function () {
      'abilities', 'eventLine', 'milestones', 'msCount',
      'trunkCount', 'structRow', 'structHint', 'trunkCap',
      'structColW', 'structColN', 'structColS',
-     'treeCount', 'treeHint', 'topsoilRow',
-     'btnSave', 'btnNew', 'slotList', 'saveHint', 'toast',
-     'choiceOverlay', 'choiceCards', 'choiceHint'].forEach(function (id) { el[id] = document.getElementById(id); });
+    'treeCount', 'treeHint', 'topsoilRow',
+    'btnSave', 'btnNew', 'slotList', 'saveHint', 'toast',
+    'choiceOverlay', 'choiceCards', 'choiceHint',
+    /* 主菜单 + 开发者面板 */
+    'menu', 'mContinue', 'mKeep', 'mFresh', 'mStats', 'mDev',
+    'devPanel', 'dTime', 'dWater', 'dNutrient', 'dSpore', 'dEnemy',
+    'dPlace', 'dClearEnemy', 'dRes', 'dClose'].forEach(function (id) { el[id] = document.getElementById(id); });
 
     el.seedTxt.textContent = '种子 ' + state.seed;
 
@@ -86,6 +90,14 @@ var UI = (function () {
       state.autoGrow = el.autoGrow.checked;
     });
     el.pBtn.addEventListener('click', doPrestige);
+
+    /* ---- 主菜单 & 开发者面板 ------------------------------------------ */
+    wireMenu();
+    wireDev();
+    /* 快捷键 `（反引号）随时开关开发者面板 —— 不抢其他快捷键 */
+    window.addEventListener('keydown', function (ev) {
+      if (ev.key === '`') { ev.preventDefault(); toggleDev(); }
+    });
     /* 三选一：事件委托，卡片是 innerHTML 重建的。 */
     if (el.choiceCards) {
       el.choiceCards.addEventListener('click', function (ev) {
@@ -394,6 +406,83 @@ var UI = (function () {
   }
 
   /* ---------------------------------------------------------------- 转生 */
+  /* ---- 主菜单 & 开发者面板 ------------------------------------------- */
+  function showMenu(resumed) {
+    window.MYC.game.menuOpen = true;
+    el.menu.classList.remove('hidden');
+    el.mContinue.disabled = !resumed;
+    el.mContinue.textContent = resumed ? '继续上次的进度' : '继续上次的进度（无存档）';
+    el.mStats.textContent = '转生 ' + state.prestiges + ' 次 · 基因点 ' +
+      ((state.pendingGenes || 0)) + ' · 菌丝 ' + state.nodes.length + ' 格';
+  }
+
+  function hideMenu() {
+    window.MYC.game.menuOpen = false;
+    el.menu.classList.add('hidden');
+    pushLog('世界开始运转 —— 对手菌种 30 秒后也会开始扩张');
+  }
+
+  function wireMenu() {
+    el.mContinue.addEventListener('click', hideMenu);
+    el.mKeep.addEventListener('click', function () {
+      if (window.MYC.game.newGame(true)) hideMenu();
+    });
+    el.mFresh.addEventListener('click', function () {
+      if (window.MYC.game.newGame(false)) hideMenu();
+    });
+    el.mDev.addEventListener('click', toggleDev);
+  }
+
+  function toggleDev() {
+    el.devPanel.classList.toggle('hidden');
+    if (!el.devPanel.classList.contains('hidden')) syncDevInputs();
+  }
+
+  function syncDevInputs() {
+    var d = state.dev;
+    if (!d) return;
+    el.dTime.value = String(d.time);
+    el.dWater.value = String(d.water);
+    el.dNutrient.value = String(d.nutrient);
+    el.dSpore.value = String(d.spore);
+    el.dEnemy.checked = d.enemyOn !== false;
+  }
+
+  function wireDev() {
+    el.dTime.addEventListener('change', function () {
+      state.dev.time = parseFloat(el.dTime.value) || 1;
+      toast('时间倍速 ×' + state.dev.time);
+    });
+    [['dWater', 'water'], ['dNutrient', 'nutrient'], ['dSpore', 'spore']].forEach(function (pair) {
+      el[pair[0]].addEventListener('change', function () {
+        state.dev[pair[1]] = Math.max(0, parseFloat(el[pair[0]].value) || 0);
+        toast('资源倍率 ' + pair[1] + ' ×' + state.dev[pair[1]]);
+      });
+    });
+    el.dEnemy.addEventListener('change', function () {
+      state.dev.enemyOn = el.dEnemy.checked;
+      toast(state.dev.enemyOn ? '对手菌种：启用扩张' : '对手菌种：已冻结');
+    });
+    el.dPlace.addEventListener('click', function () {
+      var sc = window.MYC.game.scene;
+      if (!sc) return;
+      sc.devPlacing = !sc.devPlacing;
+      el.dPlace.classList.toggle('on', sc.devPlacing);
+      toast(sc.devPlacing ? '在地图上点一处，对手菌种就迁到那里' : '已取消放置');
+    });
+    el.dClearEnemy.addEventListener('click', function () {
+      window.MYC.Sim.removeEnemy(state);
+      window.MYC.game.dirty = true;
+      toast('对手菌种已清除');
+    });
+    el.dRes.addEventListener('click', function () {
+      state.res.water += 1000; state.res.nutrient += 1000; state.res.spore += 1000;
+      window.MYC.game.dirty = true;
+      toast('资源各 +1000');
+    });
+    el.dClose.addEventListener('click', toggleDev);
+  }
+
   function doPrestige() {
     if (!window.MYC.Sim.canPrestige(state)) { toast('孢子还不够，再长一会儿'); return; }
     /* 杀菌波名单要在清场**之前**收集 —— 转生后这些格子已经不存在了。
@@ -952,6 +1041,7 @@ var UI = (function () {
   return {
     init: init, update: update, toast: toast, pushLog: pushLog, rebind: rebind,
     renderSlots: renderSlots, toggleSlots: toggleSlots,
+    showMenu: showMenu, hideMenu: hideMenu, toggleDev: toggleDev,
     KEY: KEY, SEEDKEY: SEEDKEY, SLOTN: SLOTN, slotKey: slotKey, fmt: fmt
   };
 })();

@@ -107,6 +107,10 @@
     dirty: true,
     scene: null,
     ui: null,
+    /* 主菜单开着 = 世界暂停（WorldScene.update 里判这个标志）。
+     * 初始 false：?nomenu=1 / ?autotest=1 的截图与自测流程直接进游戏；
+     * 正常启动时 UI.showMenu 会把它置 true。 */
+    menuOpen: false,
 
     shake: function () {
       if (this.scene) this.scene.cameras.main.shake(420, 0.007);
@@ -194,6 +198,11 @@
   game.ui = UI;
   UI.pushLog(resumed ? '已读取上次的进度' : '一粒孢子落在土壤里……');
   UI.pushLog('点击地图上描边的格子开始蔓延菌丝');
+  /* 主菜单：开机即进（世界在菜单半透明背景后活着，但被暂停）。
+   * ?nomenu=1 / ?autotest=1 直接跳过 —— 截图与自测需要直接进入游戏。 */
+  if (!/[?&](nomenu|autotest)=1/.test(location.search)) UI.showMenu(resumed);
+  /* ?dev=1：直接展开开发者面板（截图/演示用） */
+  if (/[?&]dev=1/.test(location.search)) setTimeout(function () { UI.toggleDev(); }, 600);
   UI.update(0, game);
 
   /* ---- Phaser ----

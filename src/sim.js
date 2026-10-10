@@ -127,6 +127,10 @@ var Sim = (function () {
       /* 对手菌种（敌对 AI 菌落）。占格用 grid 上的 enemy 标记 + 这里的
        * cells 列表（供渲染/存档/转生清场统计）。null = 初始化前。 */
       enemy: null,
+      /* 开发者面板的运行时旋钮（**会话级**，不进存档 —— 存档里出现
+       * ×10 倍率的资源会污染正常平衡口径）。老存档没有这个字段，
+       * 所有用到的地方都要 dev 容错读取。 */
+      dev: { time: 1, water: 1, nutrient: 1, spore: 1, enemyOn: true },
       floaters: []                 // 浮动数字，供渲染层消费
     };
     CONFIG.UPGRADES.forEach(function (u) { state.up[u.key] = 0; });
@@ -930,10 +934,47 @@ var Sim = (function () {
     return true;
   }
 
+  /* 开发者工具：把对手菌种搬到指定位置（清掉旧版图，重新落地一小簇）。
+   * 位置无效（越界/岩石/玩家占用）时不改动现状并返回 false。 */
+  function placeEnemyAt(state, x, y) {
+    if (!inBounds(x, y)) return false;
+    var c0 = state.grid[idx(x, y)];
+    if (SOILS[c0.soil].solid || c0.node != null) return false;
+    clearEnemyFlags(state);
+    var cells = [[x, y]];
+    c0.enemy = true;
+    var frontier = [[x, y]], guard = 0;
+    while (cells.length < CONFIG.ENEMY.blob && frontier.length && guard++ < 200) {
+      var cur = frontier.shift();
+      var nb = neighbours(cur[0], cur[1]);
+      for (var k = 0; k < nb.length && cells.length < CONFIG.ENEMY.blob; k++) {
+        var bx = nb[k][0], by = nb[k][1];
+        if (!inBounds(bx, by)) continue;
+        var bc = state.grid[idx(bx, by)];
+        if (bc.enemy || bc.node != null || SOILS[bc.soil].solid) continue;
+        bc.enemy = true;
+        cells.push([bx, by]);
+        frontier.push([bx, by]);
+      }
+    }
+    state.enemy = { x: x, y: y, cells: cells, timer: 0 };
+    invalidateCands(state);
+    return true;
+  }
+
+  /* 开发者工具：彻底移除对手（版图清空，tickEnemy 因 enemy=null 自然停摆） */
+  function removeEnemy(state) {
+    clearEnemyFlags(state);
+    state.enemy = null;
+    invalidateCands(state);
+  }
+
   function tickEnemy(state, dt) {
     var E = CONFIG.ENEMY;
     var en = state.enemy;
     if (!en) return;
+    /* 开发者面板的对手开关：关 = 冻结（版图保留但不扩张），不是清除 */
+    if (state.dev && state.dev.enemyOn === false) return;
     if (state.t < E.startDelay) return;
     en.timer += dt;
     /* 上限随本局时长增长 = 压力曲线：挂得越久，对手圈走的地越多 */
@@ -1389,16 +1430,19 @@ var Sim = (function () {
       }
     }
 
-    // 3) 结算
-    state.res.water    += accepted.water * dt;
-    state.res.nutrient += accepted.nutrient * dt;
-    state.res.spore    += accepted.spore * dt;
-    state.total.water    += accepted.water * dt;
-    state.total.nutrient += accepted.nutrient * dt;
-    state.total.spore    += accepted.spore * dt;
-    // rate 也是每帧都写的，复用
+    // 3) 结算（资源倍率：开发者面板可调，默认全 1；老存档无 dev 字段也安全）
+    var dev = state.dev || null;
+    state.res.water       += accepted.water * dt * (dev ? dev.water : 1);
+    state.res.nutrient    += accepted.nutrient * dt * (dev ? dev.nutrient : 1);
+    state.res.spore       += accepted.spore * dt * (dev ? dev.spore : 1);
+    state.total.water     += accepted.water * dt * (dev ? dev.water : 1);
+    state.total.nutrient  += accepted.nutrient * dt * (dev ? dev.nutrient : 1);
+    state.total.spore     += accepted.spore * dt * (dev ? dev.spore : 1);
+    // rate 也是每帧都写的，复用（乘上倍率 —— 面板速率读数与实际入账一致）
     var rate = state.rate || (state.rate = emptyVec());
-    rate.water = accepted.water; rate.nutrient = accepted.nutrient; rate.spore = accepted.spore;
+    rate.water = accepted.water * (dev ? dev.water : 1);
+    rate.nutrient = accepted.nutrient * (dev ? dev.nutrient : 1);
+    rate.spore = accepted.spore * (dev ? dev.spore : 1);
     /* 壤土递减汇总：原始量（未乘等级/树/光环）与受影响格数。
      * 面板拿它显示「壤土 N 格 −X/s」—— 这是「机制确实生效了」最直接的证据。 */
     state.topsoilOffset = topsoilOff;
@@ -2708,7 +2752,11 @@ var Sim = (function () {
        * baseCost —— 轻则白便宜，重则被用来刷价差，所以必须存。 */
       coloniesBuilt: state.coloniesBuilt || 0,
       /* 对手菌种：占格列表 + 扩张计时。读档后对手从存档时的版图继续扩张 ——
-       * 不存的话读一次档对手就凭空缩回出生点，领土规则就成了一句空话。 */
+       * 不存的话读一次档对手就凭空缩回出生点，领土规则就成了一句空话。
+       * enemyRemoved：开发者「清除对手」后 enemy 为 null，但 deserialize
+       * 会经 newGame 重新落地一个初始菌斑 —— 不显式记「已清除」的话，
+       * 清除→存档→读档对手会凭空复活（实测踩过）。 */
+      enemyRemoved: !state.enemy,
       enemy: state.enemy ? {
         x: state.enemy.x, y: state.enemy.y, timer: state.enemy.timer,
         cells: state.enemy.cells
@@ -2815,6 +2863,8 @@ var Sim = (function () {
       // 不合格：什么都不做 —— initEnemy 落的初始菌斑已被清掉，重新落一份
       else initEnemy(state);
     }
+    /* 开发者清除过的对手：读档后保持「无对手」状态 */
+    if (d.enemyRemoved) removeEnemy(state);
     rebuildNetwork(state);
     reveal(state);
     return state;
@@ -2837,6 +2887,8 @@ var Sim = (function () {
 
   return {
     newGame: newGame, tick: tick, growAt: growAt, canGrowAt: canGrowAt,
+    /* 开发者工具（dev 面板用） */
+    placeEnemyAt: placeEnemyAt, removeEnemy: removeEnemy,
     removeNode: removeNode,
     mapSizeFor: mapSizeFor,
     /* applyMapSize 必须导出：地图尺寸是**模块级单例**（_MAP），
