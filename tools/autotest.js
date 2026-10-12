@@ -3919,10 +3919,11 @@
     ok('开局缓冲期内对手不扩张', tmp.enemy.cells.length === c0,
        '延迟 ' + C.ENEMY.startDelay + 's，t=' + tmp.t + 's，仍 ' + tmp.enemy.cells.length + ' 格');
 
-    /* 缓冲期后按间隔扩张 */
-    for (var j = 0; j < 90; j++) Sim.tick(tmp, 1);
-    ok('缓冲期后对手按曲线扩张', tmp.enemy.cells.length > c0 + 10,
-       c0 + ' → ' + tmp.enemy.cells.length + ' 格（90s，上限 ' +
+    /* 缓冲期后按间隔扩张（2026-10-12 减半后：60s 缓冲 + 3s/格，
+     * 240s 时上限 24+0.18*300≈78，实际 ~66 格） */
+    for (var j = 0; j < 240; j++) Sim.tick(tmp, 1);
+    ok('缓冲期后对手按曲线扩张', tmp.enemy.cells.length > c0 + 20,
+       c0 + ' → ' + tmp.enemy.cells.length + ' 格（300s，上限 ' +
        Math.round(C.ENEMY.baseCap + tmp.t * C.ENEMY.capPerSec) + '）');
 
     /* 领土互斥：玩家的候选格绝不含敌格；直接长进敌格必须失败 */
