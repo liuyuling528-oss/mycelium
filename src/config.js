@@ -362,13 +362,31 @@ var CONFIG = (function () {
    *    上限增速 0.35→0.18、缓冲 30→60。实测对比：600s 时旧版敌菌 234 格
    *    vs 满水玩家 ~100 格；新版 ~132 vs ~100，压力而不碾压。） */
   var ENEMY = {
-    startDelay: 60,          // 开局缓冲（秒）：玩家先起手，对手 60s 后才开始扩张
-    interval: 3.0,           // 扩张间隔（秒/格）—— 玩家基准 6s/格的一半
-    baseCap: 24,             // 初始规模上限（格）
-    capPerSec: 0.18,         // 上限随本局时长增长：600s 时 ≈ 132 格（旧版 234）
-    hardCap: 480,            // 硬上限（大地图后期也不至于铺满全图）
-    blob: 8,                 // 落地时的初始菌斑格数（核心一圈）
-    revealRadius: 2          // 对手扩张时顺带揭示的半径 —— 玩家能看见它推进
+    /* 【对手菌种的经济】敌菌有自己的养分池（enemyRes）：它占的格子
+     * 也产出养分（按格 soil 产出 × eff 吸收），扩张一格要花 cost。
+     * 每格扩张花费 = 敌菌**当期每秒收入 × interval × costMul** —— 自动中性：
+     * 任何时刻经济都恰好维持 interval 节奏（costMul 1.0），调高就是「敌菌
+     * 手头紧」，调低就是「经济过热」。早期格子少收入低 → 成本也低，
+     * 不会出现「前期穷死攒不起」的坑（固定成本踩过）。
+     * 2026-10-12 之前的版本敌菌是零资源的纯时钟（白拿），那是它
+     * 「感觉比玩家强」的深层原因之一。 */
+    startDelay: 60,          // 默认（困难档）开局缓冲
+    interval: 3.0,           // 默认（困难档）扩张间隔 —— 玩家基准 6s/格的一半
+    baseCap: 24,             // 默认（困难档）初始规模上限
+    capPerSec: 0.18,         // 默认（困难档）上限增速：600s ≈ 132 格
+    hardCap: 480,
+    blob: 8,
+    revealRadius: 2,
+    /* 开局可选的五档难度（用户口径：现在的算困难）。
+     * 和平 = 完全不上对手。参数单调递增，魔鬼 ≈ 旧版 0.7s/0.35
+     * 的碾压曲线（留着手感参考与自虐选项）。 */
+    DIFFS: [
+      { name: '和平', desc: '没有对手，安心造网络',      startDelay: 0,   interval: 999, baseCap: 0,   capPerSec: 0,    blob: 0,  hardCap: 0,   revealRadius: 0, eff: 0,    costMul: 0  },
+      { name: '简单',   desc: '龟速扩张，几乎无压力',            startDelay: 180, interval: 6.0, baseCap: 20,  capPerSec: 0.08, blob: 6,  hardCap: 300, revealRadius: 2, eff: 0.35, costMul: 1.2  },
+      { name: '中等',   desc: '温和压力，偶尔要回头看一眼',      startDelay: 120, interval: 4.0, baseCap: 22,  capPerSec: 0.12, blob: 8,  hardCap: 400, revealRadius: 2, eff: 0.5,  costMul: 1.1  },
+      { name: '困难',   desc: '当前平衡基准：先站稳再反超',      startDelay: 60,  interval: 3.0, baseCap: 24,  capPerSec: 0.18, blob: 8,  hardCap: 480, revealRadius: 2, eff: 0.7,  costMul: 1.0 },
+      { name: '魔鬼',   desc: '旧版碾压曲线 —— 自虐选项',        startDelay: 30,  interval: 1.5, baseCap: 32,  capPerSec: 0.30, blob: 12, hardCap: 600, revealRadius: 2, eff: 1.0,  costMul: 0.8 }
+    ]
   };
 
   /* ---- 自动蔓延的选址规则（玩家可调的两个开关）------------------------

@@ -45,7 +45,7 @@
       <div class="menu-diff">
         <div class="menu-diff-label">对手菌种难度</div>
         <div class="diff-btns" id="diffBtns">
-          <button data-diff="0">无人机<span>和平</span></button>
+          <button data-diff="0">和平<span>无对手</span></button>
           <button data-diff="1">简单</button>
           <button data-diff="2">中等</button>
           <button data-diff="3" class="on">困难</button>
@@ -77,7 +77,7 @@
       <label style="display:inline"><input id="dEnemy" type="checkbox" checked> 启用扩张</label></div>
     <div class="dev-row"><span>对手难度</span>
       <select id="dDiff">
-        <option value="0">无人机（和平）</option><option value="1">简单</option>
+        <option value="0">和平（无对手）</option><option value="1">简单</option>
         <option value="2">中等</option><option value="3">困难</option><option value="4">魔鬼</option>
       </select></div>
     <div class="dev-btns">
@@ -123,6 +123,7 @@
         <div><span>拥堵损耗</span><b id="sLost">无</b></div>
         <div><span>本局时长</span><b id="sRun">0s</b></div>
         <div><span>对手菌丝</span><b id="sRival">0</b></div>
+        <div><span>对手资源</span><b id="sRivalRes">0</b></div>
       </div>
       <div class="row" style="margin-top:10px">
         <select id="policy" title="挂机时自动蔓延的选址倾向"></select>

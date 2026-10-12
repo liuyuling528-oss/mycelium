@@ -131,6 +131,7 @@ var Sim = (function () {
        * 4 魔鬼。enemyCfg 是所选难度的参数快照（存档自包含，读档不用查表）。 */
       difficulty: (difficulty == null ? 3 : difficulty),
       enemyCfg: null,
+      enemyRes: 60,                // 敌菌养分池（和平档无用；初始够铺几格）
       /* 开发者面板的运行时旋钮（**会话级**，不进存档 —— 存档里出现
        * ×10 倍率的资源会污染正常平衡口径）。老存档没有这个字段，
        * 所有用到的地方都要 dev 容错读取。 */
@@ -876,7 +877,8 @@ var Sim = (function () {
     state.enemyCfg = {
       startDelay: c.startDelay, interval: c.interval, baseCap: c.baseCap,
       capPerSec: c.capPerSec, blob: c.blob, hardCap: c.hardCap,
-      revealRadius: c.revealRadius, name: c.name
+      revealRadius: c.revealRadius, name: c.name,
+      eff: c.eff, cost: c.cost
     };
     if (d === 0) {
       if (state.enemy) removeEnemy(state);
@@ -889,6 +891,7 @@ var Sim = (function () {
   /* 开发者面板 / 菜单切换难度的公开入口 */
   function setDifficulty(state, d) {
     applyDifficulty(state, d);
+    state.enemyRes = 60;          // 切难度重置敌菌经济（避免旧档巨款滚进新难度）
     invalidateCands(state);
     return state.difficulty;
   }
@@ -1042,11 +1045,30 @@ var Sim = (function () {
     if (state.dev && state.dev.enemyOn === false) return;
     if (state.t < E.startDelay) return;
     en.timer += dt;
+    /* ---- 敌菌经济 ----
+     * 它占的格子也产出养分（和玩家抢同一片土地的产出），按 eff 吸收进
+     * 自己的池子；扩张一格要花 cost。cost 已按档折算到经济中性 ——
+     * 但占贫地的档（简单/盲铺）会真的穷，占肥矿的档（魔鬼/猎手）会更富。 */
+    var income = 0;
+    for (var ri = 0; ri < en.cells.length; ri++) {
+      var rc = state.grid[idx(en.cells[ri][0], en.cells[ri][1])];
+      var ry = SOILS[rc.soil].yield || {};
+      income += (ry.water || 0) + (ry.nutrient || 0) + (ry.spore || 0);
+    }
+    var incomePerSec = income * (E.eff || 0.7);
+    state.enemyRes = (state.enemyRes || 0) + incomePerSec * dt;
     /* 上限随本局时长增长 = 压力曲线：挂得越久，对手圈走的地越多 */
     var cap = Math.min(E.hardCap, Math.round(E.baseCap + state.t * E.capPerSec));
+    /* 每格成本 = 当期每秒收入 × interval × costMul —— **自适应中性**：
+     * 经济恰好维持 interval 节奏（固定成本会「前期穷死」，实测踩过）。 */
+    var cost = incomePerSec * E.interval * (E.costMul != null ? E.costMul : 1);
     while (en.timer >= E.interval) {
       en.timer -= E.interval;
-      if (en.cells.length >= cap || !growEnemyOne(state)) { en.timer = 0; break; }
+      if (en.cells.length >= cap) { en.timer = 0; break; }
+      /* 没钱就这拍不扩 —— 和玩家水不够一个待遇 */
+      if ((state.enemyRes || 0) < cost) { en.timer = 0; break; }
+      if (!growEnemyOne(state)) { en.timer = 0; break; }
+      state.enemyRes -= cost;
     }
   }
 
@@ -2838,6 +2860,7 @@ var Sim = (function () {
       enemyRemoved: !state.enemy,
       difficulty: state.difficulty == null ? 3 : state.difficulty,
       enemyCfg: state.enemyCfg || null,
+      enemyRes: state.enemyRes || 0,
       enemy: state.enemy ? {
         x: state.enemy.x, y: state.enemy.y, timer: state.enemy.timer,
         cells: state.enemy.cells
@@ -2880,6 +2903,8 @@ var Sim = (function () {
      * 注意顺序：applyDifficulty 会落初始菌斑，随后的 enemy/enemyRemoved
      * 恢复逻辑会按存档覆盖它。 */
     applyDifficulty(state, d.difficulty == null ? 3 : d.difficulty);
+    if (d.enemyRes != null) state.enemyRes = d.enemyRes;
+    else state.enemyRes = 60;
     state.cd = d.cd || {};
     state.unlocked = d.unlocked || {};
     state.pulseT = d.pulseT || 0;

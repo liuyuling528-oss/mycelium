@@ -61,7 +61,7 @@ var UI = (function () {
     state = game.state;
 
     ['clock', 'vWater', 'rWater', 'vNutrient', 'rNutrient', 'vSpore', 'rSpore',
-     'sNodes', 'sDist', 'sLost', 'sRun', 'sRival', 'policy', 'policyHint', 'autoGrow',
+     'sNodes', 'sDist', 'sLost', 'sRun', 'sRival', 'sRivalRes', 'policy', 'policyHint', 'autoGrow',
      'autoGrowRow', 'autoGrowLabel', 'autoRuleRow', 'ruleMaxDist', 'ruleMinYield', 'ruleHint',
      'upgrades', 'prestigeCard', 'pText', 'pBar', 'pHint', 'pBtn',
      'geneCard', 'genes', 'geneLeft', 'log', 'seedTxt',
@@ -831,6 +831,8 @@ var UI = (function () {
     el.sRun.textContent = clk(state.t);
     /* 对手菌丝：即时对抗的核心读数 —— 它扩张到多少了、离你还有多远 */
     if (el.sRival) el.sRival.textContent = state.enemy ? state.enemy.cells.length : 0;
+    /* 敌菌经济读数：dev 面板看它有多少钱（和平档/无对手时为 0） */
+    if (el.sRivalRes) el.sRivalRes.textContent = Math.floor(state.enemyRes || 0);
 
     /* 结构配额：这是本机制最需要「一直被看见」的数字 ——
      * 上限少到必须取舍，所以玩家得随时知道还剩几格。 */
