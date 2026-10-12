@@ -2058,6 +2058,9 @@
        * dt 的算法：quota = downgradePerSec * dt，所以
        * dt = 1 / downgradePerSec 恰好给出 1 级配额。
        * 触发条件是「水见底」，所以这里把水设成 0。 */
+      /* 0 级格先抬到 5 级：枯死（0 级继续缺水 → 移除）是另一条断言的事，
+       * 这个场景只测「降级顺序」—— 不排除的话配额会被枯死吃掉（实测踩过）。 */
+      st.nodes.forEach(function (n) { if (n.level < 5) n.level = 5; });
       st.nodes[probe].level = 5;
       st.nodes[farId].level = 5;
       st.maintainQuota = 0;
@@ -2081,15 +2084,21 @@
       ok('降级速度 = downgradePerSec（水见底 1 秒降 ' + C.MAINT.downgradePerSec + ' 级）',
          dSpeed === C.MAINT.downgradePerSec, '实降 ' + dSpeed + ' 级');
 
-      /* —— 绝不摧毁节点：降级不是删除 —— */
+      /* —— 2026-10-12 新设计：退化到 0 级后继续缺水 → 该格枯死 ——
+       * 旧语义「降级到 0 就停住、绝不移除」已被用户推翻：资源不足时
+       * 远处菌丝退化到 0 级再被扣，这格就死掉（配合边境对峙消耗，
+       * 水不够的代价是真实的领土损失）。 */
       var nBefore = st.nodes.length;
       st.nodes.forEach(function (n) { n.level = 9; });
       st.res.water = 0;
       for (var g = 0; g < 60; g++) Sim.settleMaintenance(st, 0.5);
-      ok('降级只减等级、不移除节点',
-         st.nodes.length === nBefore && st.nodes[farId] != null && st.nodes[probe] != null,
-         '节点数 ' + nBefore + ' → ' + st.nodes.length);
-      ok('降到 Lv0 就停住（不会降成负数）',
+      ok('0 级格继续缺水会枯死（新设计：资源不足有真实领土代价）',
+         st.nodes.length < nBefore,
+         '节点数 ' + nBefore + ' → ' + st.nodes.length + '（枯死 ' +
+         (st.counters.maintainDeaths || 0) + ' 格）');
+      ok('核心永远不会枯死',
+         st.nodes.length > 0 && st.nodes[0].id === 0 && st.nodes[0].soil === 'core', '');
+      ok('枯死后等级不会出现负数',
          st.nodes.every(function (n) { return n.level >= 0; }),
          '最低等级 ' + Math.min.apply(null, st.nodes.map(function (n) { return n.level; })));
 

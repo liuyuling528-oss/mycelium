@@ -650,6 +650,15 @@
           } else {
             lines.push('距免疫线还差 ' + (C.BLIGHT.immuneLevel - nd.level) + ' 级（练到 Lv' + C.BLIGHT.immuneLevel + ' 菌瘟就啃不动）');
           }
+          /* 边境对峙：与敌菌相邻时的维持费倍率 + 兵锋对比 ——
+           * 「这格为什么水费贵了」必须在这里给出答案。 */
+          var bm = st.borderMul && st.borderMul[nd.id];
+          if (bm) {
+            var pw = (st.enemyCfg && st.enemyCfg.prowess) || 0;
+            lines.push('⚔ 边境对峙 —— 维持费 ×' + bm +
+                       (nd.level < pw ? '（Lv' + nd.level + ' < 兵锋 ' + pw + '，压不住）'
+                                      : '（Lv' + nd.level + ' ≥ 兵锋 ' + pw + '，顶住了）'));
+          }
           if (nd.cargo > 0) lines.push('货物流量 ' + nd.cargo.toFixed(1) + '/s');
           /* 结构角色：主干 / 汇流的吞吐倍率与产量代价都要写清楚，
            * 否则玩家只会看到「标了主干产量反而掉了」而不知道换来了什么。 */
@@ -1320,6 +1329,13 @@
           var lv = Math.min(n.level, 10);
           g.lineStyle(1.4, COL.best, 0.26 + lv * 0.05);
           g.strokeCircle(x, y, R * (0.95 + lv * 0.055));
+        }
+        // 边境对峙：红色警戒环（×3 压不住的还会闪）—— 对抗的代价必须可见
+        var bmul = st.borderMul && st.borderMul[n.id];
+        if (bmul) {
+          var alarm = bmul >= 3 ? 0.5 + 0.5 * Math.sin(time / 240) : 0.6;
+          g.lineStyle(2, COL.bad, 0.35 + 0.4 * alarm);
+          g.strokeCircle(x, y, R * 1.62);
         }
         /* 结构角色：主干用实心大环 + 更亮的内点，汇流用虚线感的双环。
          * 与强化的暖色光环分开（那是 --best 暖黄，结构用冷青），

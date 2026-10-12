@@ -878,7 +878,7 @@ var Sim = (function () {
       startDelay: c.startDelay, interval: c.interval, baseCap: c.baseCap,
       capPerSec: c.capPerSec, blob: c.blob, hardCap: c.hardCap,
       revealRadius: c.revealRadius, name: c.name,
-      eff: c.eff, cost: c.cost
+      eff: c.eff, cost: c.cost, prowess: c.prowess
     };
     if (d === 0) {
       if (state.enemy) removeEnemy(state);
@@ -1563,7 +1563,13 @@ var Sim = (function () {
 
   function totalMaintainCost(state) {
     var sum = 0;
-    for (var i = 0; i < state.nodes.length; i++) sum += maintainCostOf(state, state.nodes[i]);
+    var bm = state.borderMul || null;
+    for (var i = 0; i < state.nodes.length; i++) {
+      var nd = state.nodes[i];
+      var c = maintainCostOf(state, nd);
+      if (bm && bm[nd.id]) c *= bm[nd.id];   // 边境对峙：×2 / ×3
+      sum += c;
+    }
     /* 菌株维护费乘区。它是「压制过强菌株」的负项：
      * 速生菌株铺得最快，所以它的 upkeepMul 1.10 让「无脑铺满」多付一成水费 ——
      * 铺得越多越明显，正好抵消它铺得快的优势，把玩法推向「快但有选择」。
@@ -1583,14 +1589,19 @@ var Sim = (function () {
    *   ③ 同距离时等级高的先降 —— 一次降级省下的维持费最多，效率最高。
    */
   function downgradeOrder(state) {
+    /* 2026-10-12：0 级格也进候选 —— 资源不足时退化到 0 级的菌丝
+     * 若继续缺水就会**枯死**（被移除）。排序沿用「远的先、没锁的先」，
+     * 所以枯死顺序 = 降级顺序的自然延伸：最远、最不值钱的先枯。 */
     var out = [];
     for (var i = 1; i < state.nodes.length; i++) {          // 跳过核心
       var nd = state.nodes[i];
-      if (nd.level > 0 && nd.dist >= 0) out.push(nd);
+      if (nd.dist >= 0) out.push(nd);
     }
     out.sort(function (a, b) {
       var al = a.pinned ? 1 : 0, bl = b.pinned ? 1 : 0;
-      if (al !== bl) return al - bl;                        // 没锁的先降
+      if (al !== bl) return al - bl;                        // 没锁的先降/先枯
+      if ((a.level <= 0) !== (b.level <= 0)) return a.level <= 0 ? -1 : 1;
+      // 0 级格优先枯死（已经退化到底了，再扣就是死）
       if (b.dist !== a.dist) return b.dist - a.dist;        // 远的优先
       return b.level - a.level;                             // 同距先降高等级
     });
@@ -1850,7 +1861,42 @@ var Sim = (function () {
     return { seconds: useSec, capped: awaySec > capSec, real: awaySec, gained: gained };
   }
 
+  /* ---- 边境对峙（2026-10-12，用户设计）----
+   * 与敌菌菌斑相邻的己方菌丝，每 7 秒按「等级差」重算一次消耗倍率：
+   *   己方等级 < 敌菌兵锋 → 维持费 ×3（压不住对面的兵锋，浪费大量水分）
+   *   己方等级 ≥ 敌菌兵锋 → 维持费 ×2（顶住了，但边境依然比腹地贵一倍）
+   *   不与敌菌相邻        → ×1（腹地正常）
+   * 结果缓存在 state.borderMul（nodeId → 倍率），7 秒刷新一次 ——
+   * 等级/兵锋变化最多延迟一个周期生效，符合「定期核算」的语义。
+   * 敌菌兵锋 = 敌菌格的战斗力（按难度档固定：简单0/中等1/困难2/魔鬼3）。
+   * 策略含义：边境菌丝必须**练级**才扛得住对峙，深化投资有了对抗价值。 */
+  function refreshBorder(state) {
+    var E = state.enemyCfg || CONFIG.ENEMY;
+    var prowess = E.prowess || 0;
+    var mul = {};
+    for (var i = 1; i < state.nodes.length; i++) {
+      var nd = state.nodes[i];
+      if (nd.dist < 0) continue;
+      var touching = false;
+      var nb = neighbours(nd.x, nd.y);
+      for (var k = 0; k < nb.length; k++) {
+        if (!inBounds(nb[k][0], nb[k][1])) continue;
+        if (state.grid[idx(nb[k][0], nb[k][1])].enemy) { touching = true; break; }
+      }
+      if (touching) mul[nd.id] = (nd.level < prowess) ? 3 : 2;
+    }
+    state.borderMul = mul;
+    state.borderCheckedT = state.t;
+  }
+
   function settleMaintenance(state, dt) {
+    /* 边境对峙标记每 7s 重算一次（用户口径）。
+     * 敌菌不存在/和平档时清空 —— 别留着旧倍率继续收钱。 */
+    if (state.enemy && state.t - (state.borderCheckedT == null ? -99 : state.borderCheckedT) >= 7) {
+      refreshBorder(state);
+    } else if (!state.enemy && state.borderMul) {
+      state.borderMul = null;
+    }
     var cost = totalMaintainCost(state);
     if (cost <= 0) {
       state.maintainCost = 0; state.maintainPressure = false;
@@ -1904,7 +1950,17 @@ var Sim = (function () {
        * （浮点误差让它算成 1.0000000000000002，撑过了第二次比较）。 */
       for (var i = 0; i < order.length && downgraded + 1 <= budget; i++) {
         var nd = order[i];
-        if (nd.level <= 0) continue;
+        var live = state.nodes[nd.id];
+        if (!live || live !== nd) continue;      // 已在本次结算中枯死
+        if (nd.level <= 0) {
+          /* 退化到底还缺水 → 这格菌丝**枯死**（用户设计：退化到 0 级
+           * 再扣就死）。死亡消耗 1 点预算，节奏与降级一致（不会瞬间团灭）。
+           * 核心不在候选里（order 从 1 开始），永远不会枯死。 */
+          removeNode(state, nd.id);
+          state.counters.maintainDeaths = (state.counters.maintainDeaths || 0) + 1;
+          downgraded++;
+          continue;
+        }
         nd.level -= 1;
         downgraded++;
       }

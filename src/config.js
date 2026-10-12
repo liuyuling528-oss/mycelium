@@ -384,8 +384,8 @@ var CONFIG = (function () {
       { name: '和平', desc: '没有对手，安心造网络',      startDelay: 0,   interval: 999, baseCap: 0,   capPerSec: 0,    blob: 0,  hardCap: 0,   revealRadius: 0, eff: 0,    costMul: 0  },
       { name: '简单',   desc: '龟速扩张，几乎无压力',            startDelay: 180, interval: 6.0, baseCap: 20,  capPerSec: 0.08, blob: 6,  hardCap: 300, revealRadius: 2, eff: 0.35, costMul: 1.2  },
       { name: '中等',   desc: '温和压力，偶尔要回头看一眼',      startDelay: 120, interval: 4.0, baseCap: 22,  capPerSec: 0.12, blob: 8,  hardCap: 400, revealRadius: 2, eff: 0.5,  costMul: 1.1  },
-      { name: '困难',   desc: '当前平衡基准：先站稳再反超',      startDelay: 60,  interval: 3.0, baseCap: 24,  capPerSec: 0.18, blob: 8,  hardCap: 480, revealRadius: 2, eff: 0.7,  costMul: 1.0 },
-      { name: '魔鬼',   desc: '旧版碾压曲线 —— 自虐选项',        startDelay: 30,  interval: 1.5, baseCap: 32,  capPerSec: 0.30, blob: 12, hardCap: 600, revealRadius: 2, eff: 1.0,  costMul: 0.8 }
+      { name: '困难',   desc: '当前平衡基准：先站稳再反超',      startDelay: 60,  interval: 3.0, baseCap: 24,  capPerSec: 0.18, blob: 8,  hardCap: 480, revealRadius: 2, eff: 0.7,  costMul: 1.0, prowess: 2 },
+      { name: '魔鬼',   desc: '旧版碾压曲线 —— 自虐选项',        startDelay: 30,  interval: 1.5, baseCap: 32,  capPerSec: 0.30, blob: 12, hardCap: 600, revealRadius: 2, eff: 1.0,  costMul: 0.8, prowess: 3 }
     ]
   };
 
