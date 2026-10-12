@@ -543,3 +543,27 @@ button.tiny.on { border-color: #4d8f88; background: #16292a; color: #9fe8dd; }
 .dev-row input[type="number"] { width: 76px; }
 .dev-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .dev-btns button { flex: 1 1 auto; }
+
+
+/* ---- 转生弹窗的刷新按钮：C 位大按钮（LOL 海克斯式）----
+ * 费用由 renderChoice 动态写入；点数不足时禁用灰显。 */
+.reroll-btn {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  padding: 13px 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: #ffe9a8;
+  background: linear-gradient(180deg, #2a2413, #1d1a0e);
+  border: 1px solid #8a7434;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background .15s, box-shadow .15s;
+}
+.reroll-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #38301a, #26220f);
+  box-shadow: 0 0 18px rgba(255, 233, 168, .18);
+}
+.reroll-btn:disabled { opacity: .38; cursor: default; }

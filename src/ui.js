@@ -505,9 +505,13 @@ var UI = (function () {
       doPrestige();
     });
     el.dRes.addEventListener('click', function () {
+      /* res（库存）与 total（本局累计）**必须同步加** —— 转生收益、
+       * 基因点收益读的都是 total。只加 res 的话，dev 送的资源在
+       * 转生结算时像没发生过一样（用户实测踩过：+1000 孢子转生还是 1 点）。 */
       state.res.water += 1000; state.res.nutrient += 1000; state.res.spore += 1000;
+      state.total.water += 1000; state.total.nutrient += 1000; state.total.spore += 1000;
       window.MYC.game.dirty = true;
-      toast('资源各 +1000');
+      toast('资源各 +1000（计入本局累计，转生点会跟着涨）');
     });
     el.dClose.addEventListener('click', toggleDev);
     /* ☰ 主菜单：存档 + 暂停 + 回菜单（菜单里「继续游戏」随时回来） */
@@ -607,7 +611,7 @@ var UI = (function () {
       '　·　栏目 ' + pc.slots.length;
     var btn = document.getElementById('dRefresh');
     if (btn) {
-      btn.textContent = '刷新（' + cost + ' 点）';
+      btn.textContent = '⟳ 刷新栏目（' + cost + ' 转生点）';
       btn.disabled = (state.choicePoints || 0) < cost;
     }
     el.choiceCards.innerHTML = pc.slots.map(function (c) {
