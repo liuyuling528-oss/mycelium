@@ -467,7 +467,13 @@ var UI = (function () {
   }
 
   function wireMenu() {
-    el.mContinue.addEventListener('click', hideMenu);
+    /* 继续也应用菜单所选难度：和平当场清走对手，高档当场落新核心 ——
+     * 否则「选了和平点继续」敌人还在（实测踩过）。 */
+    el.mContinue.addEventListener('click', function () {
+      window.MYC.Sim.setDifficulty(state, UI.storedDifficulty());
+      window.MYC.game.dirty = true;
+      hideMenu();
+    });
     el.mKeep.addEventListener('click', function () {
       if (window.MYC.game.newGame(true)) hideMenu();
     });
