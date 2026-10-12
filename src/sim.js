@@ -939,6 +939,28 @@ var Sim = (function () {
     state.enemy = { x: ex, y: ey, cells: cells, timer: 0 };
   }
 
+  /* 敌菌选格打分 —— **难度越高，打法越聪明**（把 headless 策略组验证过的
+   * 风格变成人机的分级）：
+   *   简单（1）盲铺流：反贪心，专挑没人要的贫地 —— AI 像是瞎的；
+   *   中等（2）紧凑流：只看离自家核心的距离，铺得团团整整但不懂价值；
+   *   困难（3）贪心流：产出分 + 紧凑 —— 懂得抢肥矿（原平衡基准）；
+   *   魔鬼（4）猎手流：产出 ×2 + **朝玩家核心推进** —— 不只抢矿，
+   *            还冲着你来。压迫感来自「它知道你在哪」。
+   * 全部确定性评分（无随机）—— headless 同种子同局面必得同一结果。 */
+  function enemyCellScore(state, x, y, soil, en) {
+    var yy = SOILS[soil].yield || {};
+    var yieldScore = (yy.water || 0) + (yy.nutrient || 0) * 1.6 + (yy.spore || 0) * 1.2;
+    var dSelf = Math.abs(x - en.x) + Math.abs(y - en.y);
+    var dPlayer = Math.abs(x - state.core.x) + Math.abs(y - state.core.y);
+    switch (state.difficulty || 3) {
+      case 1: return -yieldScore;                                    // 盲铺：专挑贫地
+      case 2: return -dSelf * 0.1;                                   // 紧凑：只求团团整整
+      case 4: return yieldScore * 2 - dPlayer * 0.25 - dSelf * 0.04; // 猎手：抢矿+冲脸
+      case 3:
+      default: return yieldScore - dSelf * 0.06;                     // 贪心：抢肥矿
+    }
+  }
+
   /* 对手长一格：在全部已占领格的邻格里挑「产出分最高、且偏向自家核心」的。
    * 完全确定性（无随机）—— headless 同种子同局面必得同一结果。
    * 不长进玩家的格（node != null），玩家也长不进它的格（candidates 过滤）。
@@ -958,9 +980,7 @@ var Sim = (function () {
         if (c.enemy || c.node != null || SOILS[c.soil].solid) continue;
         var mul = colonyMulFor(state, { x: x, y: y });
         if (mul.water > 1 || mul.nutrient > 1 || mul.spore > 1) continue;   // 威慑圈
-        var yy = SOILS[c.soil].yield || {};
-        var s = (yy.water || 0) + (yy.nutrient || 0) * 1.6 + (yy.spore || 0) * 1.2
-                - (Math.abs(x - en.x) + Math.abs(y - en.y)) * 0.06;
+        var s = enemyCellScore(state, x, y, c.soil, en);
         if (s > bestScore) { bestScore = s; best = { x: x, y: y, c: c }; }
       }
     }

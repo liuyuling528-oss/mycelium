@@ -3937,6 +3937,25 @@
     var rr = Sim.growAt(tmp, ec[0], ec[1]);
     ok('直接长进对手的地块被拒绝', rr.ok === false, rr.reason);
 
+    /* 打法随难度分化（同种子对照 300s 版图）：
+     * 简单=盲铺（缩在贫地、离玩家远）；魔鬼=猎手（抢肥矿+冲向玩家）。 */
+    function enemyProfile(d) {
+      var sd = Sim.newGame(555001, {}, {}, 0, 0, d);
+      for (var t2 = 0; t2 < 300; t2++) Sim.tick(sd, 1);
+      var ys = 0, dp = 0;
+      sd.enemy.cells.forEach(function (c3) {
+        var cc = sd.grid[c3[1] * sd.mapW + c3[0]];
+        ys += (cc.soil === 'vein' ? 2.2 : cc.soil === 'wood' ? 1.8 : cc.soil === 'litter' ? 0.55 : 0.15);
+        dp += Math.abs(c3[0] - sd.core.x) + Math.abs(c3[1] - sd.core.y);
+      });
+      return { avgYield: ys / sd.enemy.cells.length, avgDP: dp / sd.enemy.cells.length };
+    }
+    var easy = enemyProfile(1), hard = enemyProfile(4);
+    ok('魔鬼比简单抢更多的肥矿', hard.avgYield > easy.avgYield,
+       '平均产出 简单 ' + easy.avgYield.toFixed(2) + ' vs 魔鬼 ' + hard.avgYield.toFixed(2));
+    ok('魔鬼的版图更逼近玩家核心', hard.avgDP < easy.avgDP,
+       '距玩家 简单 ' + easy.avgDP.toFixed(1) + ' vs 魔鬼 ' + hard.avgDP.toFixed(1));
+
     /* 存档往返：对手版图跟着存档走 */
     var st2 = Sim.deserialize(Sim.serialize(tmp));
     ok('对手版图经存档往返保留', !!st2.enemy && st2.enemy.cells.length === tmp.enemy.cells.length,
