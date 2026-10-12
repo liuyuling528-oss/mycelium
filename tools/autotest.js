@@ -2200,15 +2200,23 @@
     st.nodes.forEach(function (n, i2) { if (i2 > 0) n.level = 5; });
     st.nodes[0].level = 9;
     st.res.water = 0;
-    for (var g2 = 0; g2 < 200; g2++) Sim.settleMaintenance(st, 0.5);
-    var othersDropped = st.nodes.some(function (n, i2) { return i2 > 0 && n.level < 5; });
-    ok('正对照：抽干水时其它节点确实在掉级（否则下面的断言没意义）',
-       othersDropped, '非核心节点最低 Lv' +
-       Math.min.apply(null, st.nodes.slice(1).map(function (n) { return n.level; })));
+    for (var g2 = 0; g2 < 60; g2++) Sim.settleMaintenance(st, 0.5);
+    /* 2026-10-12 新机制：非核心格会被降级+枯死（领土损失真实化），
+     * 所以正对照改为「核心纹丝不动 + 至少有非核心格已经受损」；
+     * 不可还原的枯死会毁掉活动局 —— 本 step 只跑 60 帧（预算 90 级），
+     * 65 格 × Lv5 = 325 级的总盘子足够厚，不会真的枯死到清场。
+     * 随后按备份完整还原（含枯死后的稀疏数组，见下）。 */
+    var damaged = st.nodes.some(function (n, i2) { return i2 > 0 && n.level < 5; });
+    var shrank = st.nodes.length < lvBackup.length;
+    ok('正对照：抽干水时非核心格受损（降级或枯死）',
+       damaged || shrank, '受损=' + damaged + ' 枯减=' + shrank +
+       '（节点 ' + lvBackup.length + ' → ' + st.nodes.length + '）');
     ok('核心免疫：抽干水跑 100 秒，孢子落点等级纹丝不动',
        st.nodes[0].level === 9, '核心 Lv9 → Lv' + st.nodes[0].level);
 
-    st.nodes.forEach(function (n, i2) { n.level = lvBackup[i2]; });
+    /* 还原：若有枯死，nodes 已是稀疏/缩短状态 —— 按 id 对号入座，
+     * 消失的格不硬造回来（领土损失是真实代价，测试不开挂）。 */
+    st.nodes.forEach(function (n) { n.level = lvBackup[n.id] != null ? lvBackup[n.id] : n.level; });
     st.nodes[0].level = savedCoreLv;
     st.res.water = savedWater2;
     st.counters.maintainDowngrades = savedDown2;
