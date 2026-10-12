@@ -75,7 +75,7 @@ var UI = (function () {
     /* 主菜单 + 开发者面板 */
     'menu', 'mContinue', 'mKeep', 'mFresh', 'mStats', 'mDev', 'diffBtns', 'diffDesc', 'dDiff',
     'devPanel', 'btnMenu', 'dTime', 'dWater', 'dNutrient', 'dSpore', 'dEnemy',
-    'debuffOverlay', 'debuffHint', 'debuffCards', 'dDebuffRefresh',
+    'buffOverlay', 'buffHint', 'buffCards', 'dBuffRefresh',
     'defeatOverlay', 'defeatText', 'defAgain', 'defMenu',
     'dPlace', 'dClearEnemy', 'dPrestige', 'dRes', 'dClose'].forEach(function (id) { el[id] = document.getElementById(id); });
 
@@ -117,36 +117,36 @@ var UI = (function () {
     /* 刷新按钮：转生弹窗里的独立按钮（不在 cards 容器里，单独接） */
     var dRefresh = document.getElementById('dRefresh');
     if (dRefresh) dRefresh.addEventListener('click', doRefreshChoice);
-    /* 削弱三选一：卡片点击（事件委托）+ 刷新（与卡池共用计数） */
-    if (el.debuffCards) {
-      el.debuffCards.addEventListener('click', function (ev) {
+    /* 增强三选一：卡片点击（事件委托）+ 刷新（与卡池共用计数） */
+    if (el.buffCards) {
+      el.buffCards.addEventListener('click', function (ev) {
         var b = ev.target;
-        while (b && b !== el.debuffCards && b.getAttribute('data-debuff') == null) b = b.parentNode;
-        if (!b || b === el.debuffCards) return;
-        pickDebuff(b.getAttribute('data-debuff'));
+        while (b && b !== el.buffCards && b.getAttribute('data-buff') == null) b = b.parentNode;
+        if (!b || b === el.buffCards) return;
+        pickBuff(b.getAttribute('data-buff'));
       });
     }
-    if (el.dDebuffRefresh) {
-      el.dDebuffRefresh.addEventListener('click', function () {
+    if (el.dBuffRefresh) {
+      el.dBuffRefresh.addEventListener('click', function () {
         var r = window.MYC.Sim.refreshChoice(state);   // 共用 refreshChoice：同一条 n² 曲线
         if (!r.ok) { toast(r.reason); return; }
-        pushLog('刷新了削弱候选（-' + r.cost + ' 转生点）');
-        renderDebuff();
+        pushLog('刷新了增强候选（-' + r.cost + ' 转生点）');
+        renderBuff();
       });
     }
     /* 败北画面按钮 */
     if (el.defAgain) el.defAgain.addEventListener('click', function () {
       hideDefeat();
       window.MYC.game.newGame(false);        // 全新开始（彻底重来）
-      hideDebuffPick(); hideChoice();
+      hideBuffPick(); hideChoice();
     });
     if (el.defMenu) el.defMenu.addEventListener('click', function () {
       hideDefeat();
       window.MYC.game.save(true);
       showMenu(true);
     });
-    /* 读档时如果存档里有没选完的卡/削弱，立刻把弹窗恢复出来 ——*/
-    if (state.pendingDebuff && !state.pendingChoice) showDebuffPick();
+    /* 读档时如果存档里有没选完的卡/增强，立刻把弹窗恢复出来 ——*/
+    if (state.pendingBuff && !state.pendingChoice) showBuffPick();
     /* 读档时如果存档里有没选完的卡，立刻把弹窗恢复出来 ——
      * 否则玩家会带着一个「看不见的待选状态」继续玩，
      * 而下一次转生会把那张卡直接覆盖掉（奖励蒸发）。 */
@@ -678,7 +678,7 @@ var UI = (function () {
     var cost = (state.choiceRefresh + 1) * (state.choiceRefresh + 1);
     el.choiceHint.innerHTML = '第 ' + pc.forPrestige + ' 次转生 —— 点一张卡带走；' +
       '转生点 <b>' + (state.choicePoints || 0) + '</b>' +
-      '　·　刷新费用 ' + cost + '（与削弱选择共用次数）' +
+      '　·　刷新费用 ' + cost + '（与增强选择共用次数）' +
       '　·　栏目 ' + pc.slots.length;
     var btn = document.getElementById('dRefresh');
     if (btn) {
@@ -711,8 +711,8 @@ var UI = (function () {
       pushLog('世界扩大到 ' + state.mapW + '×' + state.mapH);
     }
     hideChoice();
-    /* 卡选完 → 削弱三选一接力弹出（转生流程的第二段，强制选） */
-    if (state.pendingDebuff) showDebuffPick();
+    /* 卡选完 → 增强三选一接力弹出（转生流程的第二段，强制选） */
+    if (state.pendingBuff) showBuffPick();
     window.MYC.game.save(true);
     UI.update(0, window.MYC.game);
   }
@@ -723,48 +723,48 @@ var UI = (function () {
     if (!r.ok) { toast(r.reason); return; }
     pushLog('刷新了栏目（-' + r.cost + ' 转生点）');
     renderChoice();
-    if (!state.pendingDebuff) renderDebuff();   // 削弱候选跟卡池一起重摇了
+    if (!state.pendingBuff) renderBuff();   // 增强候选跟卡池一起重摇了
   }
 
-  /* ---- 人机削弱三选一（转生后强制挑一个）---- */
-  function showDebuffPick() {
-    renderDebuff();
-    if (el.debuffOverlay) el.debuffOverlay.classList.remove('hidden');
+  /* ---- 人机增强三选一（转生红利：玩家亲手给对手挑增强，保持压力）---- */
+  function showBuffPick() {
+    renderBuff();
+    if (el.buffOverlay) el.buffOverlay.classList.remove('hidden');
   }
-  function hideDebuffPick() {
-    if (el.debuffOverlay) el.debuffOverlay.classList.add('hidden');
+  function hideBuffPick() {
+    if (el.buffOverlay) el.buffOverlay.classList.add('hidden');
   }
-  function renderDebuff() {
-    var pd = state.pendingDebuff;
-    if (!pd || !el.debuffCards) { hideDebuffPick(); return; }
+  function renderBuff() {
+    var pd = state.pendingBuff;
+    if (!pd || !el.buffCards) { hideBuffPick(); return; }
     var cost = (state.choiceRefresh + 1) * (state.choiceRefresh + 1);
-    el.debuffHint.innerHTML = '第 ' + pd.forPrestige + ' 次转生 —— 挑一个挂给对手（可重复叠加）' +
+    el.buffHint.innerHTML = '你转生变强的同时，也要亲手喂对手一口 —— 挑一项给它（可重复叠加）' +
       '　·　转生点 <b>' + (state.choicePoints || 0) + '</b>　·　下次刷新 ' + cost;
-    var btn = el.dDebuffRefresh;
+    var btn = el.dBuffRefresh;
     if (btn) {
-      btn.textContent = '⟳ 刷新削弱（' + cost + ' 点，与卡池共用次数）';
+      btn.textContent = '⟳ 刷新增强（' + cost + ' 点，与卡池共用次数）';
       btn.disabled = (state.choicePoints || 0) < cost;
     }
-    var defs = window.MYC.CONFIG.ENEMY.DEBUFFS;
-    el.debuffCards.innerHTML = pd.slots.map(function (k) {
+    var defs = window.MYC.CONFIG.ENEMY.BUFFS;
+    el.buffCards.innerHTML = pd.slots.map(function (k) {
       var d = null;
       defs.forEach(function (x) { if (x.key === k) d = x; });
       if (!d) return '';
-      return '<button class="choice-card gene" data-debuff="' + esc(k) + '">' +
-               '<span class="cc-kind">削弱</span>' +
+      return '<button class="choice-card gene" data-buff="' + esc(k) + '">' +
+               '<span class="cc-kind">增强</span>' +
                '<span class="cc-name">' + esc(d.name) + '</span>' +
                '<span class="cc-desc">' + esc(d.desc) + '</span>' +
              '</button>';
     }).join('');
   }
-  function pickDebuff(key) {
-    var r = window.MYC.Sim.applyDebuffChoice(state, key);
+  function pickBuff(key) {
+    var r = window.MYC.Sim.applyBuffChoice(state, key);
     if (!r.ok) { toast(r.reason); return; }
     var d = null;
-    window.MYC.CONFIG.ENEMY.DEBUFFS.forEach(function (x) { if (x.key === key) d = x; });
-    pushLog('人机削弱：' + (d ? d.name : key) + '（已叠加 ×' + r.count + '）');
-    toast('已给对手挂上「' + (d ? d.name : key) + '」');
-    hideDebuffPick();
+    window.MYC.CONFIG.ENEMY.BUFFS.forEach(function (x) { if (x.key === key) d = x; });
+    pushLog('对手增强：' + (d ? d.name : key) + '（已叠加 ×' + r.count + '）');
+    toast('给对手挑了「' + (d ? d.name : key) + '」');
+    hideBuffPick();
     window.MYC.game.save(true);
     UI.update(0, window.MYC.game);
   }
@@ -1251,7 +1251,7 @@ var UI = (function () {
     init: init, update: update, toast: toast, pushLog: pushLog, rebind: rebind,
     renderSlots: renderSlots, toggleSlots: toggleSlots,
     showMenu: showMenu, hideMenu: hideMenu, toggleDev: toggleDev,
-    showDefeat: showDefeat, showDebuffPick: showDebuffPick,
+    showDefeat: showDefeat, showBuffPick: showBuffPick,
     storedDifficulty: storedDifficulty, DIFFKEY: DIFFKEY,
     KEY: KEY, SEEDKEY: SEEDKEY, SLOTN: SLOTN, slotKey: slotKey, fmt: fmt
   };

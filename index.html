@@ -31,13 +31,13 @@
     </div>
   </div>
 
-  <!-- 人机削弱三选一：每次转生后强制挑一个挂给敌菌。刷新与转生卡池共用 n² 计数。 -->
-  <div id="debuffOverlay" class="hidden">
+  <!-- 人机增强三选一：转生红利——玩家滚雪球时亲手喂对手保持压力。刷新与卡池共用 n² 计数。 -->
+  <div id="buffOverlay" class="hidden">
     <div class="choice-box">
-      <h2>给对手菌种挂上削弱</h2>
-      <p class="hint" id="debuffHint"></p>
-      <div id="debuffCards"></div>
-      <button id="dDebuffRefresh" class="reroll-btn">⟳ 刷新削弱（与卡池共用次数）</button>
+      <h2>转生红利：给对手菌种挑一项增强</h2>
+      <p class="hint" id="buffHint"></p>
+      <div id="buffCards"></div>
+      <button id="dBuffRefresh" class="reroll-btn">⟳ 刷新增强（与卡池共用次数）</button>
     </div>
   </div>
 
@@ -145,8 +145,7 @@
         <div><span>拥堵损耗</span><b id="sLost">无</b></div>
         <div><span>本局时长</span><b id="sRun">0s</b></div>
         <div><span>对手菌丝</span><b id="sRival">0</b></div>
-        <div><span>对手资源</span><b id="sRivalRes">0</b></div>
-        <div><span>对手转生进度</span><b id="sRivalSpore">0 / 0</b></div>
+        <div><span>对手资源 · 转生</span><b><span id="sRivalRes">0</span> · <span id="sRivalSpore">0/0</span></b></div>
       </div>
       <div class="row" style="margin-top:10px">
         <select id="policy" title="挂机时自动蔓延的选址倾向"></select>

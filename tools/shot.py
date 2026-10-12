@@ -50,6 +50,9 @@ url = "http://127.0.0.1:%d/index.html%s" % (PORT, QUERY)
 # 截图要的是游戏运行画面，不是主菜单 —— 自动带上 nomenu=1（除非显式想截菜单）
 if "nomenu" not in QUERY:
     QUERY += ("&" if "?" in QUERY else "?") + "nomenu=1"
+# 截图页默认和平档：虚拟时间快进会把敌菌末日时钟真跑满（败北画面盖掉演示内容）
+if "diff=" not in QUERY:
+    QUERY += "&diff=0"
     url = "http://127.0.0.1:%d/index.html%s" % (PORT, QUERY)
 if os.path.exists(OUT):
     os.remove(OUT)

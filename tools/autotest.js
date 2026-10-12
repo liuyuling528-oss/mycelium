@@ -93,13 +93,13 @@
         game.menuOpen = false;
         st.pendingChoice = Sim.offerChoice(st);
         /* 截图用：同时摆出削弱三选一（转生流程第二段的样子） */
-        st.pendingDebuff = { slots: ['waterGain', 'sporeGain', 'waterUse'],
-                             forPrestige: st.prestiges, at: Date.now() };
+        st.pendingBuff = { slots: ['waterGain', 'sporeGain', 'waterUse'],
+                           forPrestige: st.prestiges, at: Date.now() };
         game.dirty = true;
         /* rebind 收的是 **state**（踩坑史见旧注释）——
          * rebind 末尾的 pendingChoice 检查正好把弹窗弹出来。 */
         game.ui.rebind(game.state);
-        game.ui.showDebuffPick();      // 削弱弹窗叠在卡池之上（截图看两层）
+        game.ui.showBuffPick();        // 增强弹窗叠在卡池之上（截图看两层）
         game.ui.update(0.2, game);
       }, 700);
     });
@@ -4091,30 +4091,30 @@
     var dSt2 = Sim.newGame(31339, {}, {}, 0, 0, 3);
     dSt2.res.spore = 1e9; dSt2.total.nutrient = 1e6; dSt2.total.spore = 1e6;
     Sim.doPrestige(dSt2);
-    ok('转生后弹出削弱三选一（有敌菌时）',
-       !!dSt2.pendingDebuff && dSt2.pendingDebuff.slots.length === 3,
-       dSt2.pendingDebuff ? dSt2.pendingDebuff.slots.join(',') : 'null');
+    ok('转生后弹出增强三选一（有敌菌时）',
+       !!dSt2.pendingBuff && dSt2.pendingBuff.slots.length === 3,
+       dSt2.pendingBuff ? dSt2.pendingBuff.slots.join(',') : 'null');
     ok('削弱候选都在池内且不重复',
-       dSt2.pendingDebuff.slots.every(function (k) {
-         return C.ENEMY.DEBUFFS.some(function (d) { return d.key === k; });
-       }) && new Set(dSt2.pendingDebuff.slots).size === 3, '');
-    var pickKey = dSt2.pendingDebuff.slots[0];
-    var dr = Sim.applyDebuffChoice(dSt2, pickKey);
-    ok('选削弱生效（计数 1）', dr.ok && dSt2.enemyDebuffs[pickKey] === 1,
-       pickKey + ' ×' + dSt2.enemyDebuffs[pickKey]);
-    ok('削弱弹窗关闭（pendingDebuff 清空）', dSt2.pendingDebuff === null, '');
-    ok('重复选同一削弱被拒', !Sim.applyDebuffChoice(dSt2, pickKey).ok, '');
-    /* 叠乘验证：孢子获取削弱 ×2 → 积累速率 ×0.64 */
+       dSt2.pendingBuff.slots.every(function (k) {
+         return C.ENEMY.BUFFS.some(function (d) { return d.key === k; });
+       }) && new Set(dSt2.pendingBuff.slots).size === 3, '');
+    var pickKey = dSt2.pendingBuff.slots[0];
+    var dr = Sim.applyBuffChoice(dSt2, pickKey);
+    ok('选增强生效（计数 1）', dr.ok && dSt2.enemyBuffs[pickKey] === 1,
+       pickKey + ' ×' + dSt2.enemyBuffs[pickKey]);
+    ok('增强弹窗关闭（pendingBuff 清空）', dSt2.pendingBuff === null, '');
+    ok('重复选同一增强被拒', !Sim.applyBuffChoice(dSt2, pickKey).ok, '');
+    /* 叠乘验证：孢子获取增强 ×2 → 积累速率 ×1.44（1.2² 叠乘） */
     var acc0 = (function () {
       var t = Sim.newGame(31340, {}, {}, 0, 0, 3);
       t.t = 61; var s0 = t.enemySpore; Sim.tick(t, 1); return t.enemySpore - s0;
     })();
     var acc1 = (function () {
       var t = Sim.newGame(31340, {}, {}, 0, 0, 3);
-      t.t = 61; t.enemyDebuffs = { sporeGain: 2 }; var s0 = t.enemySpore; Sim.tick(t, 1); return t.enemySpore - s0;
+      t.t = 61; t.enemyBuffs = { sporeGain: 2 }; var s0 = t.enemySpore; Sim.tick(t, 1); return t.enemySpore - s0;
     })();
-    ok('孢子获取削弱 ×2 → 积累 ×0.64（0.8² 叠乘）',
-       Math.abs(acc1 / acc0 - 0.64) < 0.01,
+    ok('孢子获取增强 ×2 → 积累 ×1.44（1.2² 叠乘）',
+       Math.abs(acc1 / acc0 - 1.44) < 0.01,
        acc0.toFixed(3) + ' → ' + acc1.toFixed(3) + '（比值 ' + (acc1 / acc0).toFixed(3) + '）');
     /* 刷新共用：卡池刷 2 次后削弱期首刷是第 3 次（9 点） */
     var rSt = Sim.newGame(31341, {}, {}, 0, 0, 3);
@@ -4129,16 +4129,16 @@
        'cost=' + rd.cost + ' 计数=' + rSt.choiceRefresh);
     /* 存档往返 */
     var rt = Sim.deserialize(Sim.serialize(dSt2));
-    ok('存档往返保留削弱计数与孢子进度',
-       JSON.stringify(rt.enemyDebuffs) === JSON.stringify(dSt2.enemyDebuffs) &&
+    ok('存档往返保留增强计数与孢子进度',
+       JSON.stringify(rt.enemyBuffs) === JSON.stringify(dSt2.enemyBuffs) &&
        rt.enemySpore === dSt2.enemySpore,
-       'debuffs=' + JSON.stringify(rt.enemyDebuffs) + ' spore=' + rt.enemySpore);
-    ok('和平档转生不弹削弱（无对手可削）',
+       'buffs=' + JSON.stringify(rt.enemyBuffs) + ' spore=' + rt.enemySpore);
+    ok('和平档转生不弹增强（无对手可喂）',
        (function () {
          var p0 = Sim.newGame(31342, {}, {}, 0, 0, 0);
          p0.res.spore = 1e9; p0.total.nutrient = 1e6; p0.total.spore = 1e6;
          Sim.doPrestige(p0);
-         return p0.pendingDebuff === null;
+         return p0.pendingBuff === null;
        })(), '');
 
     /* 存档往返：对手版图跟着存档走 */

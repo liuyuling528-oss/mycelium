@@ -134,11 +134,11 @@ var Sim = (function () {
       enemyRes: 60,                // 敌菌养分池（和平档无用；初始够铺几格）
       /* ---- 敌菌的转生竞速 ----
        * enemySpore：敌菌攒的转生孢子，攒够 = 它转生 = **玩家输**；
-       * enemyDebuffs：玩家每次转生后挂的削弱计数（0.8^n 叠乘）；
-       * pendingDebuff：待选的削弱三选一（转生后弹，强制选一个）。 */
+       * enemyBuffs：玩家每次转生后给敌菌挑的增强计数（1.2^n 叠乘）；
+       * pendingBuff：待选的增强三选一（转生后弹，强制选一个）。 */
       enemySpore: 0,
-      enemyDebuffs: {},
-      pendingDebuff: null,
+      enemyBuffs: {},
+      pendingBuff: null,
       /* 开发者面板的运行时旋钮（**会话级**，不进存档 —— 存档里出现
        * ×10 倍率的资源会污染正常平衡口径）。老存档没有这个字段，
        * 所有用到的地方都要 dev 容错读取。 */
@@ -1119,7 +1119,7 @@ var Sim = (function () {
     /* 开发者面板的对手开关：关 = 冻结（版图保留但不扩张），不是清除 */
     if (state.dev && state.dev.enemyOn === false) return;
     if (state.t < E.startDelay) return;
-    var db = state.enemyDebuffs || {};   // 玩家挂的削弱计数（下面的经济/成本/孢子都要用）
+    var db = state.enemyBuffs || {};   // 玩家挑的增强计数（下面的经济/成本/孢子都要用）
     en.timer += dt;
     /* ---- 拔核判定（用户设计）：玩家占领敌菌核心正交四邻 → 核心死 ----
      * 敌菌立刻在地图**随机**别处重落一个新核心（版图清零重铺）——
@@ -1147,16 +1147,16 @@ var Sim = (function () {
       income += (ry.water || 0) + (ry.nutrient || 0) + (ry.spore || 0);
     }
     var incomePerSec = income * (E.eff || 0.7)
-                     * Math.pow(0.8, db.waterGain || 0)
-                     * Math.pow(0.8, db.nutrientGain || 0);
+                     * Math.pow(1.2, db.waterGain || 0)
+                     * Math.pow(1.2, db.nutrientGain || 0);
     state.enemyRes = (state.enemyRes || 0) + incomePerSec * dt;
 
     /* ---- 转生竞速：敌菌也在攒自己的孢子 ----
-     * 收入的 sporeRate 比例 + 基础发酵，经「孢子获取」削弱叠乘后入账；
+     * 收入的 sporeRate 比例 + 基础发酵，经「孢子获取」增强叠乘后入账；
      * 攒够 enemyPrestigeNeed(state) → 敌菌转生 → 玩家输。 */
     var sporeIn = (incomePerSec * (E.sporeRate != null ? E.sporeRate : 0.05)
                  + (E.sporeBase != null ? E.sporeBase : 0.15))
-                * Math.pow(0.8, db.sporeGain || 0);
+                * Math.pow(1.2, db.sporeGain || 0);
     state.enemySpore = (state.enemySpore || 0) + sporeIn * dt;
     if ((state.enemySpore || 0) >= enemyPrestigeNeed(state)) {
       state.lost = { at: Math.round(state.t), spore: Math.round(state.enemySpore) };
@@ -1167,7 +1167,7 @@ var Sim = (function () {
     /* 每格成本 = 当期每秒收入 × interval × costMul —— **自适应中性**：
      * 经济恰好维持 interval 节奏（固定成本会「前期穷死」，实测踩过）。 */
     var cost = incomePerSec * E.interval * (E.costMul != null ? E.costMul : 1)
-             * Math.pow(1.2, db.waterUse || 0);   // 「水分使用 +20%」削弱
+             * Math.pow(0.8, db.waterUse || 0);   // 「水分使用 −20%」增强
     while (en.timer >= E.interval) {
       en.timer -= E.interval;
       if (en.cells.length >= cap) { en.timer = 0; break; }
@@ -2759,7 +2759,7 @@ var Sim = (function () {
     /* 发三选一的卡。放在**世界重置之后** —— 地图卡要基于「刚换好的世界」
      * 算下一档尺寸，先发卡再重置会把新地图又冲掉一遍。 */
     offerChoice(state);
-    offerDebuff(state);     // 转生后必须给人机挑一个削弱（和平档自动跳过）
+    offerBuff(state);       // 转生红利：给人机挑一项增强（和平档自动跳过）
     return { ok: true, gained: gained, record: record };
   }
 
@@ -2871,13 +2871,14 @@ var Sim = (function () {
     return card;
   }
 
-  /* ---- 人机削弱三选一（2026-10-12 用户设计）----
-   * 每次转生后玩家必须从削弱池里挑一个挂给敌菌（效果方向=对敌菌不利）；
-   * 3 个随机候选可刷新 —— **刷新次数与转生卡池共用**（同一个 n² 计数与
-   * 转生点池）。同一项可重复选中，效果按 0.8^n 叠乘。和平档不弹。 */
-  function offerDebuff(state) {
-    if (!state.enemy) { state.pendingDebuff = null; return null; }
-    var pool = CONFIG.ENEMY.DEBUFFS.map(function (d) { return d.key; });
+  /* ---- 人机增强三选一（2026-10-12 用户口径修正）----
+   * 玩家滚雪球越来越强，敌菌固定经济跟不上 —— 所以每次转生后由玩家
+   * **亲手给敌菌挑一项增强**（挑最不威胁自己的那项=决策点），让对手
+   * 始终跟得上。3 个随机候选可刷新 —— 刷新次数与转生卡池共用同一条
+   * n² 计数。同一项可重复选中，效果按 1.2^n 叠乘。和平档不弹。 */
+  function offerBuff(state) {
+    if (!state.enemy) { state.pendingBuff = null; return null; }
+    var pool = CONFIG.ENEMY.BUFFS.map(function (d) { return d.key; });
     var rnd = RNG.makeRng((state.seed ^ 0x0def) >>> 0);
     var slots = [];
     var guard = 0;
@@ -2885,21 +2886,21 @@ var Sim = (function () {
       var k = pool[(rnd() * pool.length) | 0];
       if (slots.indexOf(k) < 0) slots.push(k);
     }
-    state.pendingDebuff = { slots: slots, forPrestige: state.prestiges, at: Date.now() };
-    return state.pendingDebuff;
+    state.pendingBuff = { slots: slots, forPrestige: state.prestiges, at: Date.now() };
+    return state.pendingBuff;
   }
 
-  /* 玩家挑了一个削弱。幂等：选完即清 pendingDebuff。 */
-  function applyDebuffChoice(state, key) {
-    var pd = state.pendingDebuff;
-    if (!pd) return { ok: false, reason: '没有待选的削弱' };
+  /* 玩家挑了一项增强。幂等：选完即清 pendingBuff。 */
+  function applyBuffChoice(state, key) {
+    var pd = state.pendingBuff;
+    if (!pd) return { ok: false, reason: '没有待选的增强' };
     var valid = false;
     for (var i = 0; i < pd.slots.length; i++) if (pd.slots[i] === key) valid = true;
-    if (!valid) return { ok: false, reason: '这个削弱不在候选里' };
-    if (!state.enemyDebuffs) state.enemyDebuffs = {};
-    state.enemyDebuffs[key] = (state.enemyDebuffs[key] || 0) + 1;
-    state.pendingDebuff = null;
-    return { ok: true, key: key, count: state.enemyDebuffs[key] };
+    if (!valid) return { ok: false, reason: '这个增强不在候选里' };
+    if (!state.enemyBuffs) state.enemyBuffs = {};
+    state.enemyBuffs[key] = (state.enemyBuffs[key] || 0) + 1;
+    state.pendingBuff = null;
+    return { ok: true, key: key, count: state.enemyBuffs[key] };
   }
 
   /* 转生时开池发牌：栏目数 = choiceSlots（跨转生累积，初始 3），
@@ -2920,10 +2921,10 @@ var Sim = (function () {
    * 基因点填满）。费用 = 第 n 次刷新 n² 转生点（1/4/9/16…） */
   function refreshChoice(state) {
     var pc = state.pendingChoice;
-    var pd = state.pendingDebuff;
+    var pd = state.pendingBuff;
     if (!pc && !pd) return { ok: false, reason: '没有待选的卡' };
     /* 刷新计数的唯一真身是 state.choiceRefresh（每次转生重置）——
-     * 卡池期和削弱期**共用同一条 n² 曲线**：卡池刷 2 次后，削弱期的
+     * 卡池期和增强期**共用同一条 n² 曲线**：卡池刷 2 次后，增强期的
      * 第一次刷新就是第 3 次（9 点），不是重新从 1 点起算。 */
     var cost = (state.choiceRefresh + 1) * (state.choiceRefresh + 1);
     if ((state.choicePoints || 0) < cost) return { ok: false, reason: '转生点不足（需要 ' + cost + '）' };
@@ -2933,17 +2934,17 @@ var Sim = (function () {
       var rnd = RNG.makeRng((state.seed ^ 0x9E3779B9 ^ (state.choiceRefresh * 0x85EBCA6B)) >>> 0);
       pc.slots = [];
       for (var i = 0; i < Math.min(8, state.choiceSlots || 3); i++) pc.slots.push(drawOne(pc, state, rnd));
-      /* 卡池期刷新：削弱候选跟着一起重摇（同一杆秤） */
-      if (pd) offerDebuffRoll(state, pd, state.choiceRefresh);
+      /* 卡池期刷新：增强候选跟着一起重摇（同一杆秤） */
+      if (pd) offerBuffRoll(state, pd, state.choiceRefresh);
     } else if (pd) {
-      offerDebuffRoll(state, pd, state.choiceRefresh);
+      offerBuffRoll(state, pd, state.choiceRefresh);
     }
     return { ok: true, cost: cost };
   }
 
-  /* 按刷新序号重摇削弱候选（确定性） */
-  function offerDebuffRoll(state, pd, refreshN) {
-    var pool = CONFIG.ENEMY.DEBUFFS.map(function (d) { return d.key; });
+  /* 按刷新序号重摇增强候选（确定性） */
+  function offerBuffRoll(state, pd, refreshN) {
+    var pool = CONFIG.ENEMY.BUFFS.map(function (d) { return d.key; });
     var rnd = RNG.makeRng((state.seed ^ 0x0def ^ (refreshN * 0x85EBCA6B)) >>> 0);
     var slots = [], guard = 0;
     while (slots.length < 3 && guard++ < 50) {
@@ -3089,8 +3090,8 @@ var Sim = (function () {
       enemyCfg: state.enemyCfg || null,
       enemyRes: state.enemyRes || 0,
       enemySpore: state.enemySpore || 0,
-      enemyDebuffs: state.enemyDebuffs || {},
-      pendingDebuff: state.pendingDebuff || null,
+      enemyBuffs: state.enemyBuffs || {},
+      pendingBuff: state.pendingBuff || null,
       enemy: state.enemy ? {
         x: state.enemy.x, y: state.enemy.y, timer: state.enemy.timer,
         cells: state.enemy.cells
@@ -3136,10 +3137,10 @@ var Sim = (function () {
     if (d.enemyRes != null) state.enemyRes = d.enemyRes;
     else state.enemyRes = 60;
     if (d.enemySpore != null) state.enemySpore = d.enemySpore;
-    if (d.enemyDebuffs) state.enemyDebuffs = d.enemyDebuffs;
-    /* 待选削弱：只认新结构（有 slots）；旧档无此字段 = null */
-    state.pendingDebuff = (d.pendingDebuff && d.pendingDebuff.slots && d.pendingDebuff.slots.length)
-      ? d.pendingDebuff : null;
+    if (d.enemyBuffs) state.enemyBuffs = d.enemyBuffs;
+    /* 待选增强：只认新结构（有 slots）；旧档（含旧削弱语义的旧字段）一律弃用 */
+    state.pendingBuff = (d.pendingBuff && d.pendingBuff.slots && d.pendingBuff.slots.length)
+      ? d.pendingBuff : null;
     state.cd = d.cd || {};
     state.unlocked = d.unlocked || {};
     state.pulseT = d.pulseT || 0;
@@ -3240,7 +3241,7 @@ var Sim = (function () {
     newGame: newGame, tick: tick, growAt: growAt, canGrowAt: canGrowAt,
     /* 开发者工具（dev 面板用） */
     placeEnemyAt: placeEnemyAt, removeEnemy: removeEnemy, setDifficulty: setDifficulty,
-    enemyPrestigeNeed: enemyPrestigeNeed, applyDebuffChoice: applyDebuffChoice,
+    enemyPrestigeNeed: enemyPrestigeNeed, applyBuffChoice: applyBuffChoice,
     removeNode: removeNode,
     mapSizeFor: mapSizeFor,
     /* applyMapSize 必须导出：地图尺寸是**模块级单例**（_MAP），
