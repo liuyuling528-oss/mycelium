@@ -16,15 +16,15 @@ var CONFIG = (function () {
     core:   { key: 'core',   name: '孢子落点', short: '核心', color: 0xF0C87E,
               yield: {},                       growCost: 0,    solid: false },
     soil:   { key: 'soil',   name: '普通壤土', short: '壤土', color: 0x3B3227,
-              yield: { water: 0.12 },          growCost: 8,    solid: false },
+              yield: { water: 1.2 },           growCost: 40,    solid: false },
     litter: { key: 'litter', name: '落叶层',   short: '落叶', color: 0x5C4526,
-              yield: { nutrient: 0.55 },       growCost: 12,   solid: false },
+              yield: { nutrient: 0.55 },       growCost: 60,   solid: false },
     wood:   { key: 'wood',   name: '腐木',     short: '腐木', color: 0x3A2718,
-              yield: { nutrient: 1.80 },       growCost: 22,   solid: false },
+              yield: { nutrient: 1.80 },       growCost: 110,   solid: false },
     vein:   { key: 'vein',   name: '地下水脉', short: '水脉', color: 0x1D4B63,
-              yield: { water: 1.00 },          growCost: 20,   solid: false },
+              yield: { water: 10 },            growCost: 100,   solid: false },
     root:   { key: 'root',   name: '树根',     short: '树根', color: 0x27522F,
-              yield: { spore: 0.40 },          growCost: 30,   solid: false },
+              yield: { spore: 0.40 },          growCost: 150,   solid: false },
     rock:   { key: 'rock',   name: '岩块',     short: '岩石', color: 0x22222A,
               yield: {},                       growCost: 0,    solid: true  }
   };
@@ -148,7 +148,7 @@ var CONFIG = (function () {
 
   /* ---- 资源 ---------------------------------------------------------- */
   var START = {
-    water: 40,
+    water: 500,
     nutrient: 0,
     spore: 0,
     seep: 0.45,             // 核心自身的渗水速率（开局的主要水来源）
@@ -264,18 +264,18 @@ var CONFIG = (function () {
     soils: ['soil'],
     /* 作用于哪种资源（壤土只产水）。 */
     resource: 'water',
-    /* 0 格处的产出。保留壤土原本的 0.12 —— 它是玩家最熟悉的地块，
-     * 「贴核的壤土还和以前一样」让这个改动只体现为「远处变差」。 */
-    base: 0.12,
-    /* 每远离核心 1 格，扣除的水量。这就是用户说的「0.12 / 0.09」：
-     * 0 格 0.12 → 1 格 0.09 → 2 格 0.06 → 3 格 0.03 → 4 格 0。
-     * 归零点 = base / slope = 0.12 / 0.03 = 4 格 = 从核数第 5 格。 */
-    slope: 0.03,
-    /* 地板：壤土产出最低不低于 -limit（即 -1.05）。
-     * ⚠ 注意 offset 是加在 0.12 之上的，所以「产出 -1.05」对应
-     *   offset = -1.05 - 0.12 = **-1.17**，不是 -1.05。
-     *   取 1.17：恰好在 dist = 39 生效，40 格（从核数第 41 格）正好 -1.05。 */
-    limit: 1.17
+    /* 0 格处的产出。2026-10-12 水经济 ×10 后同步放大（原 0.12）——
+     * base/slope/limit 必须同比，否则「dist4 归零」的设计语义就丢了。 */
+    base: 1.2,
+    /* 每远离核心 1 格，扣除的水量（原 0.03，×10 同步）：
+     * 0 格 1.2 → 1 格 0.9 → 2 格 0.6 → 3 格 0.3 → 4 格 0。
+     * 归零点 = base / slope = 1.2 / 0.3 = 4 格 = 从核数第 5 格。 */
+    slope: 0.3,
+    /* 地板：壤土产出最低不低于 -limit（即 -10.5）。
+     * ⚠ 注意 offset 是加在 1.2 之上的，所以「产出 -10.5」对应
+     *   offset = -10.5 - 1.2 = **-11.7**，不是 -10.5。
+     *   取 11.7：恰好在 dist = 39 生效，40 格（从核数第 41 格）正好 -10.5。 */
+    limit: 11.7
   };
 
   /* ---- 主干菌丝 + 汇流节点 --------------------------------------------
@@ -654,7 +654,7 @@ var CONFIG = (function () {
      * 全局升级会和它形成竞争。 */
     costGrowth: 1.72,
     maxLevel: 10,
-    yieldPerLevel: 0.25,   // 每级 +25% 该节点产出
+    yieldPerLevel: 0.5,    // 每级 +50% 初始产出（线性：Lv3 = 2.5×，2026-10-12 用户口径）
     capPerLevel: 0.18      // 每级 +18% 该节点吞吐（练节点同时也在加粗）
   };
 

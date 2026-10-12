@@ -154,7 +154,7 @@ var Sim = (function () {
     applyDifficulty(state, state.difficulty == null ? 3 : state.difficulty);
     generateMap(state);
     initEnemy(state);
-    state.res.water = CONFIG.START.water + state.genes.gWater * 150;
+    state.res.water = CONFIG.START.water + state.genes.gWater * 750;
 
     // 核心：第一颗菌丝节点
     var coreNode = makeNode(state, state.core.x, state.core.y, 'core', 0);
@@ -2611,7 +2611,7 @@ var Sim = (function () {
     state.knowledge = {};
     state.explored = { minX: 1e9, maxX: -1e9, minY: 1e9, maxY: -1e9, count: 0 };
 
-    state.res = { water: CONFIG.START.water + state.genes.gWater * 150,
+    state.res = { water: CONFIG.START.water + state.genes.gWater * 750,
                   nutrient: 0, spore: 0 };
     state.total = { water: 0, nutrient: 0, spore: 0 };
     state.lostTotal = 0;

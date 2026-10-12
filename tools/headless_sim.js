@@ -346,7 +346,11 @@ function buildColonies(state, mode) {
         const dx = o.x - nd.x, dy = o.y - nd.y;
         if (dx * dx + dy * dy > R2) continue;
         const cy = Sim.cellYield(state, o.soil);
-        s += cy.water + cy.nutrient + cy.spore;
+        /* 2026-10-12 水经济 ×10 后，水脉产出碾压一切 —— 再把水算进
+         * 选址分，「好选址」就全漂到水脉上；但菌落加成的是养分、
+         * 综合分计的也是养分/孢子（水是中间货币不计分）。
+         * 选址分与加成/计分口径对齐：只看养分+孢子。 */
+        s += cy.nutrient + cy.spore;
         cnt++;
       }
       if (!cnt) continue;

@@ -749,10 +749,10 @@
       var o40 = Sim.topsoilOffset(st, 'soil', 40);
       var o80 = Sim.topsoilOffset(st, 'soil', 80);
 
-      /* 用户给的原式：0.12 / 0.09 —— 逐格核对前 5 格 */
-      ok('壤土递减：0 格 = 0.12（原产出不变）', Math.abs(yAt(0) - 0.12) < 1e-12,
+      /* 用户原式 ×10（2026-10-12 水经济放大）：1.2 / 0.9 —— 逐格核对前 5 格 */
+      ok('壤土递减：0 格 = 1.2（原产出不变）', Math.abs(yAt(0) - 1.2) < 1e-12,
          'd0 = ' + yAt(0).toFixed(4));
-      ok('壤土递减：1 格 = 0.09（用户原式）', Math.abs(yAt(1) - 0.09) < 1e-12,
+      ok('壤土递减：1 格 = 0.9（用户原式 ×10）', Math.abs(yAt(1) - 0.9) < 1e-12,
          'd1 = ' + yAt(1).toFixed(4));
       ok('壤土递减：从核数第 5 格 = dist 4 精确归零', o4 === -soilBase && yAt(4) === 0,
          'd4 = ' + yAt(4));
@@ -760,16 +760,15 @@
          'y(4)=' + yAt(4) + '  y(5)=' + yAt(5).toFixed(4));
       ok('壤土递减：严格单调递减', yAt(0) > yAt(1) && yAt(1) > yAt(4) && o4 > o5 && o5 > o20,
          '0.12 > 0.09 > 0 > ' + o5.toFixed(3) + ' > ' + o20.toFixed(3));
-      /* ⚠ 20 格比较的是「最终产出」yAt(20) = 0.12 - 0.60 = -0.48，
-       *   不是 offset 本身（offset = -0.60）。一开始拿 offset 去比 -0.48，
-       *   自己把自己坑了一次 —— 凡是对外报的数都用 yAt()。 */
-      ok('壤土递减：20 格 ≈ -0.48（用户说的 -0.45 附近）', Math.abs(yAt(20) + 0.48) < 1e-12,
+      /* ⚠ 20 格比较的是「最终产出」yAt(20) = 1.2 - 6.0 = -4.8，
+       *   不是 offset 本身（offset = -6.0）。凡是对外报的数都用 yAt()。 */
+      ok('壤土递减：20 格 = -4.8（×10 后锚点）', Math.abs(yAt(20) + 4.8) < 1e-12,
          'd20 = ' + yAt(20).toFixed(4) + '（offset ' + o20.toFixed(4) + '）');
-      ok('壤土递减：40 格 = -1.05（用户锚点，含地板）', Math.abs(yAt(40) + 1.05) < 1e-12,
+      ok('壤土递减：40 格 = -10.5（用户锚点，含地板）', Math.abs(yAt(40) + 10.5) < 1e-12,
          'd40 = ' + yAt(40).toFixed(4));
 
-      /* 基础产出必须保留 0.12 —— 这一版没有把它归零 */
-      ok('壤土基础产出保留 0.12（未归零）', Math.abs(soilBase - 0.12) < 1e-12,
+      /* 基础产出必须保留 1.2 —— 这一版没有把它归零 */
+      ok('壤土基础产出保留 1.2（未归零）', Math.abs(soilBase - 1.2) < 1e-12,
          'base water=' + soilBase);
 
       ok('壤土递减有地板（不会无限倒扣）', o80 >= -F.limit - 1e-9 && o80 === -F.limit,
@@ -803,11 +802,11 @@
                + Math.abs(o).toFixed(2) + ' = ' + act.toFixed(2)
                + '（从核第 ' + (d + 1) + ' 格）';
       };
-      var tipNeg = fmtTip(5);                       // 从核第 6 格，实际 -0.03
+      var tipNeg = fmtTip(5);                       // 从核第 6 格，×10 后实际 -0.30
       ok('提示文本：负产出不带加号前缀', tipNeg.indexOf('+-') < 0 && tipNeg.indexOf('+ -') < 0,
          tipNeg);
-      ok('提示文本：写的是减法算式（0.12 − 0.15）',
-         tipNeg.indexOf('0.12 − 0.15 = -0.03') >= 0, tipNeg);
+      ok('提示文本：写的是减法算式（1.20 − 1.50）',
+         tipNeg.indexOf('1.20 − 1.50 = -0.30') >= 0, tipNeg);
       ok('提示文本：距离用玩家口径「从核第 6 格」',
          tipNeg.indexOf('从核第 6 格') >= 0 && tipNeg.indexOf('离核 5 格') < 0, tipNeg);
       ok('提示文本：归零格（从核第 5 格）产出 0.00 不写负号',
@@ -2492,7 +2491,16 @@
       ok('超限后再标被拒绝', r.ok === false && /上限/.test(r.reason), r.reason);
     }
 
-    /* 取消后配额必须被回收 —— 否则玩家会被永久卡死在满配状态 */
+    /* 取消后配额必须被回收 —— 否则玩家会被永久卡死在满配状态。
+     * 2026-10-12 新水耗下节点可能枯死：S.trunkId 若已不在网络上，
+     * 就地改挑一个活着的已标记主干（测的是配额回收，不是特定节点）。 */
+    if (!(st.nodes[S.trunkId] && st.nodes[S.trunkId].trunk)) {
+      S.trunkId = null;
+      for (var q2 = 1; q2 < st.nodes.length; q2++) {
+        if (st.nodes[q2] && st.nodes[q2].trunk) { S.trunkId = q2; break; }
+      }
+      if (S.trunkId == null) { R.push('  SKIP 主干配额：场上没有已标记主干'); return; }
+    }
     var freeBefore = C.TRUNK.maxTrunk - Sim.trunkCount(st);
     var back = Sim.toggleTrunk(st, S.trunkId);
     ok('取消主干后配额回收',
@@ -2511,12 +2519,22 @@
      *      所以用货物合计（养分+孢子）。水被排除是刻意的：水不受吞吐限制。
      *   ② 必须先跑够帧数让货流收敛。只跑 4 帧时 prod 还只有 0.005 量级，
      *      噪声比信号大，比值会完全不可信（实测得到 1.818 这种假值）。 */
-    var nd = st.nodes[S.trunkId];
     st.res.water = 1e9; st.res.nutrient = 1e9;
     var settle = function () {
       for (var k = 0; k < 20; k++) { st.res.water = 1e9; st.res.nutrient = 1e9; Sim.tick(st, 0.25); }
     };
     var goods = function (n) { return (n.prod.nutrient || 0) + (n.prod.spore || 0); };
+
+    settle();
+    /* 挑一个**有货物产出**的活节点（壤土/水脉只产水，goods 恒 0，
+     * 挑到它们就是 0/0 假失败）；S.trunkId 死了也在这里自动兜底。 */
+    var nd = st.nodes[S.trunkId] && goods(st.nodes[S.trunkId]) > 0.005 ? st.nodes[S.trunkId] : null;
+    if (!nd) {
+      for (var gi = 1; gi < st.nodes.length; gi++) {
+        if (st.nodes[gi] && goods(st.nodes[gi]) > 0.005) { nd = st.nodes[gi]; break; }
+      }
+    }
+    if (!nd) { ok('（网络上没有产出货物/孢子的节点，跳过产出代价测试）', true, ''); return; }
 
     if (nd.trunk) Sim.toggleTrunk(st, nd.id);    // 确保从未标记状态开始
     settle();
