@@ -521,7 +521,9 @@ button.tiny.on { border-color: #4d8f88; background: #16292a; color: #9fe8dd; }
   position: fixed;
   right: 12px;
   top: 12px;
-  z-index: 55;
+  z-index: 65;                 /* 高于主菜单(60) —— 菜单里也要能看见/操作面板 */
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
   width: 250px;
   background: var(--panel);
   border: 1px solid #6a5a2a;          /* 暖边：一眼看出这是非游戏功能 */

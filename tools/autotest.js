@@ -3708,6 +3708,24 @@
   });
 
   step(function () {
+    /* 开发者面板随开随关（训练营式浮窗）：反复 toggle 不得卡死 ——
+     * 用户实测过「关一次就打不开」（根因是 z-index 被主菜单盖住，
+     * 这里从状态层钉住开关语义本身）。 */
+    var UI = window.MYC.game.ui;
+    var panel = document.getElementById('devPanel');
+    UI.toggleDev();
+    var opened = !panel.classList.contains('hidden');
+    UI.toggleDev();
+    var closed = panel.classList.contains('hidden');
+    UI.toggleDev();
+    var reopened = !panel.classList.contains('hidden');
+    UI.toggleDev();   // 还原为关闭
+    ok('开发者面板反复开关稳定（随开随关）', opened && closed && reopened,
+       '开=' + opened + ' 关=' + closed + ' 再开=' + reopened);
+    ok('主菜单按钮存在', !!document.getElementById('btnMenu'), '');
+  });
+
+  step(function () {
     /* UI 层的弹窗必须与 state 同步 —— 这是「卡没弹出 = 玩家卡住」的防线 */
     var g = window.MYC.game, ov = document.getElementById('choiceOverlay');
     ok('取到转生弹窗元素', !!ov, '');

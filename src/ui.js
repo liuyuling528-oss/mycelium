@@ -69,7 +69,7 @@ var UI = (function () {
     'choiceOverlay', 'choiceCards', 'choiceHint', 'dRefresh',
     /* 主菜单 + 开发者面板 */
     'menu', 'mContinue', 'mKeep', 'mFresh', 'mStats', 'mDev',
-    'devPanel', 'dTime', 'dWater', 'dNutrient', 'dSpore', 'dEnemy',
+    'devPanel', 'btnMenu', 'dTime', 'dWater', 'dNutrient', 'dSpore', 'dEnemy',
     'dPlace', 'dClearEnemy', 'dPrestige', 'dRes', 'dClose'].forEach(function (id) { el[id] = document.getElementById(id); });
 
     el.seedTxt.textContent = '种子 ' + state.seed;
@@ -413,8 +413,10 @@ var UI = (function () {
   function showMenu(resumed) {
     window.MYC.game.menuOpen = true;
     el.menu.classList.remove('hidden');
-    el.mContinue.disabled = !resumed;
-    el.mContinue.textContent = resumed ? '继续上次的进度' : '继续上次的进度（无存档）';
+    /* 「继续」永远可用 —— 游戏内返回主菜单时当前世界还活着，
+     * 继续就是取消暂停。有无存档只影响文案。 */
+    el.mContinue.disabled = false;
+    el.mContinue.textContent = resumed ? '继续上次的进度' : '继续游戏';
     el.mStats.textContent = '转生 ' + state.prestiges + ' 次 · 基因点 ' +
       ((state.pendingGenes || 0)) + ' · 菌丝 ' + state.nodes.length + ' 格';
   }
@@ -422,7 +424,7 @@ var UI = (function () {
   function hideMenu() {
     window.MYC.game.menuOpen = false;
     el.menu.classList.add('hidden');
-    pushLog('世界开始运转 —— 对手菌种 30 秒后也会开始扩张');
+    pushLog('世界开始运转');
   }
 
   function wireMenu() {
@@ -437,8 +439,19 @@ var UI = (function () {
   }
 
   function toggleDev() {
+    if (!state.dev) state.dev = { time: 1, water: 1, nutrient: 1, spore: 1, enemyOn: true };
+    var opening = el.devPanel.classList.contains('hidden');
     el.devPanel.classList.toggle('hidden');
-    if (!el.devPanel.classList.contains('hidden')) syncDevInputs();
+    /* 关面板时撤掉「放置对手落点」模式 —— 否则模式挂着，
+     * 玩家点地图全是无效点击，看起来就像「面板坏了」 */
+    if (!opening) {
+      var sc = window.MYC.game.scene;
+      if (sc && sc.devPlacing) {
+        sc.devPlacing = false;
+        el.dPlace.classList.remove('on');
+      }
+    }
+    if (opening) syncDevInputs();
   }
 
   function syncDevInputs() {
@@ -497,6 +510,12 @@ var UI = (function () {
       toast('资源各 +1000');
     });
     el.dClose.addEventListener('click', toggleDev);
+    /* ☰ 主菜单：存档 + 暂停 + 回菜单（菜单里「继续游戏」随时回来） */
+    el.btnMenu.addEventListener('click', function () {
+      window.MYC.game.save(true);
+      window.MYC.game.menuOpen = true;
+      showMenu(true);
+    });
   }
 
   function doPrestige() {
