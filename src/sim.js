@@ -998,7 +998,7 @@ var Sim = (function () {
       }
     }
     invalidateCands(state);   // 领土变了，玩家的候选缓存必须作废
-    return true;
+    return best;               // 返回坐标：tickEnemy 用它算「是否与玩家接壤」（对峙税）
   }
 
   /* 开发者工具：把对手菌种搬到指定位置（清掉旧版图，重新落地一小簇）。
@@ -1067,8 +1067,18 @@ var Sim = (function () {
       if (en.cells.length >= cap) { en.timer = 0; break; }
       /* 没钱就这拍不扩 —— 和玩家水不够一个待遇 */
       if ((state.enemyRes || 0) < cost) { en.timer = 0; break; }
-      if (!growEnemyOne(state)) { en.timer = 0; break; }
-      state.enemyRes -= cost;
+      var grown = growEnemyOne(state);
+      if (!grown) { en.timer = 0; break; }
+      /* 对峙税（对称）：敌菌的新格若与玩家菌丝接壤，成本 ×2 ——
+       * 它爱贴过来，就得为对峙多付钱； AI 打分不看成本，
+       * 所以冲脸流（魔鬼）的经济会被自己的进攻性拖累 —— 用户口径
+       * 「对方喜欢碰撞的话，对方就会被水分拖死」。 */
+      var tp = false, tnb = neighbours(grown.x, grown.y);
+      for (var ti = 0; ti < tnb.length; ti++) {
+        if (!inBounds(tnb[ti][0], tnb[ti][1])) continue;
+        if (state.grid[idx(tnb[ti][0], tnb[ti][1])].node != null) { tp = true; break; }
+      }
+      state.enemyRes -= cost * (tp ? 2 : 1);   // 对峙税：贴着玩家的新格 ×2
     }
   }
 
@@ -1550,15 +1560,15 @@ var Sim = (function () {
    * 深耕才有真代价。完整推导见 config.MAINT 的注释。 */
   function maintainCostOf(state, nd) {
     var lv = nd.level || 0;
-    if (lv <= 0) return 0;
-    var e = CONFIG.MAINT.exponent;
-    /* exponent 必须 ≥ 1：< 1 会让成本凹向下，「摊薄比深耕还贵」，
-     * 整个取舍反了。config 的注释说得很清楚但没人拦得住改参数的人。 */
-    if (!(e >= 1)) e = 2;
-    /* e = 2 是最常见的情形，直接乘比 Math.pow 快 —— 这个函数每个 tick
-     * 会对每个节点调用一次，大地图上就是几千次/秒。 */
-    var base = (e === 2) ? lv * lv : Math.pow(lv, e);
-    return base * CONFIG.MAINT.costPerLevel;
+    /* 接壤税：只有与敌菌接壤的格才有基础水耗（0 级也交 5）。
+     * borderMul 是 7s 快照，接壤后最多延迟一个周期生效 —— 与
+     * 「每 7 秒核算」的口径一致。 */
+    var touching = state.borderMul && state.borderMul[nd.id] != null;
+    var base = lv * lv + (touching ? CONFIG.MAINT.borderTax : 0);
+    if (base <= 0) return 0;
+    /* 距离系数：每离核 1 格 +4%。远端格（dist 40）的水耗是腹地的 2.6 倍 ——
+     * 「把水送到前线」有真实代价，扩张的边界由经济决定。 */
+    return base * (1 + (nd.dist || 0) * CONFIG.MAINT.distPerStep);
   }
 
   function totalMaintainCost(state) {
