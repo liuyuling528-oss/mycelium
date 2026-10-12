@@ -89,7 +89,7 @@
     console.warn('存档损坏，已开新局', e);
     try { localStorage.removeItem(UI.KEY); } catch (e2) {}
   }
-  if (!state) state = Sim.newGame(storedSeed(), {}, {});
+  if (!state) state = Sim.newGame(storedSeed(), {}, {}, 0, 0, UI.storedDifficulty());
 
   /* 读档 / 新局之后，场景里那一堆「上一局的缓存」都要清掉，
    * 否则地图会残留旧格子、弹出层会错位。集中成一处，避免漏改。 */
@@ -181,7 +181,7 @@
         : '开始新游戏？\n（永久基因、知识、转生记录会全部清空，无法撤销）';
       if (!confirm(msg)) return false;
       var genes = keepGenes ? this.state.genes : {};
-      var s = Sim.newGame(randomSeed(), genes, {});
+      var s = Sim.newGame(randomSeed(), genes, {}, 0, 0, UI.storedDifficulty());
       this.state = s;
       UI.rebind(s);
       resetSceneCache();

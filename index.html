@@ -42,6 +42,17 @@
         <button id="mKeep">新一局（保留基因）</button>
         <button id="mFresh">全新开始</button>
       </div>
+      <div class="menu-diff">
+        <div class="menu-diff-label">对手菌种难度</div>
+        <div class="diff-btns" id="diffBtns">
+          <button data-diff="0">无人机<span>和平</span></button>
+          <button data-diff="1">简单</button>
+          <button data-diff="2">中等</button>
+          <button data-diff="3" class="on">困难</button>
+          <button data-diff="4">魔鬼</button>
+        </div>
+        <div class="hint" id="diffDesc" style="margin-top:5px">当前平衡基准：先站稳再反超</div>
+      </div>
       <div class="menu-foot">
         <span class="hint" id="mStats"></span>
         <button id="mDev" class="tiny">开发者面板</button>
@@ -64,6 +75,11 @@
     <div class="dev-row"><span>孢子速率 ×</span><input id="dSpore" type="number" min="0" max="50" step="0.5" value="1"></div>
     <div class="dev-row"><span>对手菌种</span>
       <label style="display:inline"><input id="dEnemy" type="checkbox" checked> 启用扩张</label></div>
+    <div class="dev-row"><span>对手难度</span>
+      <select id="dDiff">
+        <option value="0">无人机（和平）</option><option value="1">简单</option>
+        <option value="2">中等</option><option value="3">困难</option><option value="4">魔鬼</option>
+      </select></div>
     <div class="dev-btns">
       <button id="dPlace" class="tiny">放置对手落点（点地图）</button>
       <button id="dClearEnemy" class="tiny">清除对手</button>

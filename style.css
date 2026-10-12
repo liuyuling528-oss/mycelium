@@ -567,3 +567,26 @@ button.tiny.on { border-color: #4d8f88; background: #16292a; color: #9fe8dd; }
   box-shadow: 0 0 18px rgba(255, 233, 168, .18);
 }
 .reroll-btn:disabled { opacity: .38; cursor: default; }
+
+
+/* ---- 主菜单的难度选择（五档）---- */
+.menu-diff { margin-top: 16px; text-align: left; }
+.menu-diff-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.diff-btns { display: flex; gap: 5px; }
+.diff-btns button {
+  flex: 1;
+  padding: 7px 2px;
+  font-size: 12.5px;
+  border-radius: 7px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+.diff-btns button span { font-size: 10px; color: var(--muted); }
+.diff-btns button.on {
+  border-color: #8a7434;
+  background: #26220f;
+  color: #ffe9a8;
+}
+.diff-btns button.on span { color: #bfae72; }

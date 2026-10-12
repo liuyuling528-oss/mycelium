@@ -11,6 +11,11 @@ var UI = (function () {
   var C, state, el = {}, upRows = {}, geneRows = {}, abRows = {}, msRows = {}, strainRows = {};
   var logBuf = [], seenSoils = {}, acc = 0, lastAgLocked = null, lastStructSig = '', lastTreeSig = '';
   var KEY = 'mycelium_save_v1';
+  var DIFFKEY = 'mycelium_difficulty_v1';
+  function storedDifficulty() {
+    var v = parseInt(localStorage.getItem(DIFFKEY), 10);
+    return isNaN(v) ? 3 : v;      // 默认困难（原平衡口径）
+  }
   var SEEDKEY = 'mycelium_seed_v1';
   /* 槽位 key。特意和 KEY 分开命名空间，避免和自动存档撞车 ——
    * 上一版只有一个 key，「读取」读的就是被自动存档覆盖过的当前局。 */
@@ -68,7 +73,7 @@ var UI = (function () {
     'btnSave', 'btnNew', 'slotList', 'saveHint', 'toast',
     'choiceOverlay', 'choiceCards', 'choiceHint', 'dRefresh',
     /* 主菜单 + 开发者面板 */
-    'menu', 'mContinue', 'mKeep', 'mFresh', 'mStats', 'mDev',
+    'menu', 'mContinue', 'mKeep', 'mFresh', 'mStats', 'mDev', 'diffBtns', 'diffDesc', 'dDiff',
     'devPanel', 'btnMenu', 'dTime', 'dWater', 'dNutrient', 'dSpore', 'dEnemy',
     'dPlace', 'dClearEnemy', 'dPrestige', 'dRes', 'dClose'].forEach(function (id) { el[id] = document.getElementById(id); });
 
@@ -436,6 +441,29 @@ var UI = (function () {
       if (window.MYC.game.newGame(false)) hideMenu();
     });
     el.mDev.addEventListener('click', toggleDev);
+    /* 难度选择：点选即存 localStorage（开新局生效）；「继续」沿用存档难度。
+     * 高亮跟随所选档；描述行显示该档文案。 */
+    if (el.diffBtns) {
+      el.diffBtns.addEventListener('click', function (ev) {
+        var b = ev.target;
+        while (b && b !== el.diffBtns && b.getAttribute('data-diff') == null) b = b.parentNode;
+        if (!b || b === el.diffBtns) return;
+        var d = parseInt(b.getAttribute('data-diff'), 10);
+        localStorage.setItem(DIFFKEY, String(d));
+        renderDiffBtns(d);
+      });
+      renderDiffBtns(storedDifficulty());
+    }
+  }
+
+  function renderDiffBtns(sel) {
+    if (!el.diffBtns) return;
+    var diffs = C.ENEMY.DIFFS;
+    el.diffBtns.querySelectorAll('button').forEach(function (b) {
+      var d = parseInt(b.getAttribute('data-diff'), 10);
+      b.classList.toggle('on', d === sel);
+      if (d === sel && el.diffDesc) el.diffDesc.textContent = diffs[d].name + ' —— ' + diffs[d].desc;
+    });
   }
 
   function toggleDev() {
@@ -462,6 +490,7 @@ var UI = (function () {
     el.dNutrient.value = String(d.nutrient);
     el.dSpore.value = String(d.spore);
     el.dEnemy.checked = d.enemyOn !== false;
+    if (el.dDiff) el.dDiff.value = String(state.difficulty == null ? 3 : state.difficulty);
   }
 
   function wireDev() {
@@ -474,6 +503,16 @@ var UI = (function () {
         state.dev[pair[1]] = Math.max(0, parseFloat(el[pair[0]].value) || 0);
         toast('资源倍率 ' + pair[1] + ' ×' + state.dev[pair[1]]);
       });
+    });
+    /* 难度实时切换（dev 的意义就是即时改世界）：和平=清走对手；
+     * 切到有对手的档且场上没有对手 → 立即落一份菌斑 */
+    el.dDiff.addEventListener('change', function () {
+      var d = parseInt(el.dDiff.value, 10);
+      window.MYC.Sim.setDifficulty(state, d);
+      localStorage.setItem(DIFFKEY, String(d));
+      renderDiffBtns(d);
+      window.MYC.game.dirty = true;
+      toast('对手难度：' + window.MYC.CONFIG.ENEMY.DIFFS[d].name);
     });
     el.dEnemy.addEventListener('change', function () {
       state.dev.enemyOn = el.dEnemy.checked;
@@ -1113,6 +1152,7 @@ var UI = (function () {
     init: init, update: update, toast: toast, pushLog: pushLog, rebind: rebind,
     renderSlots: renderSlots, toggleSlots: toggleSlots,
     showMenu: showMenu, hideMenu: hideMenu, toggleDev: toggleDev,
+    storedDifficulty: storedDifficulty, DIFFKEY: DIFFKEY,
     KEY: KEY, SEEDKEY: SEEDKEY, SLOTN: SLOTN, slotKey: slotKey, fmt: fmt
   };
 })();

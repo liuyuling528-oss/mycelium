@@ -64,7 +64,7 @@ var Sim = (function () {
   /* mapTier：地图已扩展的档位（0 = 基础尺寸）。由「转生抉择」里的地图卡累加。
    * 老调用方（测试 / 存档迁移）只传 prestiges 也能跑，但地图尺寸**不再**由
    * prestiges 推导 —— 那里现在只记「转了多少次」这个统计量。 */
-  function newGame(seed, genes, knowledge, prestiges, mapTier) {
+  function newGame(seed, genes, knowledge, prestiges, mapTier, difficulty) {
     var m = mapSizeFor(mapTier || 0);
     var state = {
       seed: seed >>> 0,
@@ -127,6 +127,10 @@ var Sim = (function () {
       /* 对手菌种（敌对 AI 菌落）。占格用 grid 上的 enemy 标记 + 这里的
        * cells 列表（供渲染/存档/转生清场统计）。null = 初始化前。 */
       enemy: null,
+      /* 对手难度：0 无人机（和平，不上对手）/ 1 简单 / 2 中等 / 3 困难（默认）/
+       * 4 魔鬼。enemyCfg 是所选难度的参数快照（存档自包含，读档不用查表）。 */
+      difficulty: (difficulty == null ? 3 : difficulty),
+      enemyCfg: null,
       /* 开发者面板的运行时旋钮（**会话级**，不进存档 —— 存档里出现
        * ×10 倍率的资源会污染正常平衡口径）。老存档没有这个字段，
        * 所有用到的地方都要 dev 容错读取。 */
@@ -146,6 +150,7 @@ var Sim = (function () {
     CONFIG.GENES.forEach(function (g) { if (state.genes[g.key] == null) state.genes[g.key] = 0; });
     applyMapSize(state, m);
 
+    applyDifficulty(state, state.difficulty == null ? 3 : state.difficulty);
     generateMap(state);
     initEnemy(state);
     state.res.water = CONFIG.START.water + state.genes.gWater * 150;
@@ -861,9 +866,39 @@ var Sim = (function () {
     }
   }
 
+  /* 应用难度：把 ENEMY.DIFFS[d] 的参数快照进 state（存档自包含）。
+   * d=0（无人机/和平）→ 移除对手；从和平切回有对手的档 → 立即落一份菌斑。 */
+  function applyDifficulty(state, d) {
+    var diffs = CONFIG.ENEMY.DIFFS;
+    d = Math.max(0, Math.min(diffs.length - 1, d | 0));
+    state.difficulty = d;
+    var c = diffs[d];
+    state.enemyCfg = {
+      startDelay: c.startDelay, interval: c.interval, baseCap: c.baseCap,
+      capPerSec: c.capPerSec, blob: c.blob, hardCap: c.hardCap,
+      revealRadius: c.revealRadius, name: c.name
+    };
+    if (d === 0) {
+      if (state.enemy) removeEnemy(state);
+    } else if (!state.enemy && state.grid && state.grid.length) {
+      initEnemy(state);
+    }
+    return state.enemyCfg;
+  }
+
+  /* 开发者面板 / 菜单切换难度的公开入口 */
+  function setDifficulty(state, d) {
+    applyDifficulty(state, d);
+    invalidateCands(state);
+    return state.difficulty;
+  }
+
   /* 在新地图上落地一簇对手菌斑：选离玩家核心最远的角落，
    * 从最近的可用格起 BFS 铺一小圈。全图找不到落脚点就放弃（极端岩石图）。 */
   function initEnemy(state) {
+    /* 无人机（和平）难度：完全不上对手 */
+    if (state.difficulty === 0) { state.enemy = null; return; }
+    var E = state.enemyCfg || CONFIG.ENEMY;
     clearEnemyFlags(state);
     var W = state.mapW, H = state.mapH;
     var corners = [[0, 0], [W - 1, 0], [0, H - 1], [W - 1, H - 1]];
@@ -888,10 +923,10 @@ var Sim = (function () {
     var cells = [[ex, ey]];
     state.grid[idx(ex, ey)].enemy = true;
     var frontier = [[ex, ey]], guard = 0;
-    while (cells.length < CONFIG.ENEMY.blob && frontier.length && guard++ < 200) {
+    while (cells.length < E.blob && frontier.length && guard++ < 200) {
       var cur = frontier.shift();
       var nb = neighbours(cur[0], cur[1]);
-      for (var k = 0; k < nb.length && cells.length < CONFIG.ENEMY.blob; k++) {
+      for (var k = 0; k < nb.length && cells.length < E.blob; k++) {
         var bx = nb[k][0], by = nb[k][1];
         if (!inBounds(bx, by)) continue;
         var bc = state.grid[idx(bx, by)];
@@ -932,7 +967,7 @@ var Sim = (function () {
     if (!best) return false;
     best.c.enemy = true;
     en.cells.push([best.x, best.y]);
-    var r = CONFIG.ENEMY.revealRadius;
+    var r = (state.enemyCfg && state.enemyCfg.revealRadius) || 2;
     for (var dy2 = -r; dy2 <= r; dy2++) {
       for (var dx2 = -r; dx2 <= r; dx2++) {
         var rx = best.x + dx2, ry = best.y + dy2;
@@ -953,10 +988,11 @@ var Sim = (function () {
     var cells = [[x, y]];
     c0.enemy = true;
     var frontier = [[x, y]], guard = 0;
-    while (cells.length < CONFIG.ENEMY.blob && frontier.length && guard++ < 200) {
+    var blobN = (state.enemyCfg && state.enemyCfg.blob) || CONFIG.ENEMY.blob;
+    while (cells.length < blobN && frontier.length && guard++ < 200) {
       var cur = frontier.shift();
       var nb = neighbours(cur[0], cur[1]);
-      for (var k = 0; k < nb.length && cells.length < CONFIG.ENEMY.blob; k++) {
+      for (var k = 0; k < nb.length && cells.length < blobN; k++) {
         var bx = nb[k][0], by = nb[k][1];
         if (!inBounds(bx, by)) continue;
         var bc = state.grid[idx(bx, by)];
@@ -979,7 +1015,7 @@ var Sim = (function () {
   }
 
   function tickEnemy(state, dt) {
-    var E = CONFIG.ENEMY;
+    var E = state.enemyCfg || CONFIG.ENEMY;
     var en = state.enemy;
     if (!en) return;
     /* 开发者面板的对手开关：关 = 冻结（版图保留但不扩张），不是清除 */
@@ -2780,6 +2816,8 @@ var Sim = (function () {
        * 会经 newGame 重新落地一个初始菌斑 —— 不显式记「已清除」的话，
        * 清除→存档→读档对手会凭空复活（实测踩过）。 */
       enemyRemoved: !state.enemy,
+      difficulty: state.difficulty == null ? 3 : state.difficulty,
+      enemyCfg: state.enemyCfg || null,
       enemy: state.enemy ? {
         x: state.enemy.x, y: state.enemy.y, timer: state.enemy.timer,
         cells: state.enemy.cells
@@ -2818,6 +2856,10 @@ var Sim = (function () {
     if (d.choiceSlots != null) state.choiceSlots = d.choiceSlots;
     if (d.choiceCenter != null) state.choiceCenter = d.choiceCenter;
     if (d.choiceRefresh != null) state.choiceRefresh = d.choiceRefresh;
+    /* 对手难度：旧档没有 → 困难（原平衡口径）。
+     * 注意顺序：applyDifficulty 会落初始菌斑，随后的 enemy/enemyRemoved
+     * 恢复逻辑会按存档覆盖它。 */
+    applyDifficulty(state, d.difficulty == null ? 3 : d.difficulty);
     state.cd = d.cd || {};
     state.unlocked = d.unlocked || {};
     state.pulseT = d.pulseT || 0;
@@ -2917,7 +2959,7 @@ var Sim = (function () {
   return {
     newGame: newGame, tick: tick, growAt: growAt, canGrowAt: canGrowAt,
     /* 开发者工具（dev 面板用） */
-    placeEnemyAt: placeEnemyAt, removeEnemy: removeEnemy,
+    placeEnemyAt: placeEnemyAt, removeEnemy: removeEnemy, setDifficulty: setDifficulty,
     removeNode: removeNode,
     mapSizeFor: mapSizeFor,
     /* applyMapSize 必须导出：地图尺寸是**模块级单例**（_MAP），
