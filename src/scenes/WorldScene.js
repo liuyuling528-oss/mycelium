@@ -969,6 +969,13 @@
       var st = game.state;
       if (!st) return;
 
+      /* 败北：人机转生成功 → 世界暂停 + 弹败北画面（本局结束）。
+       * lost 后 state 不再推进（UI 层照常渲染最后一帧）—— 重开/回菜单都在画面上。 */
+      if (st.lost && !game.menuOpen) {
+        game.menuOpen = true;
+        if (game.ui && game.ui.showDefeat) game.ui.showDefeat();
+      }
+
       /* 转生会当场换一张（更大的）图：尺寸一变，地形缓存/已探明数/镜头全部重来。
        * 自己检测而不是指望 UI 记得通知 —— 读档、换种子这些路径同样会换图。 */
       if (st.mapW !== this.seenMapW || st.mapH !== this.seenMapH) {

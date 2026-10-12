@@ -61,7 +61,7 @@ var UI = (function () {
     state = game.state;
 
     ['clock', 'vWater', 'rWater', 'vNutrient', 'rNutrient', 'vSpore', 'rSpore',
-     'sNodes', 'sDist', 'sLost', 'sRun', 'sRival', 'sRivalRes', 'policy', 'policyHint', 'autoGrow',
+     'sNodes', 'sDist', 'sLost', 'sRun', 'sRival', 'sRivalRes', 'sRivalSpore', 'policy', 'policyHint', 'autoGrow',
      'autoGrowRow', 'autoGrowLabel', 'autoRuleRow', 'ruleMaxDist', 'ruleMinYield', 'ruleHint',
      'upgrades', 'prestigeCard', 'pText', 'pBar', 'pHint', 'pBtn',
      'geneCard', 'genes', 'geneLeft', 'log', 'seedTxt',
@@ -75,6 +75,8 @@ var UI = (function () {
     /* 主菜单 + 开发者面板 */
     'menu', 'mContinue', 'mKeep', 'mFresh', 'mStats', 'mDev', 'diffBtns', 'diffDesc', 'dDiff',
     'devPanel', 'btnMenu', 'dTime', 'dWater', 'dNutrient', 'dSpore', 'dEnemy',
+    'debuffOverlay', 'debuffHint', 'debuffCards', 'dDebuffRefresh',
+    'defeatOverlay', 'defeatText', 'defAgain', 'defMenu',
     'dPlace', 'dClearEnemy', 'dPrestige', 'dRes', 'dClose'].forEach(function (id) { el[id] = document.getElementById(id); });
 
     el.seedTxt.textContent = '种子 ' + state.seed;
@@ -115,6 +117,36 @@ var UI = (function () {
     /* 刷新按钮：转生弹窗里的独立按钮（不在 cards 容器里，单独接） */
     var dRefresh = document.getElementById('dRefresh');
     if (dRefresh) dRefresh.addEventListener('click', doRefreshChoice);
+    /* 削弱三选一：卡片点击（事件委托）+ 刷新（与卡池共用计数） */
+    if (el.debuffCards) {
+      el.debuffCards.addEventListener('click', function (ev) {
+        var b = ev.target;
+        while (b && b !== el.debuffCards && b.getAttribute('data-debuff') == null) b = b.parentNode;
+        if (!b || b === el.debuffCards) return;
+        pickDebuff(b.getAttribute('data-debuff'));
+      });
+    }
+    if (el.dDebuffRefresh) {
+      el.dDebuffRefresh.addEventListener('click', function () {
+        var r = window.MYC.Sim.refreshChoice(state);   // 共用 refreshChoice：同一条 n² 曲线
+        if (!r.ok) { toast(r.reason); return; }
+        pushLog('刷新了削弱候选（-' + r.cost + ' 转生点）');
+        renderDebuff();
+      });
+    }
+    /* 败北画面按钮 */
+    if (el.defAgain) el.defAgain.addEventListener('click', function () {
+      hideDefeat();
+      window.MYC.game.newGame(false);        // 全新开始（彻底重来）
+      hideDebuffPick(); hideChoice();
+    });
+    if (el.defMenu) el.defMenu.addEventListener('click', function () {
+      hideDefeat();
+      window.MYC.game.save(true);
+      showMenu(true);
+    });
+    /* 读档时如果存档里有没选完的卡/削弱，立刻把弹窗恢复出来 ——*/
+    if (state.pendingDebuff && !state.pendingChoice) showDebuffPick();
     /* 读档时如果存档里有没选完的卡，立刻把弹窗恢复出来 ——
      * 否则玩家会带着一个「看不见的待选状态」继续玩，
      * 而下一次转生会把那张卡直接覆盖掉（奖励蒸发）。 */
@@ -643,10 +675,10 @@ var UI = (function () {
   function renderChoice() {
     var pc = state.pendingChoice;
     if (!pc || !el.choiceCards) { hideChoice(); return; }
-    var cost = (pc.refresh + 1) * (pc.refresh + 1);
+    var cost = (state.choiceRefresh + 1) * (state.choiceRefresh + 1);
     el.choiceHint.innerHTML = '第 ' + pc.forPrestige + ' 次转生 —— 点一张卡带走；' +
       '转生点 <b>' + (state.choicePoints || 0) + '</b>' +
-      '　·　刷新费用 ' + cost + '（第 ' + (pc.refresh + 1) + ' 次）' +
+      '　·　刷新费用 ' + cost + '（与削弱选择共用次数）' +
       '　·　栏目 ' + pc.slots.length;
     var btn = document.getElementById('dRefresh');
     if (btn) {
@@ -679,6 +711,8 @@ var UI = (function () {
       pushLog('世界扩大到 ' + state.mapW + '×' + state.mapH);
     }
     hideChoice();
+    /* 卡选完 → 削弱三选一接力弹出（转生流程的第二段，强制选） */
+    if (state.pendingDebuff) showDebuffPick();
     window.MYC.game.save(true);
     UI.update(0, window.MYC.game);
   }
@@ -689,6 +723,64 @@ var UI = (function () {
     if (!r.ok) { toast(r.reason); return; }
     pushLog('刷新了栏目（-' + r.cost + ' 转生点）');
     renderChoice();
+    if (!state.pendingDebuff) renderDebuff();   // 削弱候选跟卡池一起重摇了
+  }
+
+  /* ---- 人机削弱三选一（转生后强制挑一个）---- */
+  function showDebuffPick() {
+    renderDebuff();
+    if (el.debuffOverlay) el.debuffOverlay.classList.remove('hidden');
+  }
+  function hideDebuffPick() {
+    if (el.debuffOverlay) el.debuffOverlay.classList.add('hidden');
+  }
+  function renderDebuff() {
+    var pd = state.pendingDebuff;
+    if (!pd || !el.debuffCards) { hideDebuffPick(); return; }
+    var cost = (state.choiceRefresh + 1) * (state.choiceRefresh + 1);
+    el.debuffHint.innerHTML = '第 ' + pd.forPrestige + ' 次转生 —— 挑一个挂给对手（可重复叠加）' +
+      '　·　转生点 <b>' + (state.choicePoints || 0) + '</b>　·　下次刷新 ' + cost;
+    var btn = el.dDebuffRefresh;
+    if (btn) {
+      btn.textContent = '⟳ 刷新削弱（' + cost + ' 点，与卡池共用次数）';
+      btn.disabled = (state.choicePoints || 0) < cost;
+    }
+    var defs = window.MYC.CONFIG.ENEMY.DEBUFFS;
+    el.debuffCards.innerHTML = pd.slots.map(function (k) {
+      var d = null;
+      defs.forEach(function (x) { if (x.key === k) d = x; });
+      if (!d) return '';
+      return '<button class="choice-card gene" data-debuff="' + esc(k) + '">' +
+               '<span class="cc-kind">削弱</span>' +
+               '<span class="cc-name">' + esc(d.name) + '</span>' +
+               '<span class="cc-desc">' + esc(d.desc) + '</span>' +
+             '</button>';
+    }).join('');
+  }
+  function pickDebuff(key) {
+    var r = window.MYC.Sim.applyDebuffChoice(state, key);
+    if (!r.ok) { toast(r.reason); return; }
+    var d = null;
+    window.MYC.CONFIG.ENEMY.DEBUFFS.forEach(function (x) { if (x.key === key) d = x; });
+    pushLog('人机削弱：' + (d ? d.name : key) + '（已叠加 ×' + r.count + '）');
+    toast('已给对手挂上「' + (d ? d.name : key) + '」');
+    hideDebuffPick();
+    window.MYC.game.save(true);
+    UI.update(0, window.MYC.game);
+  }
+
+  /* ---- 败北画面（人机转生成功）---- */
+  function showDefeat() {
+    if (!el.defeatOverlay) return;
+    var lost = state.lost || {};
+    if (el.defeatText) {
+      el.defeatText.innerHTML = '对手菌种完成了它的转生 —— 这片地下世界易主了。<br>' +
+        '坚持了 <b>' + clk(lost.at || state.t) + '</b>，你的本局转生 ' + (state.prestiges || 0) + ' 次。';
+    }
+    el.defeatOverlay.classList.remove('hidden');
+  }
+  function hideDefeat() {
+    if (el.defeatOverlay) el.defeatOverlay.classList.add('hidden');
   }
 
   /* ---------------------------------------------------------------- 提示 */
@@ -833,6 +925,11 @@ var UI = (function () {
     if (el.sRival) el.sRival.textContent = state.enemy ? state.enemy.cells.length : 0;
     /* 敌菌经济读数：dev 面板看它有多少钱（和平档/无对手时为 0） */
     if (el.sRivalRes) el.sRivalRes.textContent = Math.floor(state.enemyRes || 0);
+    /* 敌菌的转生竞速读数：攒多少 / 需要多少 —— 末日时钟必须可见 */
+    if (el.sRivalSpore) {
+      var need = window.MYC.Sim.enemyPrestigeNeed(state);
+      el.sRivalSpore.textContent = Math.floor(state.enemySpore || 0) + ' / ' + need;
+    }
 
     /* 结构配额：这是本机制最需要「一直被看见」的数字 ——
      * 上限少到必须取舍，所以玩家得随时知道还剩几格。 */
@@ -1154,6 +1251,7 @@ var UI = (function () {
     init: init, update: update, toast: toast, pushLog: pushLog, rebind: rebind,
     renderSlots: renderSlots, toggleSlots: toggleSlots,
     showMenu: showMenu, hideMenu: hideMenu, toggleDev: toggleDev,
+    showDefeat: showDefeat, showDebuffPick: showDebuffPick,
     storedDifficulty: storedDifficulty, DIFFKEY: DIFFKEY,
     KEY: KEY, SEEDKEY: SEEDKEY, SLOTN: SLOTN, slotKey: slotKey, fmt: fmt
   };

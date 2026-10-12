@@ -377,15 +377,30 @@ var CONFIG = (function () {
     hardCap: 480,
     blob: 8,
     revealRadius: 2,
+    /* ---- 敌菌的转生竞速（2026-10-12 用户设计）----
+     * 敌菌也在攒自己的孢子，攒够 = 它转生成功 = **玩家输**。
+     * 需求 = 玩家当前转生成本 × prestigeMul（各难度档不同）；
+     * 魔鬼档特殊：倍率从 0.5 起每经一次玩家转生 -0.1，四次后钉在 0.1。 */
+    sporeRate: 0.05,         // 敌菌把经济收入的 5% 转化成转生孢子
+    sporeBase: 0.15,         // 基础发酵：哪怕只有核心也缓慢积累（防死局）
+    captureCostMul: 3,       // 拔核战：占领敌菌核心四邻格的代价 ×3（攻坚税）
+    /* 玩家每次转生后可选的「人机削弱」池（效果方向 = 对敌菌不利）。
+     * 每选一次该计数 +1，效果按 0.8^n 叠乘；刷新与转生卡池共用 n² 计数。 */
+    DEBUFFS: [
+      { key: 'waterGain',    name: '水分获取 −20%', desc: '敌菌的经济收入再打八折' },
+      { key: 'nutrientGain', name: '养料获取 −20%', desc: '敌菌的经济收入再打八折' },
+      { key: 'waterUse',     name: '水分使用 +20%', desc: '敌菌每扩张一格多付两成' },
+      { key: 'sporeGain',    name: '孢子获取 −20%', desc: '敌菌的转生孢子积累放缓' }
+    ],
     /* 开局可选的五档难度（用户口径：现在的算困难）。
      * 和平 = 完全不上对手。参数单调递增，魔鬼 ≈ 旧版 0.7s/0.35
      * 的碾压曲线（留着手感参考与自虐选项）。 */
     DIFFS: [
-      { name: '和平', desc: '没有对手，安心造网络',      startDelay: 0,   interval: 999, baseCap: 0,   capPerSec: 0,    blob: 0,  hardCap: 0,   revealRadius: 0, eff: 0,    costMul: 0  },
-      { name: '简单',   desc: '龟速扩张，几乎无压力',            startDelay: 180, interval: 6.0, baseCap: 20,  capPerSec: 0.08, blob: 6,  hardCap: 300, revealRadius: 2, eff: 0.35, costMul: 1.2  },
-      { name: '中等',   desc: '温和压力，偶尔要回头看一眼',      startDelay: 120, interval: 4.0, baseCap: 22,  capPerSec: 0.12, blob: 8,  hardCap: 400, revealRadius: 2, eff: 0.5,  costMul: 1.1  },
-      { name: '困难',   desc: '当前平衡基准：先站稳再反超',      startDelay: 60,  interval: 3.0, baseCap: 24,  capPerSec: 0.18, blob: 8,  hardCap: 480, revealRadius: 2, eff: 0.7,  costMul: 1.0, prowess: 2 },
-      { name: '魔鬼',   desc: '旧版碾压曲线 —— 自虐选项',        startDelay: 30,  interval: 1.5, baseCap: 32,  capPerSec: 0.30, blob: 12, hardCap: 600, revealRadius: 2, eff: 1.0,  costMul: 0.8, prowess: 3 }
+      { name: '和平', desc: '没有对手，安心造网络',      startDelay: 0,   interval: 999, baseCap: 0,   capPerSec: 0,    blob: 0,  hardCap: 0,   revealRadius: 0, eff: 0,    costMul: 0  , prestigeMul: 0 },
+      { name: '简单',   desc: '龟速扩张，几乎无压力',            startDelay: 180, interval: 6.0, baseCap: 20,  capPerSec: 0.08, blob: 6,  hardCap: 300, revealRadius: 2, eff: 0.35, costMul: 1.2  , prestigeMul: 1.5 },
+      { name: '中等',   desc: '温和压力，偶尔要回头看一眼',      startDelay: 120, interval: 4.0, baseCap: 22,  capPerSec: 0.12, blob: 8,  hardCap: 400, revealRadius: 2, eff: 0.5,  costMul: 1.1  , prestigeMul: 1.0 },
+      { name: '困难',   desc: '当前平衡基准：先站稳再反超',      startDelay: 60,  interval: 3.0, baseCap: 24,  capPerSec: 0.18, blob: 8,  hardCap: 480, revealRadius: 2, eff: 0.7,  costMul: 1.0, prowess: 2 , prestigeMul: 0.5 },
+      { name: '魔鬼',   desc: '旧版碾压曲线 —— 自虐选项',        startDelay: 30,  interval: 1.5, baseCap: 32,  capPerSec: 0.30, blob: 12, hardCap: 600, revealRadius: 2, eff: 1.0,  costMul: 0.8, prowess: 3 , prestigeMul: 0.5 }
     ]
   };
 

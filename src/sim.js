@@ -132,6 +132,13 @@ var Sim = (function () {
       difficulty: (difficulty == null ? 3 : difficulty),
       enemyCfg: null,
       enemyRes: 60,                // 敌菌养分池（和平档无用；初始够铺几格）
+      /* ---- 敌菌的转生竞速 ----
+       * enemySpore：敌菌攒的转生孢子，攒够 = 它转生 = **玩家输**；
+       * enemyDebuffs：玩家每次转生后挂的削弱计数（0.8^n 叠乘）；
+       * pendingDebuff：待选的削弱三选一（转生后弹，强制选一个）。 */
+      enemySpore: 0,
+      enemyDebuffs: {},
+      pendingDebuff: null,
       /* 开发者面板的运行时旋钮（**会话级**，不进存档 —— 存档里出现
        * ×10 倍率的资源会污染正常平衡口径）。老存档没有这个字段，
        * 所有用到的地方都要 dev 容错读取。 */
@@ -751,6 +758,7 @@ var Sim = (function () {
 
   function candidates(state) {
     if (state._cands) return state._cands;
+    var en = state.enemy;                 // 拔核战：只有敌菌核心四邻可攻坚
     var seen = {}, out = [];
     for (var i = 0; i < state.nodes.length; i++) {
       var nd = state.nodes[i], nb = neighbours(nd.x, nd.y);
@@ -758,8 +766,19 @@ var Sim = (function () {
         var x = nb[k][0], y = nb[k][1], key = x + ',' + y;
         if (seen[key]) continue;
         if (state.nodeAt[idx(x, y)] != null) continue;
-        /* 对手菌种的地块：领土规则 —— 谁先占归谁，玩家的菌丝长不进去 */
-        if (state.grid[idx(x, y)].enemy) continue;
+        /* 对手菌种的地块：领土规则 —— 谁先占归谁，玩家的菌丝长不进去。
+         * 唯一例外（拔核战）：与敌菌核心正交相邻的格可以**攻坚占领**，
+         * 代价 ×captureCostMul —— 占齐四邻，敌菌核心就死。 */
+        if (state.grid[idx(x, y)].enemy) {
+          var exd = Math.abs(x - en.x) + Math.abs(y - en.y);
+          if (!en || exd !== 1) continue;
+          seen[key] = 1;
+          var cd = nd.dist + 1;
+          out.push({ x: x, y: y, dist: cd, soil: state.grid[idx(x, y)].soil,
+                     capture: true,
+                     cost: Math.round(growCostAt(state, x, y, cd) * (CONFIG.ENEMY.captureCostMul || 3)) });
+          continue;
+        }
         if (SOILS[state.grid[idx(x, y)].soil].solid) continue;
         seen[key] = 1;
         var dist = nd.dist + 1;
@@ -795,6 +814,16 @@ var Sim = (function () {
     state.nodes.push(nd);
     state.nodeAt[idx(x, y)] = nd.id;
     state.grid[idx(x, y)].node = nd.id;
+    /* 拔核战：玩家攻进的格若挂着敌菌标记 → 该格易主（从敌菌版图剔除）。
+     * 不清的话敌菌经济继续把这格算作自己的、渲染层还会画敌菌贴图。 */
+    if (state.grid[idx(x, y)].enemy && state.enemy) {
+      state.grid[idx(x, y)].enemy = false;
+      var enCells = state.enemy.cells;
+      for (var ci = 0; ci < enCells.length; ci++) {
+        if (enCells[ci][0] === x && enCells[ci][1] === y) { enCells.splice(ci, 1); break; }
+      }
+      invalidateCands(state);
+    }
     // 里程碑进度（m10）：历史最高节点数 + 历史连上过的基质。
     // 放在 counters 里跨转生保留 —— 转生清空网络不该倒扣成就进度。
     if (state.nodes.length > (state.counters.maxNodes || 0)) state.counters.maxNodes = state.nodes.length;
@@ -867,6 +896,47 @@ var Sim = (function () {
     }
   }
 
+  /* ---- 敌菌的转生需求 ----
+   * = 玩家当前转生成本 × 档位倍率（简单 1.5 / 中等 1.0 / 困难 0.5）。
+   * 魔鬼档特殊：倍率从 0.5 起每经一次**玩家**转生 -0.1，四次后钉在 0.1 ——
+   * 局拖得越久它的门槛越低，压迫感随时间上升。 */
+  function enemyPrestigeNeed(state) {
+    var E = state.enemyCfg || CONFIG.ENEMY;
+    var mul;
+    if ((state.difficulty || 3) === 4) {
+      mul = Math.max(0.1, 0.5 - 0.1 * (state.prestiges || 0));
+    } else {
+      mul = (E.prestigeMul != null) ? E.prestigeMul : 0.5;
+    }
+    return Math.ceil(prestigeCost(state) * mul);
+  }
+
+  /* ---- 拔核成功：敌菌核心被玩家的四邻包围 → 死 ----
+   * 版图清零，立刻在地图**随机**别处重落一个新核心（新菌斑、经济重置）；
+   * 转生孢子进度**保留**（拔核是拖慢它的时钟，不是清空它的进度）。
+   * 随机落点用种子派生的确定性 RNG —— headless 同种子必得同一结果。 */
+  function killEnemyCore(state) {
+    clearEnemyFlags(state);
+    state.enemy = null;
+    state.counters.enemyKills = (state.counters.enemyKills || 0) + 1;
+    invalidateCands(state);
+    var W = state.mapW, H = state.mapH;
+    var rnd = RNG.makeRng((state.seed ^ (state.t * 7919) ^ 0x6f1f) >>> 0);
+    var picked = null;
+    for (var a = 0; a < 120 && !picked; a++) {
+      var x = (rnd() * W) | 0, y = (rnd() * H) | 0;
+      if (!inBounds(x, y)) continue;
+      var c = state.grid[idx(x, y)];
+      if (SOILS[c.soil].solid || c.node != null || c.enemy) continue;
+      if (Math.abs(x - state.core.x) + Math.abs(y - state.core.y) < 6) continue;  // 别落在玩家脸上
+      picked = [x, y];
+    }
+    if (picked) initEnemy(state, picked[0], picked[1]);
+    else initEnemy(state);               // 兜底：远角落
+    if (state.enemy) state.enemyRes = 60;   // 新核心经济重置
+    return true;
+  }
+
   /* 应用难度：把 ENEMY.DIFFS[d] 的参数快照进 state（存档自包含）。
    * d=0（无人机/和平）→ 移除对手；从和平切回有对手的档 → 立即落一份菌斑。 */
   function applyDifficulty(state, d) {
@@ -878,7 +948,7 @@ var Sim = (function () {
       startDelay: c.startDelay, interval: c.interval, baseCap: c.baseCap,
       capPerSec: c.capPerSec, blob: c.blob, hardCap: c.hardCap,
       revealRadius: c.revealRadius, name: c.name,
-      eff: c.eff, cost: c.cost, prowess: c.prowess
+      eff: c.eff, cost: c.cost, prowess: c.prowess, prestigeMul: c.prestigeMul
     };
     if (d === 0) {
       if (state.enemy) removeEnemy(state);
@@ -898,17 +968,22 @@ var Sim = (function () {
 
   /* 在新地图上落地一簇对手菌斑：选离玩家核心最远的角落，
    * 从最近的可用格起 BFS 铺一小圈。全图找不到落脚点就放弃（极端岩石图）。 */
-  function initEnemy(state) {
+  function initEnemy(state, ax, ay) {
     /* 无人机（和平）难度：完全不上对手 */
     if (state.difficulty === 0) { state.enemy = null; return; }
     var E = state.enemyCfg || CONFIG.ENEMY;
     clearEnemyFlags(state);
     var W = state.mapW, H = state.mapH;
-    var corners = [[0, 0], [W - 1, 0], [0, H - 1], [W - 1, H - 1]];
-    var corner = corners[0], bestD = -1;
-    for (var i = 0; i < 4; i++) {
-      var d = Math.abs(corners[i][0] - state.core.x) + Math.abs(corners[i][1] - state.core.y);
-      if (d > bestD) { bestD = d; corner = corners[i]; }
+    /* ax/ay = 指定落点（拔核重生用）；不给就走「离玩家核心最远的角落」 */
+    var corner = null;
+    if (ax != null && ay != null && inBounds(ax, ay)) corner = [ax, ay];
+    else {
+      var corners = [[0, 0], [W - 1, 0], [0, H - 1], [W - 1, H - 1]];
+      var bestD = -1;
+      for (var i = 0; i < 4; i++) {
+        var d = Math.abs(corners[i][0] - state.core.x) + Math.abs(corners[i][1] - state.core.y);
+        if (d > bestD) { bestD = d; corner = corners[i]; }
+      }
     }
     var ex = null, ey = null;
     for (var r = 0; r < 8 && ex == null; r++) {
@@ -1044,7 +1119,23 @@ var Sim = (function () {
     /* 开发者面板的对手开关：关 = 冻结（版图保留但不扩张），不是清除 */
     if (state.dev && state.dev.enemyOn === false) return;
     if (state.t < E.startDelay) return;
+    var db = state.enemyDebuffs || {};   // 玩家挂的削弱计数（下面的经济/成本/孢子都要用）
     en.timer += dt;
+    /* ---- 拔核判定（用户设计）：玩家占领敌菌核心正交四邻 → 核心死 ----
+     * 敌菌立刻在地图**随机**别处重落一个新核心（版图清零重铺）——
+     * 这是玩家拖慢敌菌转生时钟的核心反制手段。 */
+    var guarded = 0;
+    for (var gi = 0; gi < 4; gi++) {
+      var gx = en.x + (gi === 0 ? -1 : gi === 1 ? 1 : 0);
+      var gy = en.y + (gi === 2 ? -1 : gi === 3 ? 1 : 0);
+      /* 出界方向视为「天然封锁」（地图边界替玩家守了）—— 否则贴边核心
+       * 永远凑不齐四邻、拔核战对角落核心不可能成立。 */
+      if (!inBounds(gx, gy)) { guarded++; continue; }
+      if (state.nodeAt[idx(gx, gy)] == null) { guarded = -1; break; }
+      guarded++;
+    }
+    if (guarded === 4) { killEnemyCore(state); return; }
+
     /* ---- 敌菌经济 ----
      * 它占的格子也产出养分（和玩家抢同一片土地的产出），按 eff 吸收进
      * 自己的池子；扩张一格要花 cost。cost 已按档折算到经济中性 ——
@@ -1055,13 +1146,28 @@ var Sim = (function () {
       var ry = SOILS[rc.soil].yield || {};
       income += (ry.water || 0) + (ry.nutrient || 0) + (ry.spore || 0);
     }
-    var incomePerSec = income * (E.eff || 0.7);
+    var incomePerSec = income * (E.eff || 0.7)
+                     * Math.pow(0.8, db.waterGain || 0)
+                     * Math.pow(0.8, db.nutrientGain || 0);
     state.enemyRes = (state.enemyRes || 0) + incomePerSec * dt;
+
+    /* ---- 转生竞速：敌菌也在攒自己的孢子 ----
+     * 收入的 sporeRate 比例 + 基础发酵，经「孢子获取」削弱叠乘后入账；
+     * 攒够 enemyPrestigeNeed(state) → 敌菌转生 → 玩家输。 */
+    var sporeIn = (incomePerSec * (E.sporeRate != null ? E.sporeRate : 0.05)
+                 + (E.sporeBase != null ? E.sporeBase : 0.15))
+                * Math.pow(0.8, db.sporeGain || 0);
+    state.enemySpore = (state.enemySpore || 0) + sporeIn * dt;
+    if ((state.enemySpore || 0) >= enemyPrestigeNeed(state)) {
+      state.lost = { at: Math.round(state.t), spore: Math.round(state.enemySpore) };
+      return;
+    }
     /* 上限随本局时长增长 = 压力曲线：挂得越久，对手圈走的地越多 */
     var cap = Math.min(E.hardCap, Math.round(E.baseCap + state.t * E.capPerSec));
     /* 每格成本 = 当期每秒收入 × interval × costMul —— **自适应中性**：
      * 经济恰好维持 interval 节奏（固定成本会「前期穷死」，实测踩过）。 */
-    var cost = incomePerSec * E.interval * (E.costMul != null ? E.costMul : 1);
+    var cost = incomePerSec * E.interval * (E.costMul != null ? E.costMul : 1)
+             * Math.pow(1.2, db.waterUse || 0);   // 「水分使用 +20%」削弱
     while (en.timer >= E.interval) {
       en.timer -= E.interval;
       if (en.cells.length >= cap) { en.timer = 0; break; }
@@ -2653,6 +2759,7 @@ var Sim = (function () {
     /* 发三选一的卡。放在**世界重置之后** —— 地图卡要基于「刚换好的世界」
      * 算下一档尺寸，先发卡再重置会把新地图又冲掉一遍。 */
     offerChoice(state);
+    offerDebuff(state);     // 转生后必须给人机挑一个削弱（和平档自动跳过）
     return { ok: true, gained: gained, record: record };
   }
 
@@ -2764,6 +2871,37 @@ var Sim = (function () {
     return card;
   }
 
+  /* ---- 人机削弱三选一（2026-10-12 用户设计）----
+   * 每次转生后玩家必须从削弱池里挑一个挂给敌菌（效果方向=对敌菌不利）；
+   * 3 个随机候选可刷新 —— **刷新次数与转生卡池共用**（同一个 n² 计数与
+   * 转生点池）。同一项可重复选中，效果按 0.8^n 叠乘。和平档不弹。 */
+  function offerDebuff(state) {
+    if (!state.enemy) { state.pendingDebuff = null; return null; }
+    var pool = CONFIG.ENEMY.DEBUFFS.map(function (d) { return d.key; });
+    var rnd = RNG.makeRng((state.seed ^ 0x0def) >>> 0);
+    var slots = [];
+    var guard = 0;
+    while (slots.length < 3 && guard++ < 50) {
+      var k = pool[(rnd() * pool.length) | 0];
+      if (slots.indexOf(k) < 0) slots.push(k);
+    }
+    state.pendingDebuff = { slots: slots, forPrestige: state.prestiges, at: Date.now() };
+    return state.pendingDebuff;
+  }
+
+  /* 玩家挑了一个削弱。幂等：选完即清 pendingDebuff。 */
+  function applyDebuffChoice(state, key) {
+    var pd = state.pendingDebuff;
+    if (!pd) return { ok: false, reason: '没有待选的削弱' };
+    var valid = false;
+    for (var i = 0; i < pd.slots.length; i++) if (pd.slots[i] === key) valid = true;
+    if (!valid) return { ok: false, reason: '这个削弱不在候选里' };
+    if (!state.enemyDebuffs) state.enemyDebuffs = {};
+    state.enemyDebuffs[key] = (state.enemyDebuffs[key] || 0) + 1;
+    state.pendingDebuff = null;
+    return { ok: true, key: key, count: state.enemyDebuffs[key] };
+  }
+
   /* 转生时开池发牌：栏目数 = choiceSlots（跨转生累积，初始 3），
    * 基因点卡中心 = choiceCenter（跨转生累积，初始 5），刷新 0 次 */
   function offerChoice(state) {
@@ -2782,15 +2920,38 @@ var Sim = (function () {
    * 基因点填满）。费用 = 第 n 次刷新 n² 转生点（1/4/9/16…） */
   function refreshChoice(state) {
     var pc = state.pendingChoice;
-    if (!pc) return { ok: false, reason: '没有待选的卡' };
-    var cost = (pc.refresh + 1) * (pc.refresh + 1);
+    var pd = state.pendingDebuff;
+    if (!pc && !pd) return { ok: false, reason: '没有待选的卡' };
+    /* 刷新计数的唯一真身是 state.choiceRefresh（每次转生重置）——
+     * 卡池期和削弱期**共用同一条 n² 曲线**：卡池刷 2 次后，削弱期的
+     * 第一次刷新就是第 3 次（9 点），不是重新从 1 点起算。 */
+    var cost = (state.choiceRefresh + 1) * (state.choiceRefresh + 1);
     if ((state.choicePoints || 0) < cost) return { ok: false, reason: '转生点不足（需要 ' + cost + '）' };
     state.choicePoints -= cost;
-    pc.refresh++;
-    var rnd = RNG.makeRng((state.seed ^ 0x9E3779B9 ^ (pc.refresh * 0x85EBCA6B)) >>> 0);
-    pc.slots = [];
-    for (var i = 0; i < Math.min(8, state.choiceSlots || 3); i++) pc.slots.push(drawOne(pc, state, rnd));
+    state.choiceRefresh++;
+    if (pc) {
+      var rnd = RNG.makeRng((state.seed ^ 0x9E3779B9 ^ (state.choiceRefresh * 0x85EBCA6B)) >>> 0);
+      pc.slots = [];
+      for (var i = 0; i < Math.min(8, state.choiceSlots || 3); i++) pc.slots.push(drawOne(pc, state, rnd));
+      /* 卡池期刷新：削弱候选跟着一起重摇（同一杆秤） */
+      if (pd) offerDebuffRoll(state, pd, state.choiceRefresh);
+    } else if (pd) {
+      offerDebuffRoll(state, pd, state.choiceRefresh);
+    }
     return { ok: true, cost: cost };
+  }
+
+  /* 按刷新序号重摇削弱候选（确定性） */
+  function offerDebuffRoll(state, pd, refreshN) {
+    var pool = CONFIG.ENEMY.DEBUFFS.map(function (d) { return d.key; });
+    var rnd = RNG.makeRng((state.seed ^ 0x0def ^ (refreshN * 0x85EBCA6B)) >>> 0);
+    var slots = [], guard = 0;
+    while (slots.length < 3 && guard++ < 50) {
+      var k = pool[(rnd() * pool.length) | 0];
+      if (slots.indexOf(k) < 0) slots.push(k);
+    }
+    pd.slots = slots;
+    return pd;
   }
 
   /* 玩家选了一张卡。返回 {ok, card} 或 {ok:false, reason}。
@@ -2927,6 +3088,9 @@ var Sim = (function () {
       difficulty: state.difficulty == null ? 3 : state.difficulty,
       enemyCfg: state.enemyCfg || null,
       enemyRes: state.enemyRes || 0,
+      enemySpore: state.enemySpore || 0,
+      enemyDebuffs: state.enemyDebuffs || {},
+      pendingDebuff: state.pendingDebuff || null,
       enemy: state.enemy ? {
         x: state.enemy.x, y: state.enemy.y, timer: state.enemy.timer,
         cells: state.enemy.cells
@@ -2971,6 +3135,11 @@ var Sim = (function () {
     applyDifficulty(state, d.difficulty == null ? 3 : d.difficulty);
     if (d.enemyRes != null) state.enemyRes = d.enemyRes;
     else state.enemyRes = 60;
+    if (d.enemySpore != null) state.enemySpore = d.enemySpore;
+    if (d.enemyDebuffs) state.enemyDebuffs = d.enemyDebuffs;
+    /* 待选削弱：只认新结构（有 slots）；旧档无此字段 = null */
+    state.pendingDebuff = (d.pendingDebuff && d.pendingDebuff.slots && d.pendingDebuff.slots.length)
+      ? d.pendingDebuff : null;
     state.cd = d.cd || {};
     state.unlocked = d.unlocked || {};
     state.pulseT = d.pulseT || 0;
@@ -3071,6 +3240,7 @@ var Sim = (function () {
     newGame: newGame, tick: tick, growAt: growAt, canGrowAt: canGrowAt,
     /* 开发者工具（dev 面板用） */
     placeEnemyAt: placeEnemyAt, removeEnemy: removeEnemy, setDifficulty: setDifficulty,
+    enemyPrestigeNeed: enemyPrestigeNeed, applyDebuffChoice: applyDebuffChoice,
     removeNode: removeNode,
     mapSizeFor: mapSizeFor,
     /* applyMapSize 必须导出：地图尺寸是**模块级单例**（_MAP），

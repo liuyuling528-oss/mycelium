@@ -86,11 +86,20 @@
          * 再塞一点转生点，让刷新按钮是可点状态。 */
         st.prestiges = Math.max(st.prestiges || 0, 3);
         st.choicePoints = Math.max(st.choicePoints || 0, 12);
+        /* 截图钩子切和平档：虚拟时间快进下敌菌的转生竞速会真的跑满、
+         * 触发败北画面盖掉要演示的弹窗（实测发生过）。 */
+        Sim.setDifficulty(st, 0);
+        if (st.lost) st.lost = null;
+        game.menuOpen = false;
         st.pendingChoice = Sim.offerChoice(st);
+        /* 截图用：同时摆出削弱三选一（转生流程第二段的样子） */
+        st.pendingDebuff = { slots: ['waterGain', 'sporeGain', 'waterUse'],
+                             forPrestige: st.prestiges, at: Date.now() };
         game.dirty = true;
         /* rebind 收的是 **state**（踩坑史见旧注释）——
          * rebind 末尾的 pendingChoice 检查正好把弹窗弹出来。 */
         game.ui.rebind(game.state);
+        game.ui.showDebuffPick();      // 削弱弹窗叠在卡池之上（截图看两层）
         game.ui.update(0.2, game);
       }, 700);
     });
@@ -442,7 +451,10 @@
     var Sim = window.MYC.Sim, g = window.MYC.game, UI = g.ui;
     try { localStorage.removeItem(UI.KEY); } catch (e) {}
     try { localStorage.removeItem(UI.SEEDKEY); } catch (e) {}
-    var s = Sim.newGame(20260918, {}, {});
+    /* 活动局固定**和平档**（机制隔离纪律）：敌菌的转生竞速是末日时钟，
+     * 会让长跑的活动局中途败北、掐断后面几百条断言。对抗行为全部在
+     * 临时局里单独测（见敌菌转生竞速块）。 */
+    var s = Sim.newGame(20260918, {}, {}, 0, 0, 0);
     g.state = s;
     UI.rebind(s);
     if (g.scene) {
@@ -3593,7 +3605,7 @@
     ok('第 1 次刷新花 1 点', r1.ok && r1.cost === 1, 'cost=' + (r1.cost || r1.reason));
     var r2 = Sim.refreshChoice(s);
     ok('第 2 次刷新花 4 点（n² 递增）', r2.ok && r2.cost === 4, 'cost=' + (r2.cost || r2.reason));
-    ok('刷新计数在涨', pc.refresh === 2, 'refresh=' + pc.refresh);
+    ok('刷新计数在涨', s.choiceRefresh === 2, 'choiceRefresh=' + s.choiceRefresh);
     var r3 = Sim.refreshChoice(s);
     ok('第 3 次刷新花 9 点', r3.ok && r3.cost === 9, 'cost=' + (r3.cost || r3.reason));
     ok('转生点扣减正确', s.choicePoints === 20 - 1 - 4 - 9,
@@ -4006,6 +4018,128 @@
        '平均产出 简单 ' + easy.avgYield.toFixed(2) + ' vs 魔鬼 ' + hard.avgYield.toFixed(2));
     ok('魔鬼的版图更逼近玩家核心', hard.avgDP < easy.avgDP,
        '距玩家 简单 ' + easy.avgDP.toFixed(1) + ' vs 魔鬼 ' + hard.avgDP.toFixed(1));
+
+    /* ---- 敌菌转生竞速（2026-10-12 用户设计）---- */
+    var needEasy = Sim.enemyPrestigeNeed(Sim.newGame(31337, {}, {}, 0, 0, 1));
+    var needNorm = Sim.enemyPrestigeNeed(Sim.newGame(31337, {}, {}, 0, 0, 2));
+    var needHard = Sim.enemyPrestigeNeed(Sim.newGame(31337, {}, {}, 0, 0, 3));
+    ok('敌菌转生需求按难度分层（简单1.5×/中等1×/困难0.5×）',
+       needEasy > needNorm && needNorm > needHard,
+       '简单 ' + needEasy + ' / 中等 ' + needNorm + ' / 困难 ' + needHard);
+    /* 魔鬼：倍率 0.5 起每经一次玩家转生 -0.1，四次后钉 0.1 */
+    var dSt = Sim.newGame(31337, {}, {}, 0, 0, 4);
+    var seq = [0, 1, 2, 3, 4, 5].map(function (p) {
+      dSt.prestiges = p; return Math.round(Sim.enemyPrestigeNeed(dSt) / (Sim.prestigeCost(dSt) / Math.pow(C.ENEMY_FIRST || 1, 0)) * 100) / 100;
+    });
+    /* 直接验倍率而不是绝对值：need/prestigeCost */
+    dSt.prestiges = 0;
+    var m0 = Sim.enemyPrestigeNeed(dSt) / Sim.prestigeCost(dSt);
+    dSt.prestiges = 2;
+    var m2 = Sim.enemyPrestigeNeed(dSt) / Sim.prestigeCost(dSt);
+    dSt.prestiges = 4;
+    var m4 = Sim.enemyPrestigeNeed(dSt) / Sim.prestigeCost(dSt);
+    ok('魔鬼档需求倍率 0.5 → 0.3 → 0.1（每转生 -0.1，四次后钉死）',
+       Math.abs(m0 - 0.5) < 0.02 && Math.abs(m2 - 0.3) < 0.02 && Math.abs(m4 - 0.1) < 0.02,
+       '倍率 ' + m0.toFixed(2) + ' → ' + m2.toFixed(2) + ' → ' + m4.toFixed(2));
+
+    /* 攒够 = 玩家败北 */
+    var loseSt = Sim.newGame(31338, {}, {}, 0, 0, 3);
+    loseSt.t = 61;                       // 过缓冲期
+    loseSt.enemySpore = Sim.enemyPrestigeNeed(loseSt);
+    Sim.tick(loseSt, 0.25);
+    ok('敌菌攒够孢子 → 玩家败北（lost 标记）', !!loseSt.lost,
+       loseSt.lost ? ('@' + loseSt.lost.at + 's') : '没触发');
+    ok('败北前一刻不触发（差一点点不行）', (function () {
+      var t2 = Sim.newGame(31338, {}, {}, 0, 0, 3);
+      t2.t = 61; t2.enemySpore = Sim.enemyPrestigeNeed(t2) - 1;
+      Sim.tick(t2, 0.25);
+      return !t2.lost;
+    })(), '');
+
+    /* 拔核战：占敌菌核心的全部在界内正交邻格 → 核心死 → 随机重落 */
+    var cap = Sim.newGame(7, {}, {}, 0, 0, 3);
+    var en0 = cap.enemy, occupied = 0;
+    [[-1, 0], [1, 0], [0, -1], [0, 1]].forEach(function (dxy) {
+      var x = en0.x + dxy[0], y = en0.y + dxy[1];
+      if (x < 0 || y < 0 || x >= cap.mapW || y >= cap.mapH) return;
+      Sim.addNode(cap, x, y, 'soil');
+      occupied++;
+    });
+    cap.t = 61;
+    Sim.tick(cap, 0.25);
+    ok('拔核战：占齐核心邻格 → 敌菌核心被杀（计数 +1）',
+       (cap.counters.enemyKills || 0) === 1, 'occupies=' + occupied);
+    ok('拔核后敌菌在随机别处重落（新菌斑、距玩家核 ≥6）',
+       cap.enemy && (cap.enemy.x !== en0.x || cap.enemy.y !== en0.y) &&
+       Math.abs(cap.enemy.x - cap.core.x) + Math.abs(cap.enemy.y - cap.core.y) >= 6,
+       '新落点 ' + cap.enemy.x + ',' + cap.enemy.y);
+    ok('拔核保留敌菌的转生孢子进度（拖慢时钟 ≠ 清空进度）',
+       (function () {
+         var t4 = Sim.newGame(7, {}, {}, 0, 0, 3);
+         t4.enemySpore = 88; t4.t = 61;
+         [[-1, 0], [1, 0], [0, -1], [0, 1]].forEach(function (dxy) {
+           var x = t4.enemy.x + dxy[0], y = t4.enemy.y + dxy[1];
+           if (x >= 0 && y >= 0 && x < t4.mapW && y < t4.mapH) Sim.addNode(t4, x, y, 'soil');
+         });
+         Sim.tick(t4, 0.25);
+         return Math.floor(t4.enemySpore) >= 88;
+       })(), '');
+    ok('拔核后敌菌经济重置（新核心从 60 起步）',
+       Math.round(cap.enemyRes) === 60, 'enemyRes=' + Math.round(cap.enemyRes));
+
+    /* 削弱三选一：转生后必弹、效果叠乘、刷新共用 n² */
+    var dSt2 = Sim.newGame(31339, {}, {}, 0, 0, 3);
+    dSt2.res.spore = 1e9; dSt2.total.nutrient = 1e6; dSt2.total.spore = 1e6;
+    Sim.doPrestige(dSt2);
+    ok('转生后弹出削弱三选一（有敌菌时）',
+       !!dSt2.pendingDebuff && dSt2.pendingDebuff.slots.length === 3,
+       dSt2.pendingDebuff ? dSt2.pendingDebuff.slots.join(',') : 'null');
+    ok('削弱候选都在池内且不重复',
+       dSt2.pendingDebuff.slots.every(function (k) {
+         return C.ENEMY.DEBUFFS.some(function (d) { return d.key === k; });
+       }) && new Set(dSt2.pendingDebuff.slots).size === 3, '');
+    var pickKey = dSt2.pendingDebuff.slots[0];
+    var dr = Sim.applyDebuffChoice(dSt2, pickKey);
+    ok('选削弱生效（计数 1）', dr.ok && dSt2.enemyDebuffs[pickKey] === 1,
+       pickKey + ' ×' + dSt2.enemyDebuffs[pickKey]);
+    ok('削弱弹窗关闭（pendingDebuff 清空）', dSt2.pendingDebuff === null, '');
+    ok('重复选同一削弱被拒', !Sim.applyDebuffChoice(dSt2, pickKey).ok, '');
+    /* 叠乘验证：孢子获取削弱 ×2 → 积累速率 ×0.64 */
+    var acc0 = (function () {
+      var t = Sim.newGame(31340, {}, {}, 0, 0, 3);
+      t.t = 61; var s0 = t.enemySpore; Sim.tick(t, 1); return t.enemySpore - s0;
+    })();
+    var acc1 = (function () {
+      var t = Sim.newGame(31340, {}, {}, 0, 0, 3);
+      t.t = 61; t.enemyDebuffs = { sporeGain: 2 }; var s0 = t.enemySpore; Sim.tick(t, 1); return t.enemySpore - s0;
+    })();
+    ok('孢子获取削弱 ×2 → 积累 ×0.64（0.8² 叠乘）',
+       Math.abs(acc1 / acc0 - 0.64) < 0.01,
+       acc0.toFixed(3) + ' → ' + acc1.toFixed(3) + '（比值 ' + (acc1 / acc0).toFixed(3) + '）');
+    /* 刷新共用：卡池刷 2 次后削弱期首刷是第 3 次（9 点） */
+    var rSt = Sim.newGame(31341, {}, {}, 0, 0, 3);
+    rSt.res.spore = 1e9; rSt.total.nutrient = 1e6; rSt.total.spore = 1e6;
+    rSt.choicePoints = 100;
+    Sim.doPrestige(rSt);
+    Sim.refreshChoice(rSt); Sim.refreshChoice(rSt);        // 卡池期刷 2 次（1+4 点）
+    var after2 = rSt.choiceRefresh;                        // = 2
+    var rd = Sim.refreshChoice(rSt);                       // 削弱期首刷
+    ok('刷新次数跨期共用：卡池 2 次后削弱期首刷花 9 点（n²）',
+       rd.ok && rd.cost === 9 && rSt.choiceRefresh === after2 + 1,
+       'cost=' + rd.cost + ' 计数=' + rSt.choiceRefresh);
+    /* 存档往返 */
+    var rt = Sim.deserialize(Sim.serialize(dSt2));
+    ok('存档往返保留削弱计数与孢子进度',
+       JSON.stringify(rt.enemyDebuffs) === JSON.stringify(dSt2.enemyDebuffs) &&
+       rt.enemySpore === dSt2.enemySpore,
+       'debuffs=' + JSON.stringify(rt.enemyDebuffs) + ' spore=' + rt.enemySpore);
+    ok('和平档转生不弹削弱（无对手可削）',
+       (function () {
+         var p0 = Sim.newGame(31342, {}, {}, 0, 0, 0);
+         p0.res.spore = 1e9; p0.total.nutrient = 1e6; p0.total.spore = 1e6;
+         Sim.doPrestige(p0);
+         return p0.pendingDebuff === null;
+       })(), '');
 
     /* 存档往返：对手版图跟着存档走 */
     var st2 = Sim.deserialize(Sim.serialize(tmp));

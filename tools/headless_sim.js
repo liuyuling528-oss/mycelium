@@ -362,7 +362,7 @@ function buildColonies(state, mode) {
 }
 
 function run(strategy, seed, duration) {
-  const state = Sim.newGame(seed, {}, {});
+  const state = Sim.newGame(seed, {}, {}, 0, 0, 0);
   state.policy = strategy.policy;
   /* B 组对照（主动 vs 挂机）两边都先解锁自动蔓延 ——
    * 否则挂机那边连一格都长不出来，比的就不是「注意力」而是「能不能玩」。 */
@@ -957,7 +957,7 @@ function treeExperiment() {
   const roomyTarget = T.crowdSoftCap;
 
   for (let i = 0; i < ROW; i++) {
-    const state = Sim.newGame(SEEDS[i % SEEDS.length] + i * 1013, {}, {});
+    const state = Sim.newGame(SEEDS[i % SEEDS.length] + i * 1013, {}, {}, 0, 0, 0);
     farmState(state, 1200, 1);
     densify(state, 900);
 
@@ -1354,7 +1354,7 @@ if (!isFinite(off8.ratioN) || off8.ratioN < 1.5) {
 
 /* 早期下限：只有核心的玩家离线 8h 也必须拿到东西，不能是 0。
  * 这条对应规划文档第 292~293 行「早期玩家回来发现什么都没发生」。 */
-const early = Sim.newGame(SEEDS[0], {}, {}, 0);
+const early = Sim.newGame(SEEDS[0], {}, {}, 0, 0, 0);
 const earlyRes = Sim.settleOffline(early, 8 * 3600, { dryRun: true });
 console.log('');
 console.log(` · 早期下限（1 格核心，未解锁自动蔓延）离线 8h：` +
@@ -1367,7 +1367,7 @@ if (earlyRes.gained.water <= 0) {
 }
 
 /* 封顶：超过 capHours 的部分不该继续累积 */
-const capped = Sim.settleOffline(Sim.newGame(1, {}, {}, 0), 48 * 3600, { dryRun: true });
+const capped = Sim.settleOffline(Sim.newGame(1, {}, {}, 0, 0, 0), 48 * 3600, { dryRun: true });
 console.log(` · 封顶：离线 48h 实际只按 ${(capped.seconds / 3600).toFixed(1)}h 结算` +
             `（capHours=${CONFIG.OFFLINE.capHours}）${capped.capped ? ' ✅' : ' ❌'}`);
 if (!capped.capped || capped.seconds > CONFIG.OFFLINE.capHours * 3600 + 1) {
@@ -1376,7 +1376,7 @@ if (!capped.capped || capped.seconds > CONFIG.OFFLINE.capHours * 3600 + 1) {
 }
 
 /* 太短的离开不结算（切标签页回来不该弹提示） */
-const tiny = Sim.settleOffline(Sim.newGame(1, {}, {}, 0), 30, { dryRun: true });
+const tiny = Sim.settleOffline(Sim.newGame(1, {}, {}, 0, 0, 0), 30, { dryRun: true });
 console.log(` · 离开 30 秒不结算（minSeconds=${CONFIG.OFFLINE.minSeconds}）：` +
             `${tiny === null ? '✅ 返回 null' : '❌ 结算了 ' + JSON.stringify(tiny.gained)}`);
 if (tiny !== null) { console.log(' ❌ 失败：过短的离开也结算了。'); failed = true; }
