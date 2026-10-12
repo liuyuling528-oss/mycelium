@@ -449,6 +449,7 @@ var UI = (function () {
   /* ---- 主菜单 & 开发者面板 ------------------------------------------- */
   function showMenu(resumed) {
     window.MYC.game.menuOpen = true;
+    document.body.classList.add('menu-open');
     el.menu.classList.remove('hidden');
     /* 「继续」永远可用 —— 游戏内返回主菜单时当前世界还活着，
      * 继续就是取消暂停。有无存档只影响文案。 */
@@ -459,6 +460,7 @@ var UI = (function () {
   }
 
   function hideMenu() {
+    document.body.classList.remove('menu-open');
     window.MYC.game.menuOpen = false;
     el.menu.classList.add('hidden');
     pushLog('世界开始运转');

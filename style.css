@@ -465,55 +465,197 @@ button.tiny.on { border-color: #4d8f88; background: #16292a; color: #9fe8dd; }
  * 菜单盖全屏但半透明 —— 背后的地图是活的（渲染在跑，只是被暂停），
  * 一开始就把「这是个活世界」的印象给出去。
  * ==========================================================================*/
+/* ---- 主菜单：全屏标题画面（像正常游戏）----
+ * 左侧标题+菜单列，右侧透出后面活着的地图；底部渐晕+漂浮孢子。 */
 #menu {
   position: fixed;
   inset: 0;
-  z-index: 60;                 /* 盖过转生抉择(50) */
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(5, 7, 5, .72);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  animation: choiceIn .3s ease-out;
+  z-index: 60;
+  background:
+    radial-gradient(ellipse at 78% 42%, rgba(242, 247, 234, .06), transparent 55%),
+    linear-gradient(100deg,
+      rgba(4, 6, 4, .96) 0%, rgba(4, 6, 4, .9) 34%,
+      rgba(4, 6, 4, .62) 58%, rgba(4, 6, 4, .34) 100%);
+  animation: choiceIn .4s ease-out;
+  overflow: hidden;
 }
 #menu.hidden { display: none; }
 
-.menu-box {
-  width: min(480px, 92vw);
-  background: var(--panel);
-  border: 1px solid var(--line-2);
-  border-radius: 16px;
-  padding: 30px 34px 22px;
-  box-shadow: 0 24px 60px -12px #000, 0 0 0 1px #000 inset;
-  text-align: center;
+/* 左列：标题 + 菜单 + 难度 + 页脚 */
+.menu-side {
+  position: absolute;
+  left: clamp(48px, 8vw, 130px);
+  top: 50%;
+  transform: translateY(-50%);
+  width: min(400px, 42vw);
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
 }
+
+/* 标题：超大字 + 呼吸微光 */
 .menu-title {
-  font-size: 40px;
+  font-size: clamp(72px, 9vw, 116px);
   font-weight: 700;
-  letter-spacing: 6px;
-  color: var(--myco);
-  line-height: 1.1;
-  text-shadow: 0 0 24px rgba(242, 247, 234, .25);
+  letter-spacing: clamp(16px, 2.4vw, 34px);
+  color: #f2f7ea;
+  line-height: 1;
+  margin: 0 0 0 -6px;              /* 光学对齐：抵消首字左侧空隙 */
+  text-shadow:
+    0 0 18px rgba(242, 247, 234, .35),
+    0 0 60px rgba(242, 247, 234, .12);
+  animation: menuGlow 5s ease-in-out infinite;
 }
-.menu-title span {
-  display: block;
+@keyframes menuGlow {
+  0%, 100% { text-shadow: 0 0 18px rgba(242, 247, 234, .35), 0 0 60px rgba(242, 247, 234, .12); }
+  50%      { text-shadow: 0 0 26px rgba(242, 247, 234, .5),  0 0 90px rgba(242, 247, 234, .2); }
+}
+.menu-tag {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+.menu-en {
   font-size: 13px;
-  font-weight: 400;
-  letter-spacing: 10px;
+  letter-spacing: 9px;
   color: var(--muted);
-  margin-top: 4px;
 }
-.menu-sub { margin: 12px 0 22px; color: var(--muted); font-size: 12.5px; }
-.menu-btns { display: flex; flex-direction: column; gap: 9px; }
-.menu-btns button { padding: 10px 0; font-size: 14px; border-radius: 9px; }
+.menu-line { width: 46px; height: 1px; background: var(--line-2); }
+.menu-sub { color: var(--muted); font-size: 12.5px; letter-spacing: 1px; }
+
+/* 菜单列：大按钮，悬停左标亮条 + 右移 */
+.menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mi {
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-left: 3px solid transparent;
+  border-radius: 0 8px 8px 0;
+  padding: 11px 18px;
+  cursor: pointer;
+  transition: background .15s, border-color .15s, transform .15s;
+}
+.mi:hover, .mi:focus-visible {
+  background: rgba(242, 247, 234, .07);
+  border-left-color: var(--myco);
+  transform: translateX(6px);
+  outline: none;
+}
+.mi-t {
+  display: block;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 3px;
+  color: var(--text);
+}
+.mi.primary .mi-t { color: var(--myco); }
+.mi-d {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+.mi:disabled { opacity: .38; cursor: default; }
+.mi:disabled:hover { background: transparent; border-left-color: transparent; transform: none; }
+
+/* 难度与页脚贴左列 */
+.menu-diff { margin-top: 2px; }
+.menu-diff-label {
+  font-size: 11.5px;
+  letter-spacing: 2px;
+  color: var(--muted);
+  margin-bottom: 7px;
+}
+.diff-btns { display: flex; gap: 5px; }
+.diff-btns button {
+  flex: 1;
+  padding: 7px 2px;
+  font-size: 12.5px;
+  border-radius: 7px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+.diff-btns button span { font-size: 10px; color: var(--muted); }
+.diff-btns button.on {
+  border-color: #8a7434;
+  background: #26220f;
+  color: #ffe9a8;
+}
+.diff-btns button.on span { color: #bfae72; }
+.menu-diff .hint { margin-top: 7px; }
+
 .menu-foot {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-top: 18px;
-  padding-top: 12px;
+  margin-top: 4px;
+  padding-top: 14px;
   border-top: 1px solid var(--line);
+}
+
+/* 菜单开着时收掉右侧 HUD —— 标题画面只透出活地图，不露出面板文字 */
+body.menu-open #panel { opacity: .07; pointer-events: none; }
+body.menu-open #panel * { pointer-events: none; }
+
+/* 右下角版本号 */
+.menu-ver {
+  position: absolute;
+  right: 18px;
+  bottom: 14px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  opacity: .7;
+}
+
+/* 漂浮孢子：全屏缓慢上升的微光点（纯 CSS，不碰游戏帧率） */
+.menu-spores { position: absolute; inset: 0; pointer-events: none; }
+.menu-spores i {
+  position: absolute;
+  bottom: -12px;
+  width: 3px; height: 3px;
+  border-radius: 50%;
+  background: rgba(242, 247, 234, .5);
+  box-shadow: 0 0 6px rgba(242, 247, 234, .4);
+  animation: sporeRise linear infinite;
+}
+.menu-spores i:nth-child(1)  { left: 8%;  animation-duration: 17s; animation-delay: -3s;  transform: scale(1.4); }
+.menu-spores i:nth-child(2)  { left: 17%; animation-duration: 23s; animation-delay: -11s; }
+.menu-spores i:nth-child(3)  { left: 26%; animation-duration: 14s; animation-delay: -6s;  transform: scale(.7); }
+.menu-spores i:nth-child(4)  { left: 35%; animation-duration: 26s; animation-delay: -19s; transform: scale(1.1); }
+.menu-spores i:nth-child(5)  { left: 44%; animation-duration: 19s; animation-delay: -1s;  }
+.menu-spores i:nth-child(6)  { left: 53%; animation-duration: 21s; animation-delay: -14s; transform: scale(.6); }
+.menu-spores i:nth-child(7)  { left: 61%; animation-duration: 16s; animation-delay: -8s;  transform: scale(1.3); }
+.menu-spores i:nth-child(8)  { left: 70%; animation-duration: 28s; animation-delay: -22s; }
+.menu-spores i:nth-child(9)  { left: 78%; animation-duration: 15s; animation-delay: -4s;  transform: scale(.8); }
+.menu-spores i:nth-child(10) { left: 86%; animation-duration: 24s; animation-delay: -16s; transform: scale(1.2); }
+.menu-spores i:nth-child(11) { left: 92%; animation-duration: 20s; animation-delay: -9s;  transform: scale(.9); }
+.menu-spores i:nth-child(12) { left: 12%; animation-duration: 30s; animation-delay: -25s; transform: scale(.5); }
+.menu-spores i:nth-child(13) { left: 49%; animation-duration: 18s; animation-delay: -13s; transform: scale(1.1); }
+.menu-spores i:nth-child(14) { left: 68%; animation-duration: 22s; animation-delay: -2s;  transform: scale(.65); }
+@keyframes sporeRise {
+  0%   { transform: translateY(0) rotate(0deg);      opacity: 0; }
+  8%   { opacity: .9; }
+  85%  { opacity: .5; }
+  100% { transform: translateY(-105vh) rotate(240deg); opacity: 0; }
+}
+
+/* 窄屏：标题画面退化为上下布局（地图垫底） */
+@media (max-width: 760px) {
+  .menu-side {
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(400px, 92vw);
+    gap: 20px;
+  }
+  .menu-title { font-size: 58px; letter-spacing: 18px; }
 }
 
 /* ---- 开发者面板：右侧滑入的窄条，贴着面板上方，不遮地图 ---- */
@@ -570,23 +712,3 @@ button.tiny.on { border-color: #4d8f88; background: #16292a; color: #9fe8dd; }
 
 
 /* ---- 主菜单的难度选择（五档）---- */
-.menu-diff { margin-top: 16px; text-align: left; }
-.menu-diff-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-.diff-btns { display: flex; gap: 5px; }
-.diff-btns button {
-  flex: 1;
-  padding: 7px 2px;
-  font-size: 12.5px;
-  border-radius: 7px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-}
-.diff-btns button span { font-size: 10px; color: var(--muted); }
-.diff-btns button.on {
-  border-color: #8a7434;
-  background: #26220f;
-  color: #ffe9a8;
-}
-.diff-btns button.on span { color: #bfae72; }

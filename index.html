@@ -56,14 +56,36 @@
   <!-- 主菜单：开机即进。世界在半透明背景后活着但被暂停（game.menuOpen）。
        这是「像一个正式的游戏」的门面 —— 继续上一局 / 开新一局都在这里选。 -->
   <div id="menu" class="hidden">
-    <div class="menu-box">
-      <div class="menu-title">菌丝<span>MYCELIUM</span></div>
-      <p class="menu-sub">地下菌根网络的即时对抗 —— 铺网络、抢地盘、一波带走</p>
-      <div class="menu-btns">
-        <button id="mContinue" class="primary">继续上次的进度</button>
-        <button id="mKeep">新一局（保留基因）</button>
-        <button id="mFresh">全新开始</button>
-      </div>
+    <div class="menu-spores" aria-hidden="true">
+      <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+      <i></i><i></i><i></i><i></i>
+    </div>
+
+    <div class="menu-side">
+      <header class="menu-head">
+        <h1 class="menu-title">菌丝</h1>
+        <div class="menu-tag">
+          <span class="menu-en">MYCELIUM</span>
+          <span class="menu-line"></span>
+          <span class="menu-sub">地下菌根网络 · 即时对抗</span>
+        </div>
+      </header>
+
+      <nav class="menu-list">
+        <button id="mContinue" class="mi primary">
+          <span class="mi-t">继续旅程</span>
+          <span class="mi-d">回到你离开的那片土壤</span>
+        </button>
+        <button id="mKeep" class="mi">
+          <span class="mi-t">新的轮回</span>
+          <span class="mi-d">保留基因点 · 换一张地图从头铺起</span>
+        </button>
+        <button id="mFresh" class="mi">
+          <span class="mi-t">孢子初落</span>
+          <span class="mi-d">一切归零 · 从第一粒孢子开始</span>
+        </button>
+      </nav>
+
       <div class="menu-diff">
         <div class="menu-diff-label">对手菌种难度</div>
         <div class="diff-btns" id="diffBtns">
@@ -73,13 +95,16 @@
           <button data-diff="3" class="on">困难</button>
           <button data-diff="4">魔鬼</button>
         </div>
-        <div class="hint" id="diffDesc" style="margin-top:5px">当前平衡基准：先站稳再反超</div>
+        <div class="hint" id="diffDesc"></div>
       </div>
-      <div class="menu-foot">
+
+      <footer class="menu-foot">
         <span class="hint" id="mStats"></span>
         <button id="mDev" class="tiny">开发者面板</button>
-      </div>
+      </footer>
     </div>
+
+    <div class="menu-ver">v0.9 · 即时对抗版</div>
   </div>
 
   <!-- 开发者面板：调资源倍率 / 时间倍速 / 对手开关与落点。
