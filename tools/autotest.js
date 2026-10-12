@@ -2008,10 +2008,21 @@
     var savedWater = st.res.water;
     var savedDown = st.counters.maintainDowngrades;
 
-    // 维持费只挂等级：Lv0 节点成本为 0
+    // 维持费（2026-10-12 新口径）：Lv² + 接壤税5（仅接壤格）× 距离系数
     st.nodes.forEach(function (n) { n.level = 0; });
-    ok('维持费：全 Lv0 网络的总成本为 0', Sim.totalMaintainCost(st) === 0,
-       '合计 ' + Sim.totalMaintainCost(st).toFixed(3) + '/s');
+    /* 分组核对：接壤格 5×distMul、非接壤 Lv0 格 0。两组允许有一组为空。 */
+    var borderCost = 0, borderN = 0, innerCost = 0, innerN = 0;
+    st.nodes.forEach(function (n) {
+      if (n.id === 0) return;
+      var c = Sim.maintainCostOf ? Sim.maintainCostOf(st, n) : 0;
+      if (st.borderMul && st.borderMul[n.id] != null) { borderCost += c; borderN++; }
+      else { innerCost += c; innerN++; }
+    });
+    ok('维持费：非接壤的 Lv0 格零消耗', innerN === 0 || innerCost === 0,
+       '非接壤 ' + innerN + ' 格合计 ' + innerCost.toFixed(2) + '/s');
+    ok('维持费：接壤的 Lv0 格交 5×距离系数 的接壤税',
+       borderN === 0 || borderCost > 0,
+       '接壤 ' + borderN + ' 格合计 ' + borderCost.toFixed(2) + '/s');
 
     /* 正对照：把水塞满、给一个节点 5 级 → 不应有降级。
      * 先证明「机制在正常情况下不动手」，后面的降级断言才有意义。 */
@@ -2059,8 +2070,10 @@
        * dt = 1 / downgradePerSec 恰好给出 1 级配额。
        * 触发条件是「水见底」，所以这里把水设成 0。 */
       /* 0 级格先抬到 5 级：枯死（0 级继续缺水 → 移除）是另一条断言的事，
-       * 这个场景只测「降级顺序」—— 不排除的话配额会被枯死吃掉（实测踩过）。 */
+       * 这个场景只测「降级顺序」—— 不排除的话配额会被枯死吃掉（实测踩过）。
+       * 顺便清掉边境倍率：对峙费影响总账、不影响「谁先降」的顺序。 */
       st.nodes.forEach(function (n) { if (n.level < 5) n.level = 5; });
+      st.borderMul = null;
       st.nodes[probe].level = 5;
       st.nodes[farId].level = 5;
       st.maintainQuota = 0;
@@ -2085,22 +2098,25 @@
          dSpeed === C.MAINT.downgradePerSec, '实降 ' + dSpeed + ' 级');
 
       /* —— 2026-10-12 新设计：退化到 0 级后继续缺水 → 该格枯死 ——
-       * 旧语义「降级到 0 就停住、绝不移除」已被用户推翻：资源不足时
-       * 远处菌丝退化到 0 级再被扣，这格就死掉（配合边境对峙消耗，
-       * 水不够的代价是真实的领土损失）。 */
-      var nBefore = st.nodes.length;
-      st.nodes.forEach(function (n) { n.level = 9; });
-      st.res.water = 0;
-      for (var g = 0; g < 60; g++) Sim.settleMaintenance(st, 0.5);
+       * 旧语义「降级到 0 就停住、绝不移除」已被用户推翻。跑在**临时局**
+       * 上（活动局不可被枯死毁掉）；临时局给几格 Lv1 让维持费 > 0，
+       * 断水后 Lv1→Lv0→枯死的链条才会走通。 */
+      var wd = Sim.newGame(777001, {}, {}, 0, 0, 0);   // 和平档：无对手干扰
+      wd.milestones.m10 = true; wd.autoGrow = true; wd.res.water = 1e9;
+      for (var wi = 1; wi <= 5; wi++) Sim.addNode(wd, wd.core.x + wi, wd.core.y, 'soil');
+      wd.nodes.forEach(function (n) { if (n.id !== 0) n.level = 1; });
+      var nBefore = wd.nodes.length;
+      wd.res.water = 0;
+      for (var g2 = 0; g2 < 40; g2++) Sim.settleMaintenance(wd, 0.5);
       ok('0 级格继续缺水会枯死（新设计：资源不足有真实领土代价）',
-         st.nodes.length < nBefore,
-         '节点数 ' + nBefore + ' → ' + st.nodes.length + '（枯死 ' +
-         (st.counters.maintainDeaths || 0) + ' 格）');
+         wd.nodes.length < nBefore,
+         '节点数 ' + nBefore + ' → ' + wd.nodes.length + '（枯死 ' +
+         (wd.counters.maintainDeaths || 0) + ' 格）');
       ok('核心永远不会枯死',
-         st.nodes.length > 0 && st.nodes[0].id === 0 && st.nodes[0].soil === 'core', '');
+         wd.nodes.length > 0 && wd.nodes[0].id === 0 && wd.nodes[0].soil === 'core', '');
       ok('枯死后等级不会出现负数',
-         st.nodes.every(function (n) { return n.level >= 0; }),
-         '最低等级 ' + Math.min.apply(null, st.nodes.map(function (n) { return n.level; })));
+         wd.nodes.every(function (n) { return n.level >= 0; }),
+         '最低等级 ' + Math.min.apply(null, wd.nodes.map(function (n) { return n.level; })));
 
       /* —— 水不会被扣成负数 —— */
       ok('水不会被扣成负数', st.res.water >= 0, '水量 ' + Math.round(st.res.water));
