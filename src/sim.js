@@ -131,7 +131,7 @@ var Sim = (function () {
        * 4 魔鬼。enemyCfg 是所选难度的参数快照（存档自包含，读档不用查表）。 */
       difficulty: (difficulty == null ? 3 : difficulty),
       enemyCfg: null,
-      enemyRes: 60,                // 敌菌养分池（和平档无用；初始够铺几格）
+      enemyRes: 0,                   // 敌菌水池（和平档无用；从零开始挣，镜像新玩家）
       /* ---- 敌菌的转生竞速 ----
        * enemySpore：敌菌攒的转生孢子，攒够 = 它转生 = **玩家输**；
        * enemyBuffs：玩家每次转生后给敌菌挑的增强计数（1.2^n 叠乘）；
@@ -533,6 +533,29 @@ var Sim = (function () {
                Math.pow(CONFIG.TRANSPORT.transportDecay, state.up.transport) *
                strainMods(state).distLossMul;
     return 1 / (1 + dist * loss);
+  }
+
+  /* ================================================================
+   * 敌菌的「镜像玩家」三件套（2026-10-15 用户口径：一模一样）
+   *
+   * 敌菌按玩家的同一套规则生长，但不享受玩家的任何投资
+   *（升级/基因/菌株/脉冲一律没有）—— 玩家练「蔓延速度」「运输效率」
+   * 就能名正言顺地拉开身位，敌菌不蹭这些。三条公式与玩家侧同源，
+   * 只是把投资项置零，所以数值永远跟着 CONFIG 走，不会漂移。
+   * ============================================================== */
+  /* ① 间隔：玩家的自动蔓延基准（GROW.autoInterval，无升级折扣） */
+  function enemyInterval() {
+    return CONFIG.GROW.autoInterval;
+  }
+  /* ② 运输效率：同一条距离衰减曲线，等级 0 */
+  function enemyEfficiency(dist) {
+    return 1 / (1 + dist * CONFIG.TRANSPORT.distLoss);
+  }
+  /* ③ 生长成本：growCostAt 去掉升级/基因/菌株后的裸公式 */
+  function enemyGrowCost(state, x, y, distToCore) {
+    var base = SOILS[state.grid[idx(x, y)].soil].growCost;
+    var dist = (distToCore == null) ? 1 : distToCore;
+    return Math.max(1, Math.round(base * (1 + CONFIG.GROW.distCost * dist)));
   }
 
   /* 壤土的远距收益递减（见 CONFIG.TOPSOIL_FALLOFF）。
@@ -941,33 +964,41 @@ var Sim = (function () {
     invalidateCands(state);
     var W = state.mapW, H = state.mapH;
     var rnd = RNG.makeRng((state.seed ^ (state.t * 7919) ^ 0x6f1f) >>> 0);
-    var picked = null;
-    for (var a = 0; a < 120 && !picked; a++) {
+    /* 随机重落：120 次抽签里取「旁边有水」分最高的（与 initEnemy 同一套
+     * 起步对等规则）—— 全抽不到有水的就退回第一个合法格。 */
+    var picked = null, bestWater = -1;
+    for (var a = 0; a < 120; a++) {
       var x = (rnd() * W) | 0, y = (rnd() * H) | 0;
       if (!inBounds(x, y)) continue;
       var c = state.grid[idx(x, y)];
       if (SOILS[c.soil].solid || c.node != null || c.enemy) continue;
       if (Math.abs(x - state.core.x) + Math.abs(y - state.core.y) < 6) continue;  // 别落在玩家脸上
-      picked = [x, y];
+      var w = spawnWaterScore(state, x, y);
+      if (picked === null || w > bestWater) { picked = [x, y]; bestWater = w; }
     }
     if (picked) initEnemy(state, picked[0], picked[1]);
     else initEnemy(state);               // 兜底：远角落
-    if (state.enemy) state.enemyRes = 60;   // 新核心经济重置
+    /* 新菌斑的起步金 = 玩家的 START.water（镜像：每个网络开局拿同一笔款）。
+     * 孢子进度**保留**（拔核是拖慢它的时钟，不是清空它的进度）。 */
+    if (state.enemy) state.enemyRes = CONFIG.START.water;
     return true;
   }
 
-  /* 应用难度：把 ENEMY.DIFFS[d] 的参数快照进 state（存档自包含）。
-   * d=0（无人机/和平）→ 移除对手；从和平切回有对手的档 → 立即落一份菌斑。 */
+  /* 应用难度：把 ENEMY 的统一参数 + DIFFS[d] 的难度旋钮快照进 state
+   *（存档自包含 —— 读档时按存档时的口径跑，不追着 CONFIG 改）。
+   * 2026-10-15 镜像化后 DIFFS 只剩三个旋钮：策略（enemyCellScore 按
+   * difficulty 分风格）、prestigeMul（转生需求）、prowess（兵锋）；
+   * 间隔/成本/运输/孢子模型全部走玩家的同一套规则（见 enemyInterval 等）。 */
   function applyDifficulty(state, d) {
     var diffs = CONFIG.ENEMY.DIFFS;
     d = Math.max(0, Math.min(diffs.length - 1, d | 0));
     state.difficulty = d;
-    var c = diffs[d];
+    var c = diffs[d], B = CONFIG.ENEMY;
     state.enemyCfg = {
-      startDelay: c.startDelay, interval: c.interval, baseCap: c.baseCap,
-      capPerSec: c.capPerSec, blob: c.blob, hardCap: c.hardCap,
-      revealRadius: c.revealRadius, name: c.name,
-      eff: c.eff, cost: c.cost, prowess: c.prowess, prestigeMul: c.prestigeMul
+      name: c.name,
+      startDelay: B.startDelay, blob: B.blob, revealRadius: B.revealRadius,
+      captureCostMul: B.captureCostMul,
+      prowess: c.prowess, prestigeMul: c.prestigeMul
     };
     if (d === 0) {
       if (state.enemy) removeEnemy(state);
@@ -980,13 +1011,36 @@ var Sim = (function () {
   /* 开发者面板 / 菜单切换难度的公开入口 */
   function setDifficulty(state, d) {
     applyDifficulty(state, d);
-    state.enemyRes = 60;          // 切难度重置敌菌经济（避免旧档巨款滚进新难度）
+    state.enemyRes = 0;          // 切难度重置敌菌经济（避免旧档巨款滚进新难度）
     invalidateCands(state);
     return state.difficulty;
   }
 
+  /* 落脚点周边 2.5 格内的水产出总量（挑「旁边有水」的落点用）。
+   * 玩家的地不计（敌菌长不进去，那里的水它也喝不到）。 */
+  function spawnWaterScore(state, x, y) {
+    var s = 0;
+    for (var dy = -2; dy <= 2; dy++) {
+      for (var dx = -2; dx <= 2; dx++) {
+        if (dx * dx + dy * dy > 6.25) continue;      // ≈2.5 格的圆
+        var nx = x + dx, ny = y + dy;
+        if (!inBounds(nx, ny)) continue;
+        var c = state.grid[idx(nx, ny)];
+        if (c.node != null) continue;
+        s += (SOILS[c.soil].yield || {}).water || 0;
+      }
+    }
+    return s;
+  }
+
   /* 在新地图上落地一簇对手菌斑：选离玩家核心最远的角落，
-   * 从最近的可用格起 BFS 铺一小圈。全图找不到落脚点就放弃（极端岩石图）。 */
+   * 从附近的可用格起 BFS 铺一小圈。全图找不到落脚点就放弃（极端岩石图）。
+   *
+   * 【2026-10-15 镜像化新增：落点优先「旁边有水」】
+   * 玩家核心区有泉水/树根/水脉环绕（地图生成刻意保证的起步条件），
+   * 敌菌也该有对等的起步条件 —— 否则它可能落进纯落叶沙漠，整局只剩
+   * 核心渗水，爬着走。这不是给敌菌开快球，是**起步对等**：两边同一套
+   * 规则，都得有个能活的开局。评分并列时按扫描序取先发现者（确定性）。 */
   function initEnemy(state, ax, ay) {
     /* 无人机（和平）难度：完全不上对手 */
     if (state.difficulty === 0) { state.enemy = null; return; }
@@ -1004,18 +1058,29 @@ var Sim = (function () {
         if (d > bestD) { bestD = d; corner = corners[i]; }
       }
     }
-    var ex = null, ey = null;
-    for (var r = 0; r < 8 && ex == null; r++) {
-      for (var dy = -r; dy <= r && ex == null; dy++) {
-        for (var dx = -r; dx <= r && ex == null; dx++) {
+    /* 扫描角落周边 7 格内的可用落点。
+     * 【规则 = 「够活就行」，不是「哪肥挑哪」】取第一个周边水产出达到
+     * 存活线（≥2.4 ≈ 两格壤土）的落点，并列时先发现者胜（贴近角落）；
+     * 周边全不够活的（落叶沙漠），才退回整片里水最多的那个。
+     * 为什么不是「哪肥挑哪」：那样敌菌会专挑水脉河口落脚，起步反而
+     * 比玩家（核心只保证附近有树根）更肥 —— 又变成系统偏袒。存活线
+     * 保证的是「能开局」，肥瘦留给场上的竞争。 */
+    var ex = null, ey = null, bestWater = -1, bx2 = null, by2 = null;
+    for (var r = 0; r <= 7; r++) {
+      for (var dy = -r; dy <= r; dy++) {
+        for (var dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;   // 只扫这一圈
           var x = corner[0] + dx, y = corner[1] + dy;
           if (!inBounds(x, y)) continue;
           if (SOILS[state.grid[idx(x, y)].soil].solid) continue;
           if (Math.abs(x - state.core.x) + Math.abs(y - state.core.y) < 6) continue;
-          ex = x; ey = y;
+          var w = spawnWaterScore(state, x, y);
+          if (w > bestWater) { bestWater = w; bx2 = x; by2 = y; }
+          if (ex === null && w >= 2.4) { ex = x; ey = y; }   // 第一个够活的
         }
       }
     }
+    if (ex === null) { ex = bx2; ey = by2; }                 // 兜底：全场最湿的
     if (ex == null) { state.enemy = null; return; }
     var cells = [[ex, ey]];
     state.grid[idx(ex, ey)].enemy = true;
@@ -1043,10 +1108,16 @@ var Sim = (function () {
    *   困难（3）贪心流：产出分 + 紧凑 —— 懂得抢肥矿（原平衡基准）；
    *   魔鬼（4）猎手流：产出 ×2 + **朝玩家核心推进** —— 不只抢矿，
    *            还冲着你来。压迫感来自「它知道你在哪」。
-   * 全部确定性评分（无随机）—— headless 同种子同局面必得同一结果。 */
+   * 全部确定性评分（无随机）—— headless 同种子同局面必得同一结果。
+   *
+   * 【产出分权重 = 镜像经济下的货币价值（2026-10-15）】
+   * 敌菌的经济里只有两种货币：**水**（长格用的）和**孢子**（转生时钟，
+   * 也就是它的胜利条件）。养分对它没有任何用途 —— 它不买升级、不强化
+   * 节点、不建菌落 —— 所以权重 0：它不跟玩家抢落叶/腐木，那片留给
+   * 玩家；它抢的是水脉和树根，那才是真竞争。 */
   function enemyCellScore(state, x, y, soil, en) {
     var yy = SOILS[soil].yield || {};
-    var yieldScore = (yy.water || 0) + (yy.nutrient || 0) * 1.6 + (yy.spore || 0) * 1.2;
+    var yieldScore = (yy.water || 0) * 1.0 + (yy.spore || 0) * 1.5;
     var dSelf = Math.abs(x - en.x) + Math.abs(y - en.y);
     var dPlayer = Math.abs(x - state.core.x) + Math.abs(y - state.core.y);
     switch (state.difficulty || 3) {
@@ -1058,14 +1129,17 @@ var Sim = (function () {
     }
   }
 
-  /* 对手长一格：在全部已占领格的邻格里挑「产出分最高、且偏向自家核心」的。
-   * 完全确定性（无随机）—— headless 同种子同局面必得同一结果。
-   * 不长进玩家的格（node != null），玩家也长不进它的格（candidates 过滤）。
-   * **菌落威慑圈**：玩家菌落半径内的格对手也长不进来 —— 菌落在对抗里的
-   * 价值不只是产出倍率，还是「锁住一片矿区」的领土锚点（盖在矿区 vs
-   * 盖在贫地的差异因此被对抗放大，H 组好/差判据在对抗口径下依然成立）。
-   * 每占一格顺带揭示周围 —— 玩家能看见对手推进，被偷家之前有预警。 */
-  function growEnemyOne(state) {
+  /* 敌菌选格（**纯函数，不改状态**）：在全部已占领格的邻格里挑分最高的。
+   * 与 growEnemyOne 旧版的区别：先选后买 —— 成本要在占格之前算，
+   * 买不起就什么都不发生（和玩家点不出来一个语义）。
+   *
+   * 三条世界规则对敌菌同样生效（都不是给玩家开后门）：
+   *   · 领土互斥：不长进玩家的格，玩家也长不进它的格；
+   *   · 菌落威慑圈：玩家菌落半径内的格对手也长不进来 —— 菌落是领土锚点；
+   *   · 树圈保留地：被菌丝围满的树（化感抑制）周围，自动蔓延不挤进去 ——
+   *     这是世界的生态规则，敌菌也一样守，否则「护树养古树」在对抗里
+   *     根本守不住空位。 */
+  function pickEnemyCell(state) {
     var en = state.enemy;
     var best = null, bestScore = -Infinity;
     for (var i = 0; i < en.cells.length; i++) {
@@ -1077,13 +1151,19 @@ var Sim = (function () {
         if (c.enemy || c.node != null || SOILS[c.soil].solid) continue;
         var mul = colonyMulFor(state, { x: x, y: y });
         if (mul.water > 1 || mul.nutrient > 1 || mul.spore > 1) continue;   // 威慑圈
+        if (inCappedTreeRing(state, x, y)) continue;                        // 树圈保留地
         var s = enemyCellScore(state, x, y, c.soil, en);
         if (s > bestScore) { bestScore = s; best = { x: x, y: y, c: c }; }
       }
     }
-    if (!best) return false;
+    return best;
+  }
+
+  /* 敌菌占格（提交选格结果）：标记 + 进版图 + 揭示周围 + 失效玩家候选缓存。
+   * 每占一格顺带揭示周围 —— 玩家能看见对手推进，被偷家之前有预警。 */
+  function commitEnemyCell(state, best) {
     best.c.enemy = true;
-    en.cells.push([best.x, best.y]);
+    state.enemy.cells.push([best.x, best.y]);
     var r = (state.enemyCfg && state.enemyCfg.revealRadius) || 2;
     for (var dy2 = -r; dy2 <= r; dy2++) {
       for (var dx2 = -r; dx2 <= r; dx2++) {
@@ -1092,7 +1172,7 @@ var Sim = (function () {
       }
     }
     invalidateCands(state);   // 领土变了，玩家的候选缓存必须作废
-    return best;               // 返回坐标：tickEnemy 用它算「是否与玩家接壤」（对峙税）
+    return { x: best.x, y: best.y };
   }
 
   /* 开发者工具：把对手菌种搬到指定位置（清掉旧版图，重新落地一小簇）。
@@ -1163,27 +1243,31 @@ var Sim = (function () {
     }
     if (guarded === 4) { killEnemyCore(state); return; }
 
-    /* ---- 敌菌经济 ----
-     * 它占的格子也产出养分（和玩家抢同一片土地的产出），按 eff 吸收进
-     * 自己的池子；扩张一格要花 cost。cost 已按档折算到经济中性 ——
-     * 但占贫地的档（简单/盲铺）会真的穷，占肥矿的档（魔鬼/猎手）会更富。 */
-    var income = 0;
+    /* ---- 敌菌经济（2026-10-15 镜像玩家）----
+     * 与玩家逐条同规则，只是不享受玩家的任何投资：
+     *   · 水：每格的**水**产出 × 到敌菌核心的运输效率；核心格自身不产
+     *     水，但和玩家一样渗水（START.seep + 「渗泉」增强）—— 所以敌菌
+     *     落在纯养分地也不会死，只是慢，和玩家一个待遇；
+     *   · 孢子：树根产出 × 效率 + 菌丝代谢 × 格数（玩家的孢子模型）——
+     *     它的转生时钟快慢取决于它圈到了多少地，不是隐藏倍率；
+     *   · 成本：玩家 growCostAt 的裸公式 ×「水分使用」增强。
+     * 没有 eff、没有收入比例转化、没有时长上限 —— 敌菌被地图和
+     * 自己的水池限制，和玩家完全一样。 */
+    var waterIn = 0, sporeIn = 0;
+    var seep = CONFIG.START.seep + CONFIG.ENEMY.seepPerBuff * (db.seepGain || 0);
     for (var ri = 0; ri < en.cells.length; ri++) {
-      var rc = state.grid[idx(en.cells[ri][0], en.cells[ri][1])];
+      var cx2 = en.cells[ri][0], cy2 = en.cells[ri][1];
+      if (cx2 === en.x && cy2 === en.y) continue;          // 核心格走渗水，不走产出
+      var rc = state.grid[idx(cx2, cy2)];
       var ry = SOILS[rc.soil].yield || {};
-      income += (ry.water || 0) + (ry.nutrient || 0) + (ry.spore || 0);
+      var eff = enemyEfficiency(Math.abs(cx2 - en.x) + Math.abs(cy2 - en.y));
+      waterIn += (ry.water || 0) * eff;
+      sporeIn += (ry.spore || 0) * eff;
     }
-    var incomePerSec = income * (E.eff || 0.7)
-                     * Math.pow(1.2, db.waterGain || 0)
-                     * Math.pow(1.2, db.nutrientGain || 0);
-    state.enemyRes = (state.enemyRes || 0) + incomePerSec * dt;
-
-    /* ---- 转生竞速：敌菌也在攒自己的孢子 ----
-     * 收入的 sporeRate 比例 + 基础发酵，经「孢子获取」增强叠乘后入账；
-     * 攒够 enemyPrestigeNeed(state) → 敌菌转生 → 玩家输。 */
-    var sporeIn = (incomePerSec * (E.sporeRate != null ? E.sporeRate : 0.05)
-                 + (E.sporeBase != null ? E.sporeBase : 0.15))
-                * Math.pow(1.2, db.sporeGain || 0);
+    waterIn = (waterIn + seep) * Math.pow(1.2, db.waterGain || 0);
+    sporeIn = (sporeIn + CONFIG.SPORE_METABOLISM * en.cells.length)
+              * Math.pow(1.2, db.sporeGain || 0);
+    state.enemyRes = (state.enemyRes || 0) + waterIn * dt;
     state.enemySpore = (state.enemySpore || 0) + sporeIn * dt;
     /* 瞬时速率：面板的「预计败北倒计时」靠它。瞬态字段，不进存档 ——
      * 读档后第一个 tick 就会重算，旧值没有意义。 */
@@ -1192,29 +1276,30 @@ var Sim = (function () {
       state.lost = { at: Math.round(state.t), spore: Math.round(state.enemySpore) };
       return;
     }
-    /* 上限随本局时长增长 = 压力曲线：挂得越久，对手圈走的地越多 */
-    var cap = Math.min(E.hardCap, Math.round(E.baseCap + state.t * E.capPerSec));
-    /* 每格成本 = 当期每秒收入 × interval × costMul —— **自适应中性**：
-     * 经济恰好维持 interval 节奏（固定成本会「前期穷死」，实测踩过）。 */
-    var cost = incomePerSec * E.interval * (E.costMul != null ? E.costMul : 1)
-             * Math.pow(0.8, db.waterUse || 0);   // 「水分使用 −20%」增强
-    while (en.timer >= E.interval) {
-      en.timer -= E.interval;
-      if (en.cells.length >= cap) { en.timer = 0; break; }
-      /* 没钱就这拍不扩 —— 和玩家水不够一个待遇 */
-      if ((state.enemyRes || 0) < cost) { en.timer = 0; break; }
-      var grown = growEnemyOne(state);
-      if (!grown) { en.timer = 0; break; }
-      /* 对峙税（对称）：敌菌的新格若与玩家菌丝接壤，成本 ×2 ——
-       * 它爱贴过来，就得为对峙多付钱； AI 打分不看成本，
-       * 所以冲脸流（魔鬼）的经济会被自己的进攻性拖累 —— 用户口径
-       * 「对方喜欢碰撞的话，对方就会被水分拖死」。 */
-      var tp = false, tnb = neighbours(grown.x, grown.y);
+
+    /* ---- 扩张：与玩家同间隔（基准 6s，敌菌不蹭玩家的蔓延升级）----
+     * 先选格、算价、再决定买不买 —— 买不起就整拍跳过（等钱），
+     * 和玩家「看中一块地但水不够，先攒着」是同一个语义。 */
+    var interval = enemyInterval();
+    while (en.timer >= interval) {
+      en.timer -= interval;
+      var pick = pickEnemyCell(state);
+      if (!pick) { en.timer = 0; break; }              // 无处可扩（被玩家/岩石围死）
+      /* 成本：玩家裸公式 ×「水分使用」增强；对峙税（贴着玩家的新格 ×2）——
+       * 用户口径「对方喜欢碰撞的话，对方就会被水分拖死」。AI 打分不看
+       * 成本，所以冲脸流（魔鬼）的经济会被自己的进攻性拖累。 */
+      var dEnemy = Math.abs(pick.x - en.x) + Math.abs(pick.y - en.y);
+      var cost = enemyGrowCost(state, pick.x, pick.y, dEnemy)
+                 * Math.pow(0.8, db.waterUse || 0);
+      var tp = false, tnb = neighbours(pick.x, pick.y);
       for (var ti = 0; ti < tnb.length; ti++) {
         if (!inBounds(tnb[ti][0], tnb[ti][1])) continue;
         if (state.grid[idx(tnb[ti][0], tnb[ti][1])].node != null) { tp = true; break; }
       }
-      state.enemyRes -= cost * (tp ? 2 : 1);   // 对峙税：贴着玩家的新格 ×2
+      cost *= tp ? 2 : 1;
+      if ((state.enemyRes || 0) < cost) { en.timer = 0; break; }   // 没钱：和玩家一个待遇
+      commitEnemyCell(state, pick);
+      state.enemyRes -= cost;
     }
   }
 
@@ -3267,7 +3352,7 @@ var Sim = (function () {
      * 恢复逻辑会按存档覆盖它。 */
     applyDifficulty(state, d.difficulty == null ? 3 : d.difficulty);
     if (d.enemyRes != null) state.enemyRes = d.enemyRes;
-    else state.enemyRes = 60;
+    else state.enemyRes = CONFIG.START.water;   // 旧档没有该字段：给同款起步金
     if (d.enemySpore != null) state.enemySpore = d.enemySpore;
     if (d.enemyBuffs) state.enemyBuffs = d.enemyBuffs;
     /* 待选增强：只认新结构（有 slots）；旧档（含旧削弱语义的旧字段）一律弃用 */
@@ -3374,6 +3459,9 @@ var Sim = (function () {
     /* 开发者工具（dev 面板用） */
     placeEnemyAt: placeEnemyAt, removeEnemy: removeEnemy, setDifficulty: setDifficulty,
     enemyPrestigeNeed: enemyPrestigeNeed, applyBuffChoice: applyBuffChoice,
+    /* 敌菌镜像三件套导出：enemyGrowCost 是纯公式，自测直接拿它验
+     * 「敌菌与玩家同价」（同土同距必等）；另两个给探针复现用。 */
+    enemyGrowCost: enemyGrowCost, enemyInterval: enemyInterval, enemyEfficiency: enemyEfficiency,
     removeNode: removeNode,
     mapSizeFor: mapSizeFor,
     /* applyMapSize 必须导出：地图尺寸是**模块级单例**（_MAP），

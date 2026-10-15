@@ -1499,12 +1499,16 @@
 
   step(function () {
     var sc = window.MYC.game.scene;
-    /* 先把视野钉住（切手动、缩放不变）：自动取景会跟着网络一直在缓动，
-     * 锚点测试前后两次读数之间镜头自己会动，测出来的就不是滚轮了。 */
-    sc.setView(sc.viewZoom, sc.viewCx, sc.viewCy);
+    /* 先把视野钉到**确定值**（世界中心 + 固定缩放 1.3）：自动取景会停在
+     * 哪，取决于敌菌揭示出来的探索范围（敌菌经济一改它就变）—— 那是本
+     * 测试不该依赖的东西。钉死之后，锚点不变式只验滚轮自己的数学。
+     * 1.3 是刻意选的：向上滚一帧（f≈1.72）后 zoom≈2.2，视野仍比世界小
+     * 一圈，钳制边界离锚点很远，不变式不会被 clamp 吃掉。 */
+    var G = window.MYC.CONFIG.GRID, stW = window.MYC.game.state;
+    sc.setView(1.3, (G.OX * 2 + stW.mapW * G.CELL) / 2, (G.OY * 2 + stW.mapH * G.CELL) / 2);
     /* 锚点故意放在偏离中心的位置 —— 用画布正中心测锚点，
      * 中心缩放本来就是「不动」的，验不出锚点算错。 */
-    S.p = canvasPoint(0.35, 0.4);
+    S.p = canvasPoint(0.42, 0.45);
     var pt = sc.clientToCanvas(S.p.x, S.p.y);
     // 记下缩放前的视野状态，锚点不变式用纯算术核对（不读摄像机，
     // 因为 cam.worldView 只在渲染时更新，headless 下经常比刚设的值旧一帧）
@@ -4025,12 +4029,17 @@
     ok('开局缓冲期内对手不扩张', tmp.enemy.cells.length === c0,
        '延迟 ' + C.ENEMY.startDelay + 's，t=' + tmp.t + 's，仍 ' + tmp.enemy.cells.length + ' 格');
 
-    /* 缓冲期后按间隔扩张（2026-10-12 减半后：60s 缓冲 + 3s/格，
-     * 240s 时上限 24+0.18*300≈78，实际 ~66 格） */
+    /* 缓冲期后按**玩家的同一节奏**扩张（2026-10-15 镜像化）：
+     * 敌菌间隔 = GROW.autoInterval（6s，无升级折扣），所以 240s 内
+     * 最多长 240/6 = 40 格 —— 这是「敌菌绝不比玩家快」的不变量；
+     * 下界保证它确实在长（经济没死）。旧版断言的是 cap 曲线
+     *（baseCap + t×capPerSec 人工上限），那套已随镜像化删除。 */
     for (var j = 0; j < 240; j++) Sim.tick(tmp, 1);
-    ok('缓冲期后对手按曲线扩张', tmp.enemy.cells.length > c0 + 20,
-       c0 + ' → ' + tmp.enemy.cells.length + ' 格（300s，上限 ' +
-       Math.round(C.ENEMY.baseCap + tmp.t * C.ENEMY.capPerSec) + '）');
+    var maxGain = Math.ceil(240 / C.GROW.autoInterval);
+    ok('缓冲期后对手按玩家节奏扩张（≤1格/6s 且确实在长）',
+       tmp.enemy.cells.length > c0 + 10 && tmp.enemy.cells.length <= c0 + maxGain,
+       c0 + ' → ' + tmp.enemy.cells.length + ' 格（300s；玩家基准 ' +
+       C.GROW.autoInterval + 's/格 → 240s 上限 ' + maxGain + ' 格）');
 
     /* 领土互斥：玩家的候选格绝不含敌格；直接长进敌格必须失败 */
     var cs = Sim.candidates(tmp);
@@ -4044,7 +4053,10 @@
     ok('直接长进对手的地块被拒绝', rr.ok === false, rr.reason);
 
     /* 打法随难度分化（同种子对照 300s 版图）：
-     * 简单=盲铺（缩在贫地、离玩家远）；魔鬼=猎手（抢肥矿+冲向玩家）。 */
+     * 简单=盲铺（缩在贫地、离玩家远）；魔鬼=猎手（抢肥矿+冲向玩家）。
+     * 【度量 = 敌菌自己的货币观（2026-10-15 镜像经济）】敌菌只认水
+     *（成长）和孢子（胜利），养分对它权重 0 —— 所以「肥矿」按
+     * water + spore×1.5 算，和 enemyCellScore 同一个口径。 */
     function enemyProfile(d) {
       var sd = Sim.newGame(555001, {}, {}, 0, 0, d);
       sd.enemyCfg.prowess = 0;    // 隔离兵锋：这段量的是扩张风格，不是战斗结果
@@ -4052,7 +4064,8 @@
       var ys = 0, dp = 0;
       sd.enemy.cells.forEach(function (c3) {
         var cc = sd.grid[c3[1] * sd.mapW + c3[0]];
-        ys += (cc.soil === 'vein' ? 2.2 : cc.soil === 'wood' ? 1.8 : cc.soil === 'litter' ? 0.55 : 0.15);
+        var y = C.SOILS[cc.soil].yield || {};
+        ys += (y.water || 0) + (y.spore || 0) * 1.5;
         dp += Math.abs(c3[0] - sd.core.x) + Math.abs(c3[1] - sd.core.y);
       });
       return { avgYield: ys / sd.enemy.cells.length, avgDP: dp / sd.enemy.cells.length };
@@ -4222,8 +4235,40 @@
          Sim.tick(t4, 0.25);
          return Math.floor(t4.enemySpore) >= 88;
        })(), '');
-    ok('拔核后敌菌经济重置（新核心从 60 起步）',
-       Math.round(cap.enemyRes) === 60, 'enemyRes=' + Math.round(cap.enemyRes));
+    ok('拔核后敌菌经济重置（新菌斑拿玩家同款起步金）',
+       Math.round(cap.enemyRes) === C.START.water, 'enemyRes=' + Math.round(cap.enemyRes));
+
+    /* ---- 敌菌镜像经济（2026-10-15）：同规则、同约束 ----
+     * ① 收入 = 格产出 × 运输效率 + 核心渗水（与玩家同公式，零投资）；
+     * ② 孢子 = 树根产出 + 菌丝代谢 × 格数（玩家的孢子模型）；
+     * ③ 成本 = 玩家 growCostAt 裸公式 —— 买不起就停，和玩家一个待遇。 */
+    var mir = Sim.newGame(555007, {}, {}, 0, 0, 3);
+    mir.t = 200;                                  // 过缓冲期
+    Sim.placeEnemyAt(mir, mir.core.x + 12, mir.core.y);   // 放远一点，让它自己挣
+    var res0 = mir.enemyRes || 0;
+    for (var mi = 0; mi < 30; mi++) Sim.tick(mir, 1);
+    ok('镜像·敌菌水池按「产出×效率+渗水」增长',
+       (mir.enemyRes || 0) > res0, 'enemyRes ' + Math.round(res0) + ' → ' + Math.round(mir.enemyRes || 0));
+    ok('镜像·敌菌孢子速率随版图增长（代谢 × 格数）',
+       (function () {
+         var a = Sim.newGame(555008, {}, {}, 0, 0, 3);
+         a.t = 200; Sim.tick(a, 1);
+         var r1 = a.enemySporeRate, n1 = a.enemy.cells.length;
+         for (var q = 0; q < 120; q++) Sim.tick(a, 1);   // 同一种子继续长
+         return a.enemy.cells.length > n1 && a.enemySporeRate > r1;
+       })(), '');
+    ok('镜像·敌菌成本 = 玩家 growCostAt 裸公式（同土同距同价）',
+       (function () {
+         var t3 = Sim.newGame(555009, {}, {}, 0, 0, 3);
+         t3.t = 200;
+         var ex = t3.enemy.x, ey = t3.enemy.y;
+         var px = ex + 2, py = ey;               // 敌菌旁 2 格外的一格
+         if (C.SOILS[t3.grid[py * t3.mapW + px].soil].solid) { px = ex; py = ey + 2; }
+         var soil = t3.grid[py * t3.mapW + px].soil;
+         var d = Math.abs(px - ex) + Math.abs(py - ey);
+         var expect = Math.max(1, Math.round(C.SOILS[soil].growCost * (1 + C.GROW.distCost * d)));
+         return Sim.enemyGrowCost(t3, px, py, d) === expect;
+       })(), '');
 
     /* 削弱三选一：转生后必弹、效果叠乘、刷新共用 n² */
     var dSt2 = Sim.newGame(31339, {}, {}, 0, 0, 3);
