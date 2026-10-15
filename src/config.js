@@ -348,6 +348,20 @@ var CONFIG = (function () {
     costGrowth: 2.1          // 成本增速：320 → 672 → 1411（第 3 个开始肉痛）
   };
 
+  /* ---- 前线拉锯（2026-10-15 核心改造：生长即战争）-----------------------
+   * 与敌菌接壤的格 = 前线。每 cycle 秒一个回合：
+   *   我方格 Lv >= 敌菌兵锋 → **推进**：相邻敌格每回合掉 dmg 血，掉光即被占领
+   *   我方格 Lv <  兵锋     → **受压**：每回合掉 dmg 血，掉光即易主（变敌格）
+   *   多格夹同一目标伤害叠一层（封顶 2 倍）；脱离前线每回合回 heal 血
+   * 3 回合定胜负（100/34）—— 有反应窗口，但不练级就守不住。
+   * 兵锋 = 难度档固定值（简单0/中等1/困难2/魔鬼3）。 */
+  var FRONTIER = {
+    cycle: 7,
+    maxHp: 100,
+    dmg: 34,
+    heal: 34
+  };
+
   /* ---- 对手菌种（敌对 AI 菌落）-----------------------------------------
    * 设计意图：即时对抗的压力源。对手在离玩家核心最远的角落落地，
    * 自动向外扩张，抢占地图上玩家还没拿走的富矿。
@@ -876,6 +890,7 @@ var CONFIG = (function () {
     MAINT: MAINT, TRUNK: TRUNK, AUTORULE: AUTORULE, TREE: TREE,
     COLONY: COLONY,
     ENEMY: ENEMY,
+    FRONTIER: FRONTIER,
     STRAIN: STRAIN,
     PRESTIGE_CHOICE: PRESTIGE_CHOICE,
     OFFLINE: OFFLINE,

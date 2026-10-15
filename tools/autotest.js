@@ -77,6 +77,30 @@
     });
   }
 
+  /* ---- 开发用：?frontier=1 —— 摆一个前线接壤的战场（推进+受压+血条）---- */
+  if (/[?&]frontier=1/.test(q)) {
+    window.addEventListener('load', function () {
+      setTimeout(function () {
+        var Sim = window.MYC.Sim, game = window.MYC.game, st = game.state;
+        st.t = 200;                                   // 过缓冲期
+        Sim.placeEnemyAt(st, st.core.x + 3, st.core.y); // 敌菌贴到玩家网络旁
+        Sim.addNode(st, st.core.x + 1, st.core.y, 'soil');
+        st.nodes[st.nodes.length - 1].level = 2;       // Lv2 = 打得过兵锋2 → 推进
+        Sim.addNode(st, st.core.x + 1, st.core.y + 1, 'soil');  // Lv0 → 受压
+        /* 跑两个回合让血条/受损敌格可见，再冻结世界定格战斗画面 */
+        Sim.tick(st, 7.5); Sim.tick(st, 7.5);
+        st.dev.enemyOn = false;      // 冻结：敌菌不再行动，血条/脉冲留在屏幕上
+        var sc = game.scene, G = window.MYC.CONFIG.GRID;
+        if (sc && sc.setView) {
+          sc.viewMode = 'manual';
+          sc.setView(2.6, G.OX + (st.core.x + 2) * G.CELL, G.OY + (st.core.y + 0.5) * G.CELL);
+          sc.syncViewBtn();
+        }
+        game.dirty = true;
+      }, 700);
+    });
+  }
+
   /* ---- 开发用：?choice=1 —— 把转生卡池弹窗摆出来，方便截图 ---- */
   if (/[?&]choice=1/.test(q)) {
     window.addEventListener('load', function () {
@@ -2019,21 +2043,12 @@
     var savedWater = st.res.water;
     var savedDown = st.counters.maintainDowngrades;
 
-    // 维持费（2026-10-12 新口径）：Lv² + 接壤税5（仅接壤格）× 距离系数
+    // 维持费（2026-10-15 口径）：纯 Lv² × 距离系数 —— 接壤税已由前线拉锯取代
     st.nodes.forEach(function (n) { n.level = 0; });
-    /* 分组核对：接壤格 5×distMul、非接壤 Lv0 格 0。两组允许有一组为空。 */
-    var borderCost = 0, borderN = 0, innerCost = 0, innerN = 0;
-    st.nodes.forEach(function (n) {
-      if (n.id === 0) return;
-      var c = Sim.maintainCostOf ? Sim.maintainCostOf(st, n) : 0;
-      if (st.borderMul && st.borderMul[n.id] != null) { borderCost += c; borderN++; }
-      else { innerCost += c; innerN++; }
-    });
-    ok('维持费：非接壤的 Lv0 格零消耗', innerN === 0 || innerCost === 0,
-       '非接壤 ' + innerN + ' 格合计 ' + innerCost.toFixed(2) + '/s');
-    ok('维持费：接壤的 Lv0 格交 5×距离系数 的接壤税',
-       borderN === 0 || borderCost > 0,
-       '接壤 ' + borderN + ' 格合计 ' + borderCost.toFixed(2) + '/s');
+    var anyCost = 0;
+    st.nodes.forEach(function (n) { anyCost += Sim.maintainCostOf(st, n); });
+    ok('维持费：全 Lv0 网络零消耗（接壤税已删，压力交给拉锯战）',
+       anyCost === 0, '合计 ' + anyCost.toFixed(2) + '/s');
 
     /* 正对照：把水塞满、给一个节点 5 级 → 不应有降级。
      * 先证明「机制在正常情况下不动手」，后面的降级断言才有意义。 */
@@ -2084,7 +2099,6 @@
        * 这个场景只测「降级顺序」—— 不排除的话配额会被枯死吃掉（实测踩过）。
        * 顺便清掉边境倍率：对峙费影响总账、不影响「谁先降」的顺序。 */
       st.nodes.forEach(function (n) { if (n.level < 5) n.level = 5; });
-      st.borderMul = null;
       st.nodes[probe].level = 5;
       st.nodes[farId].level = 5;
       st.maintainQuota = 0;
@@ -4004,6 +4018,7 @@
      * 简单=盲铺（缩在贫地、离玩家远）；魔鬼=猎手（抢肥矿+冲向玩家）。 */
     function enemyProfile(d) {
       var sd = Sim.newGame(555001, {}, {}, 0, 0, d);
+      sd.enemyCfg.prowess = 0;    // 隔离兵锋：这段量的是扩张风格，不是战斗结果
       for (var t2 = 0; t2 < 300; t2++) Sim.tick(sd, 1);
       var ys = 0, dp = 0;
       sd.enemy.cells.forEach(function (c3) {
@@ -4018,6 +4033,75 @@
        '平均产出 简单 ' + easy.avgYield.toFixed(2) + ' vs 魔鬼 ' + hard.avgYield.toFixed(2));
     ok('魔鬼的版图更逼近玩家核心', hard.avgDP < easy.avgDP,
        '距玩家 简单 ' + easy.avgDP.toFixed(1) + ' vs 魔鬼 ' + hard.avgDP.toFixed(1));
+
+    /* ---- 前线拉锯（2026-10-15 核心改造：生长即战争）---- */
+    function frontSetup(diff, lv) {
+      var t = Sim.newGame(555002, {}, {}, 0, 0, diff);
+      t.t = 200;                                  // 过缓冲期
+      Sim.placeEnemyAt(t, t.core.x + 3, t.core.y); // 敌菌贴到玩家旁边
+      Sim.addNode(t, t.core.x + 1, t.core.y, 'soil');
+      var nd = t.nodes[t.nodes.length - 1];
+      nd.level = lv;
+      return { t: t, nd: nd };
+    }
+    /* 推进：Lv >= 兵锋 → 3 回合啃掉一格敌菌 */
+    var fA = frontSetup(3, 2);                    // 困难兵锋2，Lv2
+    var enA0 = fA.t.enemy.cells.length, myA0 = fA.t.nodes.length;
+    for (var fa = 0; fa < 3; fa++) Sim.tick(fA.t, 7.5);
+    ok('拉锯·推进：Lv2 打兵锋2，3 回合占领一格', fA.t.nodes.length === myA0 + 1,
+       '我方 ' + myA0 + ' → ' + fA.t.nodes.length + '（frontierPush=' + (fA.t.counters.frontierPush || 0) + '）');
+    /* 精确核对：我方格右侧那一格（原敌格）已变成玩家节点 */
+    var capX = fA.t.core.x + 2, capY = fA.t.core.y;
+    var capCell = fA.t.grid[capY * fA.t.mapW + capX];
+    ok('拉锯·推进：占领的敌格确实易主（enemy 标记清除 + 变成玩家节点）',
+       capCell.enemy !== true && capCell.node != null,
+       '易主格 ' + capX + ',' + capY + ' enemy=' + !!capCell.enemy + ' node=' + capCell.node);
+    /* 受压：Lv < 兵锋 → 3 回合后这格易主 */
+    var fB = frontSetup(3, 0);
+    var myB0 = fB.t.nodes.length;
+    for (var fb = 0; fb < 3; fb++) Sim.tick(fB.t, 7.5);
+    ok('拉锯·受压：Lv0 打不过兵锋2，3 回合后掉格', fB.t.nodes.length === myB0 - 1,
+       '我方 ' + myB0 + ' → ' + fB.t.nodes.length + '（frontierLost=' + (fB.t.counters.frontierLost || 0) + '）');
+    ok('拉锯·受压：掉掉的格变成敌菌的地',
+       (function () {
+         var nd2 = null;
+         for (var i2 = 1; i2 < fB.t.nodes.length; i2++) { /* 只剩核心 */ }
+         return fB.t.enemy.cells.length > 0;
+       })(), '');
+    /* 平级也推进（简单档兵锋0，Lv0 就能推） */
+    var fC = frontSetup(1, 0);
+    var myC0 = fC.t.nodes.length;
+    for (var fc = 0; fc < 3; fc++) Sim.tick(fC.t, 7.5);
+    ok('拉锯·简单档兵锋0：Lv0 也能推进', fC.t.nodes.length === myC0 + 1,
+       '我方 ' + myC0 + ' → ' + fC.t.nodes.length);
+    /* 兵锋对比提示语 */
+    var fD = frontSetup(2, 1);
+    Sim.tick(fD.t, 7.5);
+    ok('拉锯·平级判定：Lv1 ≥ 兵锋1 → 推进',
+       !!fD.t.frontierStats && !!fD.t.frontierStats.pushing[fD.nd.id],
+       'pushing=' + JSON.stringify(fD.t.frontierStats ? Object.keys(fD.t.frontierStats.pushing) : []));
+    /* 巩固推进 → 打到核心 → 拔核 */
+    var fE = frontSetup(3, 2);
+    for (var fe = 0; fe < 20; fe++) {
+      Sim.tick(fE.t, 7.5);
+      fE.t.nodes.forEach(function (nn) { if (nn.id !== 0 && nn.level < 2) nn.level = 2; });
+    }
+    ok('拉锯·打到核心 = 拔核（核心死、随机重落）',
+       (fE.t.counters.enemyKills || 0) >= 1, 'enemyKills=' + (fE.t.counters.enemyKills || 0));
+    /* 首接触标记 + 事件环 */
+    ok('拉锯·首接触标记（UI 引导只弹一次的依据）', fA.t.frontierMet === true, '');
+    ok('拉锯·事件环有记录（推进=push）',
+       (fA.t.frontierEvents || []).some(function (e) { return e.kind === 'push'; }), '');
+    /* 存档往返：hp 瞬态，读档满血不崩 */
+    var backF = Sim.deserialize(Sim.serialize(fA.t));
+    Sim.tick(backF, 7.5); Sim.tick(backF, 7.5);
+    ok('拉锯·存档往返不崩（hp 瞬态读档满血）',
+       backF.nodes.every(function (nn) { return nn.hp == null; }), '');
+    /* 和平档无拉锯 */
+    var fP = Sim.newGame(555003, {}, {}, 0, 0, 0);
+    fP.t = 200;
+    Sim.tick(fP, 7.5);
+    ok('拉锯·和平档无前线统计', fP.frontierStats === null, '');
 
     /* ---- 敌菌转生竞速（2026-10-12 用户设计）---- */
     var needEasy = Sim.enemyPrestigeNeed(Sim.newGame(31337, {}, {}, 0, 0, 1));

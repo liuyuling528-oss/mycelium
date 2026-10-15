@@ -61,7 +61,7 @@ var UI = (function () {
     state = game.state;
 
     ['clock', 'vWater', 'rWater', 'vNutrient', 'rNutrient', 'vSpore', 'rSpore',
-     'sNodes', 'sDist', 'sLost', 'sRun', 'sRival', 'sRivalRes', 'sRivalSpore', 'policy', 'policyHint', 'autoGrow',
+     'sNodes', 'sFrontier', 'sDist', 'sLost', 'sRun', 'sRival', 'sRivalRes', 'sRivalSpore', 'policy', 'policyHint', 'autoGrow',
      'autoGrowRow', 'autoGrowLabel', 'autoRuleRow', 'ruleMaxDist', 'ruleMinYield', 'ruleHint',
      'upgrades', 'prestigeCard', 'pText', 'pBar', 'pHint', 'pBtn',
      'geneCard', 'genes', 'geneLeft', 'log', 'seedTxt',
@@ -926,6 +926,17 @@ var UI = (function () {
     el.rSpore.textContent = rate(rt.spore);
 
     el.sNodes.textContent = state.nodes.length;
+    /* 前线读数：接壤格数（推进/受压的分解在悬停提示里） */
+    if (el.sFrontier) {
+      el.sFrontier.textContent = state.frontierStats ? state.frontierStats.touching : 0;
+    }
+    /* 首次与敌菌接壤：一句话讲清拉锯规则（只弹一次） */
+    if (state.frontierMet && !UI._frontierHint) {
+      UI._frontierHint = true;
+      var pwH = (state.enemyCfg && state.enemyCfg.prowess) || 0;
+      toast('⚔ 前线接壤：Lv' + pwH + ' 以上才能把敌菌推回去，练不动就会掉格');
+      pushLog('⚔ 与对手菌种接壤 —— 前线拉锯开始：等级 ≥ 兵锋 ' + pwH + ' 推进，否则受压');
+    }
     el.sDist.textContent = state.maxDist;
     el.sLost.textContent = (state.lostTotal > 0 ? fmt(state.lostTotal) + ' 累计' : '无');
     el.sRun.textContent = clk(state.t);

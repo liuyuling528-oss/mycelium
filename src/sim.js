@@ -139,6 +139,14 @@ var Sim = (function () {
       enemySpore: 0,
       enemyBuffs: {},
       pendingBuff: null,
+      /* ---- 前线拉锯的瞬态 ----
+       * enemyHp：敌格当前血量（key "x,y"）；frontierStats：本回合统计
+       * （UI/渲染消费）；frontierEvents：推进/失地爆发演出队列；
+       * frontierMet：是否已与敌菌接壤过（首接触提示只弹一次）。 */
+      enemyHp: {},
+      frontierStats: null,
+      frontierEvents: [],
+      frontierMet: false,
       /* 开发者面板的运行时旋钮（**会话级**，不进存档 —— 存档里出现
        * ×10 倍率的资源会污染正常平衡口径）。老存档没有这个字段，
        * 所有用到的地方都要 dev 容错读取。 */
@@ -358,6 +366,7 @@ var Sim = (function () {
       soil: soil,
       level: 0,            // 强化等级：提升本节点产出与吞吐
       pinned: false,       // 玩家锁定：缺水降级时排到最后（取舍的出口）
+      hp: null,            // 前线拉锯的血量（null = 满血；只在接壤交战时用到）
       trunk: false,        // 主干：吞吐被抬高，产量被下调（玩家手动指定）
       confluence: false,   // 汇流：支流在此合流，吞吐略高、产量略降
       /* 树木状态。只有 soil === 'root' 的节点会用到；
@@ -918,6 +927,7 @@ var Sim = (function () {
   function killEnemyCore(state) {
     clearEnemyFlags(state);
     state.enemy = null;
+    state.enemyHp = {};          // 菌斑清了，血图作废
     state.counters.enemyKills = (state.counters.enemyKills || 0) + 1;
     invalidateCands(state);
     var W = state.mapW, H = state.mapH;
@@ -1121,6 +1131,14 @@ var Sim = (function () {
     if (state.t < E.startDelay) return;
     var db = state.enemyBuffs || {};   // 玩家挑的增强计数（下面的经济/成本/孢子都要用）
     en.timer += dt;
+    /* ---- 前线拉锯：每 cycle 秒一个回合 ----
+     * 放在经济结算前：本回合的推进/失地会立刻改变敌菌的收入基数。 */
+    if (state.t - (state.frontierCheckedT == null ? -99 : state.frontierCheckedT) >= CONFIG.FRONTIER.cycle) {
+      state.frontierCheckedT = state.t;
+      var war = frontierBattle(state);
+      if (!state.enemy) return;    // 被拔核/推进掉核心：本回合到此为止
+    }
+
     /* ---- 拔核判定（用户设计）：玩家占领敌菌核心正交四邻 → 核心死 ----
      * 敌菌立刻在地图**随机**别处重落一个新核心（版图清零重铺）——
      * 这是玩家拖慢敌菌转生时钟的核心反制手段。 */
@@ -1666,11 +1684,9 @@ var Sim = (function () {
    * 深耕才有真代价。完整推导见 config.MAINT 的注释。 */
   function maintainCostOf(state, nd) {
     var lv = nd.level || 0;
-    /* 接壤税：只有与敌菌接壤的格才有基础水耗（0 级也交 5）。
-     * borderMul 是 7s 快照，接壤后最多延迟一个周期生效 —— 与
-     * 「每 7 秒核算」的口径一致。 */
-    var touching = state.borderMul && state.borderMul[nd.id] != null;
-    var base = lv * lv + (touching ? CONFIG.MAINT.borderTax : 0);
+    /* 2026-10-15：接壤税已删除 —— 前线的压力由「拉锯战」（打不过就掉格）
+     * 承担，不再重复收水费。腹地 Lv0 格依然零消耗。 */
+    var base = lv * lv;
     if (base <= 0) return 0;
     /* 距离系数：每离核 1 格 +4%。远端格（dist 40）的水耗是腹地的 2.6 倍 ——
      * 「把水送到前线」有真实代价，扩张的边界由经济决定。 */
@@ -1679,12 +1695,8 @@ var Sim = (function () {
 
   function totalMaintainCost(state) {
     var sum = 0;
-    var bm = state.borderMul || null;
     for (var i = 0; i < state.nodes.length; i++) {
-      var nd = state.nodes[i];
-      var c = maintainCostOf(state, nd);
-      if (bm && bm[nd.id]) c *= bm[nd.id];   // 边境对峙：×2 / ×3
-      sum += c;
+      sum += maintainCostOf(state, state.nodes[i]);
     }
     /* 菌株维护费乘区。它是「压制过强菌株」的负项：
      * 速生菌株铺得最快，所以它的 upkeepMul 1.10 让「无脑铺满」多付一成水费 ——
@@ -1977,42 +1989,135 @@ var Sim = (function () {
     return { seconds: useSec, capped: awaySec > capSec, real: awaySec, gained: gained };
   }
 
-  /* ---- 边境对峙（2026-10-12，用户设计）----
-   * 与敌菌菌斑相邻的己方菌丝，每 7 秒按「等级差」重算一次消耗倍率：
-   *   己方等级 < 敌菌兵锋 → 维持费 ×3（压不住对面的兵锋，浪费大量水分）
-   *   己方等级 ≥ 敌菌兵锋 → 维持费 ×2（顶住了，但边境依然比腹地贵一倍）
-   *   不与敌菌相邻        → ×1（腹地正常）
-   * 结果缓存在 state.borderMul（nodeId → 倍率），7 秒刷新一次 ——
-   * 等级/兵锋变化最多延迟一个周期生效，符合「定期核算」的语义。
-   * 敌菌兵锋 = 敌菌格的战斗力（按难度档固定：简单0/中等1/困难2/魔鬼3）。
-   * 策略含义：边境菌丝必须**练级**才扛得住对峙，深化投资有了对抗价值。 */
-  function refreshBorder(state) {
+  /* ---- 前线拉锯（2026-10-15 核心改造：生长即战争）----
+   * 每 7 秒一个回合，逐格结算接壤处的攻防：
+   *   我的 Lv >= 敌菌兵锋 → 推进：相邻敌格掉 dmg 血，掉光即占领（归我）
+   *   我的 Lv <  兵锋     → 受压：本格掉 dmg 血，掉光即易主（归敌菌）
+   *   多格夹同一目标伤害叠一层（封顶 2 倍）；脱离前线每回合回 heal
+   * 推进到敌菌核心格 = 拔核（核心死、菌斑清除、随机重落）。
+   * 结果写进 state.frontierStats（UI/渲染消费）与 state.frontierEvents
+   * （推进/失地的爆发演出）。hp 是**瞬态**：不进存档，读档满血。 */
+  function frontierBattle(state) {
+    var F = CONFIG.FRONTIER;
     var E = state.enemyCfg || CONFIG.ENEMY;
     var prowess = E.prowess || 0;
-    var mul = {};
+    var en = state.enemy;
+    if (!en) { state.frontierStats = null; return null; }
+
+    var pushCells = {};      // 敌格 key -> 叠伤层数
+    var pushed = {};         // 玩家 nodeId -> 叠伤层数
+    var pushing = {}, pushedIds = {};
+    var touching = 0;
     for (var i = 1; i < state.nodes.length; i++) {
       var nd = state.nodes[i];
       if (nd.dist < 0) continue;
-      var touching = false;
-      var nb = neighbours(nd.x, nd.y);
+      var nb = neighbours(nd.x, nd.y), t = 0;
       for (var k = 0; k < nb.length; k++) {
         if (!inBounds(nb[k][0], nb[k][1])) continue;
-        if (state.grid[idx(nb[k][0], nb[k][1])].enemy) { touching = true; break; }
+        if (state.grid[idx(nb[k][0], nb[k][1])].enemy) t++;
       }
-      if (touching) mul[nd.id] = (nd.level < prowess) ? 3 : 2;
+      if (t === 0) {                       // 脱离前线：回血
+        if (nd.hp != null) {
+          nd.hp += F.heal;
+          if (nd.hp >= F.maxHp) nd.hp = null;
+        }
+        continue;
+      }
+      touching++;
+      if (nd.level >= prowess) {           // 压得住兵锋 → 推进
+        pushing[nd.id] = 1;
+        for (var k2 = 0; k2 < nb.length; k2++) {
+          var kx = nb[k2][0], ky = nb[k2][1];
+          if (!inBounds(kx, ky)) continue;
+          if (!state.grid[idx(kx, ky)].enemy) continue;
+          var key = kx + ',' + ky;
+          pushCells[key] = Math.min(2, (pushCells[key] || 0) + 1);
+        }
+      } else {                             // 练不动 → 受压
+        pushedIds[nd.id] = 1;
+        pushed[nd.id] = Math.min(2, t);
+      }
     }
-    state.borderMul = mul;
-    state.borderCheckedT = state.t;
+    state.frontierStats = { touching: touching, pushing: pushing, pushed: pushedIds };
+    if (touching > 0 && !state.frontierMet) state.frontierMet = true;   // UI 首接触提示
+
+    /* 敌格：掉血 / 掉光被占；没被推的敌格缓慢回血（停手就能养回来） */
+    var captured = [];
+    for (var key2 in pushCells) {
+      var hp = (state.enemyHp[key2] == null ? F.maxHp : state.enemyHp[key2]) - F.dmg * pushCells[key2];
+      if (hp <= 0) captured.push(key2);
+      else state.enemyHp[key2] = hp;
+    }
+    for (var k3 in state.enemyHp) {
+      if (pushCells[k3] != null) continue;
+      state.enemyHp[k3] += F.heal;
+      if (state.enemyHp[k3] >= F.maxHp) delete state.enemyHp[k3];
+    }
+
+    /* 玩家格：掉血 / 掉光易主（按 id 降序执行 —— removeNode 会重排下标） */
+    var lost = [];
+    for (var id in pushed) {
+      var nd2 = state.nodes[id];
+      if (!nd2) continue;
+      var h = (nd2.hp == null ? F.maxHp : nd2.hp) - F.dmg * pushed[id];
+      if (h <= 0) lost.push(Number(id));
+      else nd2.hp = h;
+    }
+
+    var gained = 0, lostN = 0;
+    for (var c = 0; c < captured.length; c++) {
+      var parts = captured[c].split(',');
+      var cx = parseInt(parts[0], 10), cy = parseInt(parts[1], 10);
+      /* 核心格被推进掉 = 拔核：菌斑清除 + 随机重落，本回合后续占领作废 */
+      if (state.enemy && cx === state.enemy.x && cy === state.enemy.y) {
+        killEnemyCore(state);
+        pushFrontierEvent(state, cx, cy, 'core');
+        break;
+      }
+      var cell = state.grid[idx(cx, cy)];
+      if (!cell.enemy) continue;
+      cell.enemy = false;
+      if (state.enemy) {
+        for (var e = 0; e < state.enemy.cells.length; e++) {
+          if (state.enemy.cells[e][0] === cx && state.enemy.cells[e][1] === cy) { state.enemy.cells.splice(e, 1); break; }
+        }
+      }
+      delete state.enemyHp[captured[c]];
+      addNode(state, cx, cy, cell.soil);
+      gained++;
+      state.counters.frontierPush = (state.counters.frontierPush || 0) + 1;
+      pushFrontierEvent(state, cx, cy, 'push');
+    }
+    lost.sort(function (a, b) { return b - a; });
+    for (var l = 0; l < lost.length; l++) {
+      var nd3 = state.nodes[lost[l]];
+      if (!nd3) continue;
+      var lx = nd3.x, ly = nd3.y;
+      removeNode(state, lost[l]);
+      var gc = state.grid[idx(lx, ly)];
+      gc.enemy = true;
+      if (state.enemy) {
+        state.enemy.cells.push([lx, ly]);
+        state.counters.frontierLost = (state.counters.frontierLost || 0) + 1;
+        lostN++;
+        pushFrontierEvent(state, lx, ly, 'lost');
+      }
+    }
+    if (gained || lostN) invalidateCands(state);
+    return { captured: gained, lost: lostN };
   }
 
+  /* 前线事件环（推进=绿 / 失地=红 / 拔核=金），渲染层消费。
+   * 时间戳用 performance.now() —— 与 Phaser 帧时钟不同源，
+   * age<0（虚拟时间快进倒挂）直接丢弃，防满屏怪圈（2026-10-10 踩过）。 */
+  function pushFrontierEvent(state, x, y, kind) {
+    if (!state.frontierEvents) state.frontierEvents = [];
+    state.frontierEvents.push({ x: x, y: y, kind: kind, t: performance.now() });
+    if (state.frontierEvents.length > 12) state.frontierEvents.shift();
+  }
+
+
   function settleMaintenance(state, dt) {
-    /* 边境对峙标记每 7s 重算一次（用户口径）。
-     * 敌菌不存在/和平档时清空 —— 别留着旧倍率继续收钱。 */
-    if (state.enemy && state.t - (state.borderCheckedT == null ? -99 : state.borderCheckedT) >= 7) {
-      refreshBorder(state);
-    } else if (!state.enemy && state.borderMul) {
-      state.borderMul = null;
-    }
     var cost = totalMaintainCost(state);
     if (cost <= 0) {
       state.maintainCost = 0; state.maintainPressure = false;

@@ -43,6 +43,14 @@
     rock:     0x2b2b31
   };
 
+  /* 颜色按比例变暗（敌格受伤的可视化）：0.45≈受伤严重，1=原色 */
+  function shadeHex(hex, k) {
+    var r = Math.min(255, ((hex >> 16) & 255) * k) | 0;
+    var g = Math.min(255, ((hex >> 8) & 255) * k) | 0;
+    var b = Math.min(255, (hex & 255) * k) | 0;
+    return (r << 16) | (g << 8) | b;
+  }
+
   /* 树的颜色随档位走：幼苗暗绿 → 成年草绿 → 古树金绿。
    * 颜色是玩家判断「这棵树养到哪了」最快的信息，比读数字快得多。 */
   function treeColour(stage) {
@@ -650,14 +658,17 @@
           } else {
             lines.push('距免疫线还差 ' + (C.BLIGHT.immuneLevel - nd.level) + ' 级（练到 Lv' + C.BLIGHT.immuneLevel + ' 菌瘟就啃不动）');
           }
-          /* 边境对峙：与敌菌相邻时的维持费倍率 + 兵锋对比 ——
-           * 「这格为什么水费贵了」必须在这里给出答案。 */
-          var bm = st.borderMul && st.borderMul[nd.id];
-          if (bm) {
-            var pw = (st.enemyCfg && st.enemyCfg.prowess) || 0;
-            lines.push('⚔ 边境对峙 —— 维持费 ×' + bm +
-                       (nd.level < pw ? '（Lv' + nd.level + ' < 兵锋 ' + pw + '，压不住）'
-                                      : '（Lv' + nd.level + ' ≥ 兵锋 ' + pw + '，顶住了）'));
+          /* 前线拉锯：这格的攻防状态 + 兵锋对比 —— 「守不守得住」一眼可读 */
+          var fs2 = st.frontierStats;
+          var pw2 = (st.enemyCfg && st.enemyCfg.prowess) || 0;
+          if (fs2 && fs2.pushing[nd.id]) {
+            lines.push('⚔ 前线推进中 —— Lv' + nd.level + ' ≥ 兵锋 ' + pw2 +
+                       '，每 7 秒啃掉一格敌菌（占领后要练级才守得住）');
+          } else if (fs2 && fs2.pushed[nd.id]) {
+            var hpLeft = nd.hp == null ? 100 : Math.round(nd.hp);
+            var rounds = Math.max(1, Math.ceil(hpLeft / 34));
+            lines.push('⚔ 前线受压 —— Lv' + nd.level + ' < 兵锋 ' + pw2 +
+                       '，还剩 ' + hpLeft + ' 血（约 ' + rounds + ' 回合后易主，练级或放弃）');
           }
           if (nd.cargo > 0) lines.push('货物流量 ' + nd.cargo.toFixed(1) + '/s');
           /* 结构角色：主干 / 汇流的吞吐倍率与产量代价都要写清楚，
@@ -1028,6 +1039,7 @@
       this.drawEnemy(st);
       this.drawFlow(st, time);
       this.drawGnats(st, time);
+      this.drawFrontierEvents(st, time);   // 必须画在 drawNetwork 之后（netGfx 每帧清屏）
       this.drawFloaters(st);
       /* 环境动效层：漂浮孢子 / 增益区粒子 / 核心喷发 / 转生扩散环 */
       AMB.draw(this.fx, this.fxGfx, st, dt, time, function (gx, gy) {
@@ -1337,12 +1349,35 @@
           g.lineStyle(1.4, COL.best, 0.26 + lv * 0.05);
           g.strokeCircle(x, y, R * (0.95 + lv * 0.055));
         }
-        // 边境对峙：红色警戒环（×3 压不住的还会闪）—— 对抗的代价必须可见
-        var bmul = st.borderMul && st.borderMul[n.id];
-        if (bmul) {
-          var alarm = bmul >= 3 ? 0.5 + 0.5 * Math.sin(time / 240) : 0.6;
-          g.lineStyle(2, COL.bad, 0.35 + 0.4 * alarm);
-          g.strokeCircle(x, y, R * 1.62);
+        /* ---- 前线拉锯的可视化 ----
+         * 受压：红色血条弧 + 闪烁（这格正在被啃，3 回合内不救就易主）
+         * 推进：绿色脉冲环（这格正在啃对面的地）
+         * 血条：黄→橙→红随血量下降 —— 「还能守几回合」一眼可读 */
+        var fs = st.frontierStats;
+        var hpv = n.hp;
+        if (hpv != null) {
+          var ratio = Math.max(0, Math.min(1, hpv / 100));
+          var hc = ratio > 0.6 ? 0x8fc46a : ratio > 0.3 ? 0xe0a83a : 0xd0503a;
+          g.lineStyle(2.4, hc, 0.95);
+          g.beginPath();
+          g.arc(x, y, R * 1.52, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ratio, false);
+          g.strokePath();
+          if (ratio <= 0.6) {
+            var flash = 0.4 + 0.4 * Math.sin(time / 200);
+            g.lineStyle(1.6, COL.bad, flash);
+            g.strokeCircle(x, y, R * 1.72);
+          }
+        }
+        if (fs) {
+          if (fs.pushing[n.id]) {
+            var pulse = 0.5 + 0.5 * Math.sin(time / 260);
+            g.lineStyle(2, 0x8fc46a, 0.4 + 0.45 * pulse);   // 推进=绿脉冲
+            g.strokeCircle(x, y, R * 1.45);
+          } else if (fs.pushed[n.id]) {
+            var alarm2 = 0.5 + 0.5 * Math.sin(time / 200);
+            g.lineStyle(1.8, COL.bad, 0.3 + 0.45 * alarm2);
+            g.strokeCircle(x, y, R * 1.45);
+          }
         }
         /* 结构角色：主干用实心大环 + 更亮的内点，汇流用虚线感的双环。
          * 与强化的暖色光环分开（那是 --best 暖黄，结构用冷青），
@@ -1396,6 +1431,37 @@
     /* 对手菌种：玫红色菌斑铺在它们占的格子上（与玩家的白绿、菌瘟的紫、
      * 害虫的红都区分开）。格子位置永不变动，精灵只在数量增长时新建，
      * 之后每帧零维护 —— 对手后期有几百格，别每帧都 set 一遍。 */
+    /* 前线爆发事件环：推进（绿，外扩）/ 失地（红，内缩）/ 拔核（金，双层）。
+     * 时间戳是 performance.now()，与 Phaser 帧时钟不同源 —— age<0 直接丢弃
+     * （虚拟时间快进倒挂，2026-10-10 满屏怪圈的教训）。 */
+    drawFrontierEvents(st, time) {
+      var g = this.netGfx;
+      var evs = st.frontierEvents;
+      if (!evs || !evs.length) return;
+      var now = performance.now();
+      for (var i = evs.length - 1; i >= 0; i--) {
+        var ev = evs[i];
+        var age = (now - ev.t) / 700;
+        if (age < 0) { evs.splice(i, 1); continue; }
+        if (age >= 1) { evs.splice(i, 1); continue; }
+        var x = GRID.OX + (ev.x + 0.5) * GRID.CELL;
+        var y = GRID.OY + (ev.y + 0.5) * GRID.CELL;
+        var col = ev.kind === 'push' ? 0x9fd98a : ev.kind === 'lost' ? 0xe0705a : 0xffd76a;
+        var fade = 1 - age;
+        if (ev.kind === 'lost') {
+          g.lineStyle(2.6, col, 0.7 * fade);
+          g.strokeCircle(x, y, GRID.CELL * (1.3 - age * 0.9));
+        } else {
+          g.lineStyle(2.6, col, 0.75 * fade);
+          g.strokeCircle(x, y, GRID.CELL * (0.6 + age * 1.8));
+          if (ev.kind === 'core') {
+            g.lineStyle(1.4, col, 0.5 * fade);
+            g.strokeCircle(x, y, GRID.CELL * (0.3 + age * 3.2));
+          }
+        }
+      }
+    }
+
     drawEnemy(st) {
       var en = st.enemy;
       var want = en ? en.cells.length : 0;
@@ -1403,13 +1469,23 @@
       while (pool.length > want) { var dead = pool.pop(); if (dead) dead.destroy(); }
       if (!en) return;
       for (var i = 0; i < en.cells.length; i++) {
-        if (pool[i]) continue;                     // 已存在：位置/贴图永不变，直接跳过
-        var c = en.cells[i];
-        var isCore = i === 0;
-        var spr = this.add.image(centerX(c[0]), centerY(c[1]), 't_myco')
-          .setDepth(isCore ? 5.5 : 4.5)
-          .setTint(isCore ? 0xff8a9a : 0xc46272);   // 暗玫红：可辨识但不喧宾夺主
-        var w = GRID.CELL * (isCore ? 1.30 : 0.56);
+        var c2 = en.cells[i];
+        var isCore2 = i === 0;
+        var ehp = st.enemyHp && st.enemyHp[c2[0] + ',' + c2[1]];
+        var dmgRatio = (ehp == null) ? 1 : Math.max(0.25, ehp / 100);
+        if (pool[i]) {
+          /* 已存在：血量变化只改色调/大小（位置贴图不变） */
+          var sp2 = pool[i];
+          var baseTint = isCore2 ? 0xff8a9a : 0xc46272;
+          sp2.setTint(dmgRatio < 1 ? shadeHex(baseTint, 0.45 + 0.55 * dmgRatio) : baseTint);
+          var bw = GRID.CELL * (isCore2 ? 1.30 : 0.56) * (0.75 + 0.25 * dmgRatio);
+          sp2.setDisplaySize(bw, bw);
+          continue;
+        }
+        var spr = this.add.image(centerX(c2[0]), centerY(c2[1]), 't_myco')
+          .setDepth(isCore2 ? 5.5 : 4.5)
+          .setTint(isCore2 ? 0xff8a9a : 0xc46272);   // 暗玫红：可辨识但不喧宾夺主
+        var w = GRID.CELL * (isCore2 ? 1.30 : 0.56);
         spr.setDisplaySize(w, w);
         pool[i] = spr;
       }
