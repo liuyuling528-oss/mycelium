@@ -83,7 +83,15 @@
       setTimeout(function () {
         var Sim = window.MYC.Sim, game = window.MYC.game, st = game.state;
         st.t = 200;                                   // 过缓冲期
-        Sim.placeEnemyAt(st, st.core.x + 3, st.core.y); // 敌菌贴到玩家网络旁
+        /* 核心 +3，手工铺两个非核心敌格（+2 与 +2,+1）—— 单格落地时代
+         * 直接贴核心打会走拔核路径，验不到普通拉锯；两个 body 格分别
+         * 对着下面的 Lv2（推进）和 Lv0（受压）节点。 */
+        Sim.placeEnemyAt(st, st.core.x + 3, st.core.y);
+        [[2, 0], [2, 1]].forEach(function (d) {
+          var bx = st.core.x + d[0], by = st.core.y + d[1];
+          st.grid[by * st.mapW + bx].enemy = true;
+          st.enemy.cells.push([bx, by]);
+        });
         Sim.addNode(st, st.core.x + 1, st.core.y, 'soil');
         st.nodes[st.nodes.length - 1].level = 2;       // Lv2 = 打得过兵锋2 → 推进
         Sim.addNode(st, st.core.x + 1, st.core.y + 1, 'soil');  // Lv0 → 受压
@@ -110,7 +118,12 @@
       setTimeout(function () {
         var Sim = window.MYC.Sim, game = window.MYC.game, st = game.state;
         st.t = 200;                                   // 过缓冲期
-        Sim.placeEnemyAt(st, st.core.x + 3, st.core.y); // 敌菌贴到玩家网络旁
+        /* 核心 +3 + 非核心 body 格 +2：单格落地时代，贴着核心打会走拔核
+         * 路径；body 格才是普通拉锯的接壤格。 */
+        Sim.placeEnemyAt(st, st.core.x + 3, st.core.y);
+        var bx = st.core.x + 2, by = st.core.y;
+        st.grid[by * st.mapW + bx].enemy = true;
+        st.enemy.cells.push([bx, by]);
         Sim.addNode(st, st.core.x + 1, st.core.y, 'soil');
         st.nodes[st.nodes.length - 1].level = 0;       // Lv0 < 兵锋2 → 受压
         /* 跑两个回合：受压格掉血、战报/统计就位，再冻结定格。
@@ -1039,6 +1052,14 @@
        'panel=' + document.getElementById('sNodes').textContent + ' state=' + st.nodes.length);
     ok('升级项全部渲染', document.querySelectorAll('#upgrades .item').length === window.MYC.CONFIG.UPGRADES.length,
        document.querySelectorAll('#upgrades .item').length + ' 项');
+    /* 转生卡常驻可见（2026-10-15 用户实测「我的转生按钮呢」）：
+     * 旧版藏到「孢子 ≥ 首转成本 25%」（175 点）才出现，玩家前几分钟
+     * 根本不知道游戏有长期目标。渐进解锁留给「能力」，不给「目标」——
+     * 此时孢子远不到 25%，卡片必须在。 */
+    ok('转生卡常驻可见（长期目标不隐藏）',
+       !document.getElementById('prestigeCard').classList.contains('hidden'),
+       'spore=' + Math.round(st.res.spore) + ' / 25%线=' +
+       Math.round(window.MYC.Sim.prestigeCost(st) * 0.25));
   });
 
   step(function () {
@@ -4015,31 +4036,38 @@
     var Sim = window.MYC.Sim, C = window.MYC.CONFIG;
     var tmp = Sim.newGame(90210, {}, {});
 
-    ok('对手菌种已落地（离玩家核心最远的角落）',
-       !!tmp.enemy && tmp.enemy.cells.length >= 4,
+    /* 单格孢子落地（2026-10-15 镜像化）：敌菌不凭空落地一坨 ——
+     * 用户原话「一来就有这么多节点」。每个网络都从一粒孢子开始。 */
+    ok('对手以单格孢子落地（镜像：不凭空出一坨）',
+       !!tmp.enemy && tmp.enemy.cells.length === 1 && C.ENEMY.blob === 1,
        tmp.enemy ? ('对手 (' + tmp.enemy.x + ',' + tmp.enemy.y + ')　' + tmp.enemy.cells.length + ' 格') : 'null');
     var far = Math.abs(tmp.enemy.x - tmp.core.x) + Math.abs(tmp.enemy.y - tmp.core.y);
     ok('对手落地在地图远端（不是贴脸）', far > (tmp.mapW + tmp.mapH) / 3,
        '曼哈顿距离 ' + far + '（地图半周约 ' + ((tmp.mapW + tmp.mapH) / 2) + '）');
 
-    /* 开局缓冲期内不扩张（tick 到 startDelay - 1 秒，第 startDelay 秒整
-     * 恰好越线 —— 按设计那一拍就该开始长第一格） */
+    /* 无开局静默期（2026-10-15 用户口径「他一开始不动」）：镜像化后
+     * 敌菌和你同一天起步，先手优势来自手速，不来自系统给的发呆时间。 */
+    ok('对手无开局静默期（一开始就长）', C.ENEMY.startDelay === 0,
+       'startDelay=' + C.ENEMY.startDelay + 's');
     var c0 = tmp.enemy.cells.length;
-    for (var i = 0; i < C.ENEMY.startDelay - 1; i++) Sim.tick(tmp, 1);
-    ok('开局缓冲期内对手不扩张', tmp.enemy.cells.length === c0,
-       '延迟 ' + C.ENEMY.startDelay + 's，t=' + tmp.t + 's，仍 ' + tmp.enemy.cells.length + ' 格');
+    for (var i0 = 0; i0 < 13; i0++) Sim.tick(tmp, 1);
+    ok('对手开局即扩张（13s 内长出第一格）', tmp.enemy.cells.length > c0,
+       c0 + ' → ' + tmp.enemy.cells.length + ' 格（t=' + tmp.t + 's）');
 
-    /* 缓冲期后按**玩家的同一节奏**扩张（2026-10-15 镜像化）：
-     * 敌菌间隔 = GROW.autoInterval（6s，无升级折扣），所以 240s 内
-     * 最多长 240/6 = 40 格 —— 这是「敌菌绝不比玩家快」的不变量；
+    /* 之后按**玩家的同一节奏**扩张（2026-10-15 镜像化）：
+     * 敌菌间隔 = GROW.autoInterval（6s，无升级折扣），所以任意 240s 窗口内
+     * 增量 ≤ 240/6 = 40 格 —— 这是「敌菌绝不比玩家快」的不变量；
      * 下界保证它确实在长（经济没死）。旧版断言的是 cap 曲线
-     *（baseCap + t×capPerSec 人工上限），那套已随镜像化删除。 */
+     *（baseCap + t×capPerSec 人工上限），那套已随镜像化删除。
+     * ⚠ 窗口从「当前时刻」起算（前面已预跑过 13s，从 t=0 算会少数拍数）。 */
+    var c1 = tmp.enemy.cells.length, t1 = tmp.t;
     for (var j = 0; j < 240; j++) Sim.tick(tmp, 1);
-    var maxGain = Math.ceil(240 / C.GROW.autoInterval);
-    ok('缓冲期后对手按玩家节奏扩张（≤1格/6s 且确实在长）',
-       tmp.enemy.cells.length > c0 + 10 && tmp.enemy.cells.length <= c0 + maxGain,
-       c0 + ' → ' + tmp.enemy.cells.length + ' 格（300s；玩家基准 ' +
-       C.GROW.autoInterval + 's/格 → 240s 上限 ' + maxGain + ' 格）');
+    var elapsed = tmp.t - t1;
+    var maxGain = Math.ceil(elapsed / C.GROW.autoInterval);
+    ok('对手按玩家节奏扩张（≤1格/6s 且确实在长）',
+       tmp.enemy.cells.length > c1 + 10 && tmp.enemy.cells.length <= c1 + maxGain,
+       c1 + ' → ' + tmp.enemy.cells.length + ' 格（' + elapsed + 's；玩家基准 ' +
+       C.GROW.autoInterval + 's/格 → 上限 ' + maxGain + ' 格）');
 
     /* 领土互斥：玩家的候选格绝不含敌格；直接长进敌格必须失败 */
     var cs = Sim.candidates(tmp);
@@ -4076,11 +4104,18 @@
     ok('魔鬼的版图更逼近玩家核心', hard.avgDP < easy.avgDP,
        '距玩家 简单 ' + easy.avgDP.toFixed(1) + ' vs 魔鬼 ' + hard.avgDP.toFixed(1));
 
-    /* ---- 前线拉锯（2026-10-15 核心改造：生长即战争）---- */
+    /* ---- 前线拉锯（2026-10-15 核心改造：生长即战争）----
+     * 摆位说明（单格落地时代）：敌菌核心放 +3，再把 +2 手工标成敌菌的
+     * 非核心接壤格。**必须这样摆** —— 单格落地后 placeEnemyAt 只放核心，
+     * 若让玩家直接贴着核心打，占领走的是「拔核」路径（清斑重落），
+     * 验不到普通占领。旧版 blob=8，菌斑自然铺出非核心接壤格，没这问题。 */
     function frontSetup(diff, lv) {
       var t = Sim.newGame(555002, {}, {}, 0, 0, diff);
-      t.t = 200;                                  // 过缓冲期
-      Sim.placeEnemyAt(t, t.core.x + 3, t.core.y); // 敌菌贴到玩家旁边
+      t.t = 200;                                  // 过缓冲期（镜像化后 delay=0，无妨）
+      Sim.placeEnemyAt(t, t.core.x + 3, t.core.y); // 敌菌核心在 +3
+      var bx = t.core.x + 2, by = t.core.y;
+      t.grid[by * t.mapW + bx].enemy = true;       // +2 = 非核心敌格（与 +1 的玩家节点接壤）
+      t.enemy.cells.push([bx, by]);
       Sim.addNode(t, t.core.x + 1, t.core.y, 'soil');
       var nd = t.nodes[t.nodes.length - 1];
       nd.level = lv;
@@ -4245,10 +4280,13 @@
     var mir = Sim.newGame(555007, {}, {}, 0, 0, 3);
     mir.t = 200;                                  // 过缓冲期
     Sim.placeEnemyAt(mir, mir.core.x + 12, mir.core.y);   // 放远一点，让它自己挣
-    var res0 = mir.enemyRes || 0;
+    var n0 = mir.enemy.cells.length;
     for (var mi = 0; mi < 30; mi++) Sim.tick(mir, 1);
-    ok('镜像·敌菌水池按「产出×效率+渗水」增长',
-       (mir.enemyRes || 0) > res0, 'enemyRes ' + Math.round(res0) + ' → ' + Math.round(mir.enemyRes || 0));
+    /* 水池在这 30s 里可能是**净流出**（起步金正在变成新格，500→171 实测）
+     * —— 「经济在干活」的判据不是水池涨，而是它真的用钱长出了格子。 */
+    ok('镜像·敌菌经济能驱动扩张（起步金→新格，水池收支随投入浮动）',
+       mir.enemy.cells.length > n0,
+       'cells ' + n0 + ' → ' + mir.enemy.cells.length + '，res=' + Math.round(mir.enemyRes || 0));
     ok('镜像·敌菌孢子速率随版图增长（代谢 × 格数）',
        (function () {
          var a = Sim.newGame(555008, {}, {}, 0, 0, 3);

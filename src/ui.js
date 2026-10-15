@@ -1051,7 +1051,11 @@ var UI = (function () {
         el.rivalEta.className = 'hint';
       } else {
         var eta = Math.max(0, (need2 - sp2) / r2);
-        el.rivalEta.innerHTML = '按当前速率，对手约 <b>' + clk(eta) +
+        /* 超过一小时不显示具体分秒（1 格敌菌早期速率 ~0.01/s，倒计时
+         * 是十小时量级，印成 "583:20" 只会让人以为 UI 坏了）——
+         * 改成「1 小时以上」，随它版图长大速率上来再显示精确值。 */
+        var etaTxt = eta >= 3600 ? '1 小时以上' : clk(eta);
+        el.rivalEta.innerHTML = '按当前速率，对手约 <b>' + etaTxt +
           '</b> 后完成转生（' + r2.toFixed(1) + '/s）—— 推进 / 拔核可拖慢';
         el.rivalEta.className = 'hint' + (eta < 120 ? ' warn' : '');
       }
@@ -1161,7 +1165,13 @@ var UI = (function () {
     // 转生
     var cost = window.MYC.Sim.prestigeCost(state);
     var can = window.MYC.Sim.canPrestige(state);
-    el.prestigeCard.classList.toggle('hidden', !(state.prestiges > 0 || state.res.spore >= cost * 0.25));
+    /* 转生卡**从第一秒就可见**（2026-10-15 用户实测「我的转生按钮呢」）：
+     * 旧版藏到「孢子 ≥ 首转成本 25%」（175 点，好几分钟）才出现 ——
+     * 玩家在前几分钟里根本不知道游戏有个长期目标，面板上也没有任何
+     * 「我在冲什么」的提示。渐进解锁的规矩留给「能力」，不给「目标」：
+     * 按钮照旧在攒够前点不了（canPrestige 管着），但进度条和文案常驻，
+     * 玩家随时知道自己在冲什么。 */
+    el.prestigeCard.classList.remove('hidden');
     el.pText.innerHTML = '孢子 ' + fmt(state.res.spore) + ' / ' + fmt(cost);
     el.pBar.style.width = Math.min(100, (state.res.spore / cost) * 100).toFixed(1) + '%';
     var gain = window.MYC.Sim.geneGain(state);
