@@ -101,6 +101,35 @@
     });
   }
 
+  /* ---- 开发用：?wararrow=1 —— 摆一个「威胁在视野外」的局面（截图边缘箭头）----
+   * 和 frontier=1 的区别：镜头拉高倍、背对敌菌，让受压前线和对手核心
+   * 都落到屏幕外 —— 看的就是 drawWarAlert 的两级边缘指示。
+   * 用法：python tools/shot.py 8343 1400 1000 "?wararrow=1&diff=3" */
+  if (/[?&]wararrow=1/.test(q)) {
+    window.addEventListener('load', function () {
+      setTimeout(function () {
+        var Sim = window.MYC.Sim, game = window.MYC.game, st = game.state;
+        st.t = 200;                                   // 过缓冲期
+        Sim.placeEnemyAt(st, st.core.x + 3, st.core.y); // 敌菌贴到玩家网络旁
+        Sim.addNode(st, st.core.x + 1, st.core.y, 'soil');
+        st.nodes[st.nodes.length - 1].level = 0;       // Lv0 < 兵锋2 → 受压
+        /* 跑两个回合：受压格掉血、战报/统计就位，再冻结定格。
+         * &live=1 跳过冻结 —— 截「活敌菌」画面（倒计时行显示真实速率）。 */
+        Sim.tick(st, 7.5); Sim.tick(st, 7.5);
+        if (!/[?&]live=1/.test(q)) st.dev.enemyOn = false;
+        var sc = game.scene, G = window.MYC.CONFIG.GRID;
+        if (sc && sc.setView) {
+          sc.viewMode = 'manual';
+          /* 高倍 + 镜头偏向核心左侧：敌菌（+3 格）与受压格（+1 格）
+           * 都在屏幕右边界之外，两级箭头都应出现。 */
+          sc.setView(10, G.OX + (st.core.x - 2) * G.CELL, G.OY + (st.core.y + 0.5) * G.CELL);
+          sc.syncViewBtn();
+        }
+        game.dirty = true;
+      }, 700);
+    });
+  }
+
   /* ---- 开发用：?choice=1 —— 把转生卡池弹窗摆出来，方便截图 ---- */
   if (/[?&]choice=1/.test(q)) {
     window.addEventListener('load', function () {
@@ -4103,6 +4132,31 @@
     Sim.tick(fP, 7.5);
     ok('拉锯·和平档无前线统计', fP.frontierStats === null, '');
 
+    /* ---- 战报与倒计时数据（2026-10-15 信息层：失败可归因）----
+     * 面板的「推/压分解」「丢格必响 toast」「预计败北倒计时」
+     * 全部从这三个字段读，这里钉住它们的口径。 */
+    ok('拉锯·面板计数：pushingN/pushedN 与 id 映射一致',
+       (function () {
+         var fs = fA.t.frontierStats;
+         return !!fs && fs.pushingN === Object.keys(fs.pushing).length &&
+                fs.pushedN === Object.keys(fs.pushed).length;
+       })(),
+       '推 ' + (fA.t.frontierStats ? fA.t.frontierStats.pushingN : -1) +
+       ' / 压 ' + (fA.t.frontierStats ? fA.t.frontierStats.pushedN : -1));
+    ok('拉锯·推进战报带坐标（UI toast 报「哪一侧」的数据源）',
+       !!fA.t.lastWar && fA.t.lastWar.captured >= 1 &&
+       fA.t.lastWar.capturedAt.length === fA.t.lastWar.captured &&
+       fA.t.lastWar.capturedAt[0].x === capX && fA.t.lastWar.capturedAt[0].y === capY,
+       fA.t.lastWar ? JSON.stringify(fA.t.lastWar.capturedAt) : 'null');
+    ok('拉锯·失地战报带坐标',
+       !!fB.t.lastWar && fB.t.lastWar.lost >= 1 &&
+       fB.t.lastWar.lostAt.length === fB.t.lastWar.lost,
+       fB.t.lastWar ? JSON.stringify(fB.t.lastWar.lostAt) : 'null');
+    ok('敌菌孢子速率：有对手时为正（败北倒计时的数据源）',
+       fA.t.enemySporeRate > 0, 'rate=' + (fA.t.enemySporeRate || 0).toFixed(2) + '/s');
+    ok('敌菌孢子速率：和平档为 0（倒计时行不显示）',
+       fP.enemySporeRate === 0, 'rate=' + (fP.enemySporeRate || 0));
+
     /* ---- 敌菌转生竞速（2026-10-12 用户设计）---- */
     var needEasy = Sim.enemyPrestigeNeed(Sim.newGame(31337, {}, {}, 0, 0, 1));
     var needNorm = Sim.enemyPrestigeNeed(Sim.newGame(31337, {}, {}, 0, 0, 2));
@@ -4265,6 +4319,42 @@
     var sc = window.MYC.game.scene;
     ok('Phaser 主循环确实运行过', sc.frames > 0, 'frames=' + sc.frames + '（起始 ' + S.frames0 + '）');
     ok('渲染层没有残留异常', errs.length === 0, errs.length ? errs.join(' | ') : '无');
+
+    /* ---- 战争指示层：屏幕边缘箭头（2026-10-15 信息层）----
+     * 小地图上缩放下限保证整张图装得进画布，敌人永远在屏内 ——
+     * 箭头只在转生后的大地图 / 手动缩放过才会触发，所以这里直接打
+     * _edgeArrow 的换算函数本身（视野外 → 画 + 返回 true；
+     * 视野内 → 不画 + 返回 false），不依赖构造一个屏外局面。 */
+    if (sc._edgeArrow && sc.warGfx) {
+      var far = sc._edgeArrow(sc.warGfx, sc.warLabelA, -9999, -9999, 0xff5a4a, 0.9, 9, 'TEST-ARROW');
+      ok('边缘箭头：视野外目标 → 画了且返回 true',
+         far === true && sc.warLabelA.visible === true,
+         'drew=' + far + ' label.visible=' + sc.warLabelA.visible);
+      var near = sc._edgeArrow(sc.warGfx, sc.warLabelA, sc.viewCx, sc.viewCy, 0xff5a4a, 0.9, 9, 'TEST-ARROW');
+      ok('边缘箭头：视野内目标 → 不画且返回 false',
+         near === false && sc.warLabelA.visible === false,
+         'drew=' + near);
+      /* 标签必须夹在画布内（顶部边缘时翻到箭头下方，否则 y 为负被裁掉） */
+      var lp = { x: sc.warLabelA.x, y: sc.warLabelA.y };
+      ok('边缘箭头：标签坐标在画布内',
+         lp.x >= 0 && lp.y >= 0 &&
+         lp.x + sc.warLabelA.width <= sc.scale.width &&
+         lp.y + sc.warLabelA.height <= sc.scale.height,
+         'label @' + Math.round(lp.x) + ',' + Math.round(lp.y) +
+         ' canvas ' + sc.scale.width + '×' + sc.scale.height);
+      sc.warLabelA.setVisible(false);
+      sc.warGfx.clear();
+    }
+    /* drawWarAlert 全路径不崩（有对手时跑一遍：含 pushed 查找 + 两级箭头） */
+    var stW = window.MYC.game.state;
+    if (stW.enemy) {
+      var hadErr = errs.length;
+      sc.drawWarAlert(stW, performance.now());
+      ok('战争指示层：drawWarAlert 有对手时运行不崩', errs.length === hadErr, '');
+      sc.warGfx.clear();
+      sc.warLabelA.setVisible(false);
+      sc.warLabelB.setVisible(false);
+    }
   });
 
   /* ---------------------------------------------------------------- 驱动 */

@@ -141,12 +141,18 @@ var Sim = (function () {
       pendingBuff: null,
       /* ---- 前线拉锯的瞬态 ----
        * enemyHp：敌格当前血量（key "x,y"）；frontierStats：本回合统计
-       * （UI/渲染消费）；frontierEvents：推进/失地爆发演出队列；
-       * frontierMet：是否已与敌菌接壤过（首接触提示只弹一次）。 */
+       * （UI/渲染消费，pushingN/pushedN 是给面板的计数版）；
+       * frontierEvents：推进/失地爆发演出队列；
+       * frontierMet：是否已与敌菌接壤过（首接触提示只弹一次）；
+       * lastWar：上一回合战报（带坐标 —— UI 的「丢格必响」靠它，
+       *   事件环只活 700ms 且视野可能不在那段前线，战报让失败可归因）；
+       * enemySporeRate：敌菌孢子瞬时速率（面板「预计败北倒计时」用）。 */
       enemyHp: {},
       frontierStats: null,
       frontierEvents: [],
       frontierMet: false,
+      lastWar: null,
+      enemySporeRate: 0,
       /* 开发者面板的运行时旋钮（**会话级**，不进存档 —— 存档里出现
        * ×10 倍率的资源会污染正常平衡口径）。老存档没有这个字段，
        * 所有用到的地方都要 dev 容错读取。 */
@@ -917,7 +923,10 @@ var Sim = (function () {
     } else {
       mul = (E.prestigeMul != null) ? E.prestigeMul : 0.5;
     }
-    return Math.ceil(prestigeCost(state) * mul);
+    /* 下限 1：倍率 0（和平档）时若因开发者工具（placeEnemyAt 强放对手）
+     * 出现了一个敌菌，need=0 会让它「攒了 0 孢子就转生」—— 第一 tick
+     * 直接判负。地板 1 保证「有对手就至少要攒 1 点」，语义才不会翻车。 */
+    return Math.max(1, Math.ceil(prestigeCost(state) * mul));
   }
 
   /* ---- 拔核成功：敌菌核心被玩家的四邻包围 → 死 ----
@@ -1125,10 +1134,10 @@ var Sim = (function () {
   function tickEnemy(state, dt) {
     var E = state.enemyCfg || CONFIG.ENEMY;
     var en = state.enemy;
-    if (!en) return;
+    if (!en) { state.enemySporeRate = 0; return; }
     /* 开发者面板的对手开关：关 = 冻结（版图保留但不扩张），不是清除 */
-    if (state.dev && state.dev.enemyOn === false) return;
-    if (state.t < E.startDelay) return;
+    if (state.dev && state.dev.enemyOn === false) { state.enemySporeRate = 0; return; }
+    if (state.t < E.startDelay) { state.enemySporeRate = 0; return; }
     var db = state.enemyBuffs || {};   // 玩家挑的增强计数（下面的经济/成本/孢子都要用）
     en.timer += dt;
     /* ---- 前线拉锯：每 cycle 秒一个回合 ----
@@ -1176,6 +1185,9 @@ var Sim = (function () {
                  + (E.sporeBase != null ? E.sporeBase : 0.15))
                 * Math.pow(1.2, db.sporeGain || 0);
     state.enemySpore = (state.enemySpore || 0) + sporeIn * dt;
+    /* 瞬时速率：面板的「预计败北倒计时」靠它。瞬态字段，不进存档 ——
+     * 读档后第一个 tick 就会重算，旧值没有意义。 */
+    state.enemySporeRate = sporeIn;
     if ((state.enemySpore || 0) >= enemyPrestigeNeed(state)) {
       state.lost = { at: Math.round(state.t), spore: Math.round(state.enemySpore) };
       return;
@@ -2007,7 +2019,7 @@ var Sim = (function () {
     var pushCells = {};      // 敌格 key -> 叠伤层数
     var pushed = {};         // 玩家 nodeId -> 叠伤层数
     var pushing = {}, pushedIds = {};
-    var touching = 0;
+    var touching = 0, nPushing = 0, nPushed = 0;
     for (var i = 1; i < state.nodes.length; i++) {
       var nd = state.nodes[i];
       if (nd.dist < 0) continue;
@@ -2025,7 +2037,7 @@ var Sim = (function () {
       }
       touching++;
       if (nd.level >= prowess) {           // 压得住兵锋 → 推进
-        pushing[nd.id] = 1;
+        pushing[nd.id] = 1; nPushing++;
         for (var k2 = 0; k2 < nb.length; k2++) {
           var kx = nb[k2][0], ky = nb[k2][1];
           if (!inBounds(kx, ky)) continue;
@@ -2034,11 +2046,17 @@ var Sim = (function () {
           pushCells[key] = Math.min(2, (pushCells[key] || 0) + 1);
         }
       } else {                             // 练不动 → 受压
-        pushedIds[nd.id] = 1;
+        pushedIds[nd.id] = 1; nPushed++;
         pushed[nd.id] = Math.min(2, t);
       }
     }
-    state.frontierStats = { touching: touching, pushing: pushing, pushed: pushedIds };
+    /* pushingN/pushedN 是给面板的**计数**版（pushing/pushed 是 id 映射，
+     * 渲染层按 id 查状态用）。没这两个计数，UI 每 0.1s 要 Object.keys
+     * 一遍几百个 id —— 面板是十兆赫刷新，不值得。 */
+    state.frontierStats = {
+      touching: touching, pushing: pushing, pushed: pushedIds,
+      pushingN: nPushing, pushedN: nPushed
+    };
     if (touching > 0 && !state.frontierMet) state.frontierMet = true;   // UI 首接触提示
 
     /* 敌格：掉血 / 掉光被占；没被推的敌格缓慢回血（停手就能养回来） */
@@ -2065,6 +2083,7 @@ var Sim = (function () {
     }
 
     var gained = 0, lostN = 0;
+    var capturedAt = [], lostAt = [];
     for (var c = 0; c < captured.length; c++) {
       var parts = captured[c].split(',');
       var cx = parseInt(parts[0], 10), cy = parseInt(parts[1], 10);
@@ -2085,6 +2104,7 @@ var Sim = (function () {
       delete state.enemyHp[captured[c]];
       addNode(state, cx, cy, cell.soil);
       gained++;
+      capturedAt.push({ x: cx, y: cy });
       state.counters.frontierPush = (state.counters.frontierPush || 0) + 1;
       pushFrontierEvent(state, cx, cy, 'push');
     }
@@ -2100,10 +2120,17 @@ var Sim = (function () {
         state.enemy.cells.push([lx, ly]);
         state.counters.frontierLost = (state.counters.frontierLost || 0) + 1;
         lostN++;
+        lostAt.push({ x: lx, y: ly });
         pushFrontierEvent(state, lx, ly, 'lost');
       }
     }
-    if (gained || lostN) invalidateCands(state);
+    if (gained || lostN) {
+      invalidateCands(state);
+      /* 战报（瞬态，不进存档）：给 UI 的「丢格必响」用 ——
+       * 事件环只活 700ms 且玩家视野可能不在那段前线，
+       * 战报带坐标，UI 能立刻 toast + 记日志，失败才可归因。 */
+      state.lastWar = { t: state.t, captured: gained, lost: lostN, capturedAt: capturedAt, lostAt: lostAt };
+    }
     return { captured: gained, lost: lostN };
   }
 

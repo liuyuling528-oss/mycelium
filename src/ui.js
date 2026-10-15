@@ -10,6 +10,18 @@ var UI = (function () {
 
   var C, state, el = {}, upRows = {}, geneRows = {}, abRows = {}, msRows = {}, strainRows = {};
   var logBuf = [], seenSoils = {}, acc = 0, lastAgLocked = null, lastStructSig = '', lastTreeSig = '';
+  /* 战报跟踪器（UI 层，rebind 归零）：用 counters 差值判断「本回合有没有
+   * 新战果」，避免直接消费瞬态字段（读档/换局时它们会归零重算）。
+   * lastToastT 走游戏时间 state.t —— 不用真实时钟，暂停时也该安静。 */
+  var war = { lostN: 0, pushN: 0, kills: 0, sporeStage: 0, lastToastT: -99 };
+  /* 战场方位词（相对核心）：丢格 toast 里告诉玩家是哪一侧塌了。
+   * 屏幕坐标 y 向下，所以 dy<0 = 北。 */
+  function dirText(dx, dy) {
+    var a = Math.atan2(dy, dx) * 180 / Math.PI;   // 0=东 90=南 180/-180=西 -90=北
+    var names = ['正东', '东南', '正南', '西南', '正西', '西北', '正北', '东北'];
+    var i = Math.round(((a + 360) % 360) / 45) % 8;
+    return names[i] + '侧';
+  }
   var KEY = 'mycelium_save_v1';
   var DIFFKEY = 'mycelium_difficulty_v1';
   function storedDifficulty() {
@@ -76,7 +88,7 @@ var UI = (function () {
     'menu', 'mContinue', 'mKeep', 'mFresh', 'mStats', 'mDev', 'diffBtns', 'diffDesc', 'dDiff',
     'devPanel', 'btnMenu', 'dTime', 'dWater', 'dNutrient', 'dSpore', 'dEnemy',
     'buffOverlay', 'buffHint', 'buffCards', 'dBuffRefresh',
-    'defeatOverlay', 'defeatText', 'defAgain', 'defMenu',
+    'defeatOverlay', 'defeatText', 'defAgain', 'defWipe', 'defMenu', 'rivalEta',
     'dPlace', 'dClearEnemy', 'dPrestige', 'dRes', 'dClose'].forEach(function (id) { el[id] = document.getElementById(id); });
 
     el.seedTxt.textContent = '种子 ' + state.seed;
@@ -134,10 +146,23 @@ var UI = (function () {
         renderBuff();
       });
     }
-    /* 败北画面按钮 */
+    /* 败北画面按钮。
+     * 【为什么主按钮是「带着基因重来」】败北输掉的只是这一局的网络，
+     * 不是永久进度 —— 基因点、里程碑知识、菌株都是几代转生攒下来的，
+     * 「一局输了全部清空」和项目自己的底线（事件「绝不永久损失」）冲突，
+     * 也让新玩家在还没看懂机制时就被烧个精光。
+     * 上一版主按钮是 newGame(false)（全清），实测后果：败北 → 确认框
+     * 「全部清空，无法撤销」→ 多数玩家点下去，家当蒸发。
+     * 现在主出口保留基因（roguelite 的标准语义），
+     * 「彻底重开」降级为次级按钮并仍由 newGame 自己的 confirm 拦一道。 */
     if (el.defAgain) el.defAgain.addEventListener('click', function () {
       hideDefeat();
-      window.MYC.game.newGame(false);        // 全新开始（彻底重来）
+      window.MYC.game.newGame(true);         // 保留基因：败北不是永久损失
+      hideBuffPick(); hideChoice();
+    });
+    if (el.defWipe) el.defWipe.addEventListener('click', function () {
+      hideDefeat();
+      window.MYC.game.newGame(false);        // 彻底重开（newGame 内部带 confirm）
       hideBuffPick(); hideChoice();
     });
     if (el.defMenu) el.defMenu.addEventListener('click', function () {
@@ -783,7 +808,8 @@ var UI = (function () {
     var lost = state.lost || {};
     if (el.defeatText) {
       el.defeatText.innerHTML = '对手菌种完成了它的转生 —— 这片地下世界易主了。<br>' +
-        '坚持了 <b>' + clk(lost.at || state.t) + '</b>，你的本局转生 ' + (state.prestiges || 0) + ' 次。';
+        '坚持了 <b>' + clk(lost.at || state.t) + '</b>，本局转生 ' + (state.prestiges || 0) + ' 次。<br>' +
+        '<span class="hint">基因点、里程碑与菌株已保留 —— 败北输掉的只是这一局的网络。</span>';
     }
     el.defeatOverlay.classList.remove('hidden');
   }
@@ -926,9 +952,21 @@ var UI = (function () {
     el.rSpore.textContent = rate(rt.spore);
 
     el.sNodes.textContent = state.nodes.length;
-    /* 前线读数：接壤格数（推进/受压的分解在悬停提示里） */
+    /* 前线读数：接壤格数 + 推进/受压分解。
+     * 【为什么把分解提到面板上】「12」这个数字玩家无法行动 ——
+     * 他要知道的是「我在赢还是在输」：推 8 / 压 4 是在赢，
+     * 推 1 / 压 9 是墙要塌了，得去练级。受压 >0 时标红。 */
     if (el.sFrontier) {
-      el.sFrontier.textContent = state.frontierStats ? state.frontierStats.touching : 0;
+      var fs = state.frontierStats;
+      if (fs && fs.touching > 0) {
+        /* 无空格紧凑格式：统计格是两列布局，半宽 ≈ 12 个全角字符，
+         * 「推 0 / 压 1」的空格会把数字挤成两行（截图实测）。 */
+        el.sFrontier.textContent = fs.touching + '（推' + (fs.pushingN || 0) +
+                                   '/压' + (fs.pushedN || 0) + '）';
+      } else {
+        el.sFrontier.textContent = '0';
+      }
+      el.sFrontier.classList.toggle('warn', !!(fs && fs.pushedN > 0));
     }
     /* 首次与敌菌接壤：一句话讲清拉锯规则（只弹一次） */
     if (state.frontierMet && !UI._frontierHint) {
@@ -937,6 +975,39 @@ var UI = (function () {
       toast('⚔ 前线接壤：Lv' + pwH + ' 以上才能把敌菌推回去，练不动就会掉格');
       pushLog('⚔ 与对手菌种接壤 —— 前线拉锯开始：等级 ≥ 兵锋 ' + pwH + ' 推进，否则受压');
     }
+    /* ---- 战报 toast：推进 / 失地 / 拔核，每回合结算后必响 ----
+     * 事件环只活 700ms，且玩家视野（自动取景跟网络中心）多半不在
+     * 远角落那段前线 —— 不补这条，丢格几十秒后才发现，失败不可归因。
+     * 用 counters 的差值判断，rebind/换局时归零；4s 内合并成一条，
+     * 多线同时崩也不会刷屏。 */
+    var wLost = state.counters.frontierLost || 0;
+    var wPush = state.counters.frontierPush || 0;
+    var wKill = state.counters.enemyKills || 0;
+    if (wLost > war.lostN || wPush > war.pushN || wKill > war.kills) {
+      /* 4s 静默期：多线同时崩 / 连续推进时合并成一条，不刷屏。
+       * 静默期内**不推进计数器** —— 下一喝 toast 会把累积量一起报出来，
+       * 否则「连丢两格」只会响一声「丢失 1 格」，信息被静默吞掉。 */
+      if (state.t - war.lastToastT >= 4) {
+        war.lastToastT = state.t;
+        if (wLost > war.lostN) {
+          var n = wLost - war.lostN, lw = state.lastWar;
+          var where = '';
+          if (lw && lw.lostAt && lw.lostAt.length) {
+            where = '（' + dirText(lw.lostAt[0].x - state.core.x, lw.lostAt[0].y - state.core.y) + '）';
+          }
+          toast('⚠ 丢失 ' + n + ' 格菌丝' + where + ' —— 把前线菌丝练到 Lv' +
+                ((state.enemyCfg && state.enemyCfg.prowess) || 0) + ' 以上');
+          pushLog('⚔ 前线失守：丢失 ' + n + ' 格' + where + '（练级可夺回）');
+        } else if (wPush > war.pushN) {
+          toast('↗ 推进 ' + (wPush - war.pushN) + ' 格 —— 继续施压可夺回失地');
+          pushLog('⚔ 前线推进：占领 ' + (wPush - war.pushN) + ' 格敌菌');
+        } else {
+          toast('★ 拔核成功！对手菌斑被清空、换地重落（转生时钟被拖慢）');
+          pushLog('★ 拔核：敌菌核心被占领，菌斑清除并在别处重落');
+        }
+        war.lostN = wLost; war.pushN = wPush; war.kills = wKill;
+      }
+    }
     el.sDist.textContent = state.maxDist;
     el.sLost.textContent = (state.lostTotal > 0 ? fmt(state.lostTotal) + ' 累计' : '无');
     el.sRun.textContent = clk(state.t);
@@ -944,10 +1015,46 @@ var UI = (function () {
     if (el.sRival) el.sRival.textContent = state.enemy ? state.enemy.cells.length : 0;
     /* 敌菌经济读数：dev 面板看它有多少钱（和平档/无对手时为 0） */
     if (el.sRivalRes) el.sRivalRes.textContent = Math.floor(state.enemyRes || 0);
-    /* 敌菌的转生竞速读数：攒多少 / 需要多少 —— 末日时钟必须可见 */
+    /* 敌菌的转生竞速读数：攒多少 / 需要多少 —— 末日时钟必须可见。
+     * 过半 / 八成时各 toast 一次（单调递增，跨过就永久触发）——
+     * 玩家需要「危险正在逼近」的预警，而不是只在败北画面见到它。 */
     if (el.sRivalSpore) {
       var need = window.MYC.Sim.enemyPrestigeNeed(state);
-      el.sRivalSpore.textContent = Math.floor(state.enemySpore || 0) + ' / ' + need;
+      var sp = state.enemySpore || 0;
+      el.sRivalSpore.textContent = Math.floor(sp) + ' / ' + need;
+      el.sRivalSpore.classList.toggle('warn', sp >= need * 0.8);
+      if (state.enemy && need > 0) {
+        if (sp >= need * 0.5 && war.sporeStage < 1) {
+          war.sporeStage = 1;
+          toast('☠ 对手转生进度过半 —— 推进它的菌丝或拔核可以拖慢时钟');
+          pushLog('☠ 对手菌种的转生进度已过半（' + Math.floor(sp) + '/' + need + '）');
+        } else if (sp >= need * 0.8 && war.sporeStage < 2) {
+          war.sporeStage = 2;
+          toast('☠☠ 对手转生接近完成！不干预很快就会败北');
+          pushLog('☠☠ 对手菌种的转生进度超过八成（' + Math.floor(sp) + '/' + need + '）');
+        }
+      }
+    }
+    /* ---- 败北倒计时行：把末日时钟翻译成「还有多久」----
+     * 裸分数（12/700）无法规划；速率来自 sim 的 enemySporeRate
+     * （被推进/拔核时会掉，反制的效果因此可见 —— 这是把
+     * 「推进有意义」写进界面的地方）。 */
+    if (el.rivalEta) {
+      var en0 = state.enemy;
+      var need2 = window.MYC.Sim.enemyPrestigeNeed(state);
+      var sp2 = state.enemySpore || 0, r2 = state.enemySporeRate || 0;
+      if (!en0) {
+        el.rivalEta.textContent = '';
+        el.rivalEta.className = 'hint';
+      } else if (r2 <= 0.02) {
+        el.rivalEta.innerHTML = '对手的转生时钟已被拖住（当前几乎不积累）—— 保持施压';
+        el.rivalEta.className = 'hint';
+      } else {
+        var eta = Math.max(0, (need2 - sp2) / r2);
+        el.rivalEta.innerHTML = '按当前速率，对手约 <b>' + clk(eta) +
+          '</b> 后完成转生（' + r2.toFixed(1) + '/s）—— 推进 / 拔核可拖慢';
+        el.rivalEta.className = 'hint' + (eta < 120 ? ' warn' : '');
+      }
     }
 
     /* 结构配额：这是本机制最需要「一直被看见」的数字 ——
@@ -1236,6 +1343,14 @@ var UI = (function () {
     state = newState;
     window.MYC.game.state = newState;
     seenSoils = {};
+    /* 战报跟踪器归零：新局的 counters 从 0 起，若沿用旧局的差值基数，
+     * 换局后第一次结算会把「旧局累计」误判成本回合战果，弹一串
+     * 不属于本局的 toast。sporeStage 同理（过半/八成预警只弹一次）。 */
+    war.lostN = newState.counters.frontierLost || 0;
+    war.pushN = newState.counters.frontierPush || 0;
+    war.kills = newState.counters.enemyKills || 0;
+    war.sporeStage = 0;
+    war.lastToastT = -99;
     /* 直接按新 state 算好并写进 DOM，再同步 memo，不留「等下次刷新」的窗口 */
     var agLocked = !newState.milestones.m10;
     lastAgLocked = agLocked;

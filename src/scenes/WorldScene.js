@@ -129,6 +129,23 @@
       this.netGfx = this.add.graphics().setDepth(4);
       this.flowGfx = this.add.graphics().setDepth(6);
       this.gnatGfx = this.add.graphics().setDepth(7);     // 害虫/菌瘟的脉冲与倒计时环
+      /* 战争指示层：屏幕边缘的威胁箭头（视野外的对手核心 / 受压前线）。
+       * 深度 8 = 压在虫瘟状态环之上、提示框（50）之下。
+       * 【为什么需要它】自动取景跟着网络中心走，而对手在远角落落地 ——
+       * 开局缩放只容得下核心周边一小片，敌人完全在画面外；
+       * 等玩家拖视野过去看时，前线可能已经塌了。边缘箭头把
+       * 「威胁在哪、哪侧在挨打」变成随时可见，不用玩家主动去找。 */
+      this.warGfx = this.add.graphics().setDepth(8);
+      this.warLabelA = this.add.text(0, 0, '', {
+        fontFamily: 'PingFang SC, Microsoft YaHei, sans-serif',
+        fontSize: '11px', color: '#d8a0aa',
+        backgroundColor: '#0d120d', padding: { x: 5, y: 3 }
+      }).setDepth(8.5).setVisible(false);
+      this.warLabelB = this.add.text(0, 0, '', {
+        fontFamily: 'PingFang SC, Microsoft YaHei, sans-serif',
+        fontSize: '11px', color: '#ffb0a4',
+        backgroundColor: '#0d120d', padding: { x: 5, y: 3 }
+      }).setDepth(8.5).setVisible(false);
       this.nodeSprites = [];                            // 节点实体贴图（下标 = node id）
       this.nodeSigs = [];                               // 每个节点的贴图配置签名
       this.nodeBaseDisp = [];                           // 每个节点的基准显示尺寸（弹出动画的回缩目标）
@@ -1040,6 +1057,7 @@
       this.drawFlow(st, time);
       this.drawGnats(st, time);
       this.drawFrontierEvents(st, time);   // 必须画在 drawNetwork 之后（netGfx 每帧清屏）
+      this.drawWarAlert(st, time);         // 屏幕边缘威胁箭头（独立图层，每帧自清）
       this.drawFloaters(st);
       /* 环境动效层：漂浮孢子 / 增益区粒子 / 核心喷发 / 转生扩散环 */
       AMB.draw(this.fx, this.fxGfx, st, dt, time, function (gx, gy) {
@@ -1460,6 +1478,88 @@
           }
         }
       }
+    }
+
+    /* 屏幕边缘威胁箭头：目标在视野外时，在画面边缘画一个指向它的小三角。
+     * 两级优先级：
+     *   · 受压前线（亮红、脉冲、带格数）—— 正在发生的事故，最响
+     *   · 对手核心（暗红、常驻、带距离）—— 威胁的位置，常亮
+     * 视野内不画（事件环/toast 已经够响），不偷镜头 —— 抢摄像头比没有指示更恼人。 */
+    drawWarAlert(st, time) {
+      var g = this.warGfx;
+      g.clear();
+      this.warLabelA.setVisible(false);
+      this.warLabelB.setVisible(false);
+      if (!st.enemy) return;
+
+      var sc = window.MYC.game.scene;
+      var z = sc.viewZoom || 1;
+      var v = viewRect();
+      var W = sc.scale.width, H = sc.scale.height;
+      var pad = 24;
+
+      /* 受压：取任意一个受压格作代表（多个同时塌时 toast 里有总数） */
+      var fs = st.frontierStats;
+      if (fs && fs.pushedN > 0 && fs.pushed) {
+        for (var pid in fs.pushed) {
+          var pnd = st.nodes[pid];
+          if (pnd) {
+            var pulse = 0.7 + 0.3 * Math.sin(time / 150);
+            this._edgeArrow(g, this.warLabelB, centerX(pnd.x), centerY(pnd.y),
+              0xff5a4a, 0.85 * pulse, 9 * pulse, '⚠ 受压 ' + fs.pushedN + ' 格');
+            break;
+          }
+        }
+      }
+
+      /* 对手核心：暗红常驻，报曼哈顿距离 */
+      var en = st.enemy;
+      var dist = Math.abs(en.x - st.core.x) + Math.abs(en.y - st.core.y);
+      this._edgeArrow(g, this.warLabelA, centerX(en.x), centerY(en.y),
+        0xa05060, 0.55, 7, '对手菌种 · ' + dist + ' 格');
+    }
+
+    /* 画一个边缘箭头。坐标系：场景自维护的 viewCx/Cy/Zoom（项目纪律：
+     * 不碰 cam.worldView / getWorldPoint / p.worldX）。返回是否画了。 */
+    _edgeArrow(g, label, wx, wy, color, alpha, size, text) {
+      var sc = window.MYC.game.scene;
+      var z = sc.viewZoom || 1;
+      var v = viewRect();
+      var W = sc.scale.width, H = sc.scale.height;
+      var pad = 24;
+      var sx = (wx - v.left) * z, sy = (wy - v.top) * z;
+      if (sx > pad && sx < W - pad && sy > pad && sy < H - pad) {
+        if (label) label.setVisible(false);
+        return false;                        // 在视野内：地图上已经看得见
+      }
+      var cx = W / 2, cy = H / 2;
+      var dx = sx - cx, dy = sy - cy;
+      /* 沿「屏幕中心 → 目标」方向缩放到边缘内缩矩形上。
+       * 分量为 0 时对应轴不设上限（1e9），否则贴边目标会被另一轴的
+       * 极小分量把箭头拽到角落里去。 */
+      var kx = Math.abs(dx) > 0.001 ? (W / 2 - pad) / Math.abs(dx) : 1e9;
+      var ky = Math.abs(dy) > 0.001 ? (H / 2 - pad) / Math.abs(dy) : 1e9;
+      var k = Math.min(kx, ky);
+      var ax = cx + dx * k, ay = cy + dy * k;
+      g.save();
+      g.translateCanvas(ax, ay);
+      g.rotateCanvas(Math.atan2(dy, dx));
+      g.fillStyle(color, alpha);
+      g.fillTriangle(size, 0, -size * 0.7, size * 0.62, -size * 0.7, -size * 0.62);
+      g.restore();
+      if (label) {
+        /* 标签贴箭头外侧，夹在画面内 —— 顶部边缘时标签在箭头下方，
+         * 否则 ay-14 会是负值，文字直接被裁掉。 */
+        var above = ay > H * 0.5;
+        label.setText(text);
+        label.setPosition(
+          Math.max(2, Math.min(W - label.width - 2, ax - label.width / 2)),
+          above ? Math.min(H - label.height - 2, ay + size + 2)
+                : Math.max(2, ay - label.height - size - 2)
+        );
+        label.setVisible(true);
+      }
+      return true;
     }
 
     drawEnemy(st) {

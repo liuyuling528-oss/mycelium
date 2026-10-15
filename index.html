@@ -41,13 +41,18 @@
     </div>
   </div>
 
-  <!-- 败北画面：人机转生成功 = 本局结束 -->
+  <!-- 败北画面：人机转生成功 = 本局结束。
+       主出口是「带着基因重来」—— 败北输掉的只是这一局的网络，
+       永久进度（基因/里程碑/菌株）不清零。这和地图事件「绝不永久损失」
+       是同一条底线：一局输了不该连带烧掉转生攒下的家底。
+       「彻底重开」保留给真想清档的玩家，带 confirm 拦一道。 -->
   <div id="defeatOverlay" class="hidden">
     <div class="menu-box">
       <div class="menu-title" style="color:#d96a8a">菌潮覆灭</div>
       <p class="menu-sub" id="defeatText">对手菌种完成了它的转生 —— 这片地下世界易主了。</p>
       <div class="menu-btns">
-        <button id="defAgain" class="primary">再来一局（全新开始）</button>
+        <button id="defAgain" class="primary">带着基因重来（永久进度保留）</button>
+        <button id="defWipe">彻底重开（清空基因与转生记录）</button>
         <button id="defMenu">回到主菜单</button>
       </div>
     </div>
@@ -172,6 +177,10 @@
         <div><span>对手菌丝</span><b id="sRival">0</b></div>
         <div><span>对手资源 · 转生</span><b><span id="sRivalRes">0</span> · <span id="sRivalSpore">0/0</span></b></div>
       </div>
+      <!-- 败北倒计时：敌菌转生是唯一的死线，必须带「按当前速率还有多久」——
+           一个裸分数（12/700）玩家无法规划，也不知道该不该慌。
+           速率 ≤0（被推进/拔核拖住）时改文案，让反制手段的效果可见。 -->
+      <p class="hint" id="rivalEta"></p>
       <div class="row" style="margin-top:10px">
         <select id="policy" title="挂机时自动蔓延的选址倾向"></select>
       </div>

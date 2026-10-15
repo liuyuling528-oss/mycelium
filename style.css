@@ -166,6 +166,12 @@ html { -webkit-text-size-adjust: 100%; }
 .stats div { display: flex; justify-content: space-between; }
 .stats span { color: var(--muted); }
 .stats b { font-weight: 400; font-variant-numeric: tabular-nums; }
+/* 前线受压 / 敌菌转生过八成：统计数字标红。
+ * 语义 = 「现在有事发生，需要你看一眼」—— 和水分行的 warn 同一条规则：
+ * 面板信号必须直接指向该做的决策。 */
+.stats .warn { color: var(--bad); font-weight: 600; }
+/* 败北倒计时行：进入 2 分钟危险区时整行标红 */
+.hint.warn { color: var(--bad); }
 
 /* ---- 表单 ------------------------------------------------------------ */
 .row { display: flex; align-items: center; gap: 8px; }
