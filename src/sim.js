@@ -131,7 +131,7 @@ var Sim = (function () {
        * 4 魔鬼。enemyCfg 是所选难度的参数快照（存档自包含，读档不用查表）。 */
       difficulty: (difficulty == null ? 3 : difficulty),
       enemyCfg: null,
-      enemyRes: 0,                   // 敌菌水池（和平档无用；从零开始挣，镜像新玩家）
+      enemyRes: CONFIG.START.water,   // 敌菌水池（和平档无用；与玩家同款起步金）
       /* ---- 敌菌的转生竞速 ----
        * enemySpore：敌菌攒的转生孢子，攒够 = 它转生 = **玩家输**；
        * enemyBuffs：玩家每次转生后给敌菌挑的增强计数（1.2^n 叠乘）；
@@ -1011,7 +1011,7 @@ var Sim = (function () {
   /* 开发者面板 / 菜单切换难度的公开入口 */
   function setDifficulty(state, d) {
     applyDifficulty(state, d);
-    state.enemyRes = 0;          // 切难度重置敌菌经济（避免旧档巨款滚进新难度）
+    state.enemyRes = CONFIG.START.water;   // 切难度重置敌菌经济（给同款起步金）
     invalidateCands(state);
     return state.difficulty;
   }
